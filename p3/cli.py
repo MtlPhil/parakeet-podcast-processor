@@ -238,9 +238,9 @@ def export_transcript(ctx, date, format, output_dir):
             console.print("[red]Invalid date format. Use YYYY-MM-DD[/red]")
             return
 
-        episodes = db.get_episodes_by_date_and_status(target_date, 'transcribed')
+        episodes = db.get_episodes_by_date_and_status(target_date)
         if not episodes:
-            console.print(f"[yellow]No transcribed episodes found for {target_date}[/yellow]")
+            console.print(f"[yellow]No episodes found for {target_date}[/yellow]")
             return
 
         Path(output_dir).mkdir(parents=True, exist_ok=True)

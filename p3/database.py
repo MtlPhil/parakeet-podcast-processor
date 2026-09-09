@@ -147,6 +147,44 @@ class P3Database:
             })
         return episodes
 
+    def get_episodes_by_date_and_status(self, target_date, status: str = None) -> List[Dict[str, Any]]:
+        """Get episodes matching a publication date, optionally filtered by status.
+
+        Pass status=None to return every episode published on that date.
+        """
+        if status is None:
+            results = self.conn.execute("""
+                SELECT e.*, p.title as podcast_title
+                FROM episodes e
+                JOIN podcasts p ON e.podcast_id = p.id
+                WHERE CAST(e.date AS DATE) = ?
+                ORDER BY e.date DESC
+            """, (target_date,)).fetchall()
+        else:
+            results = self.conn.execute("""
+                SELECT e.*, p.title as podcast_title
+                FROM episodes e
+                JOIN podcasts p ON e.podcast_id = p.id
+                WHERE CAST(e.date AS DATE) = ? AND e.status = ?
+                ORDER BY e.date DESC
+            """, (target_date, status)).fetchall()
+
+        episodes = []
+        for row in results:
+            episodes.append({
+                "id": row[0],
+                "podcast_id": row[1],
+                "title": row[2],
+                "date": row[3],
+                "url": row[4],
+                "file_path": row[5],
+                "duration_seconds": row[6],
+                "status": row[7],
+                "created_at": row[8],
+                "podcast_title": row[9]
+            })
+        return episodes
+
     def update_episode_status(self, episode_id: int, status: str):
         """Update episode processing status."""
         self.conn.execute(
@@ -189,6 +227,17 @@ class P3Database:
                 "created_at": row[7]
             })
         return transcripts
+
+    def get_transcript_by_episode_id(self, episode_id: int) -> Optional[str]:
+        """Get the full transcript text for an episode, or None if not transcribed."""
+        results = self.conn.execute("""
+            SELECT text FROM transcripts WHERE episode_id = ?
+            ORDER BY timestamp_start
+        """, (episode_id,)).fetchall()
+
+        if not results:
+            return None
+        return "\n".join(row[0] for row in results)
 
     def add_summary(self, episode_id: int, key_topics: List[str], themes: List[str],
                    quotes: List[str], startups: List[str], full_summary: str,

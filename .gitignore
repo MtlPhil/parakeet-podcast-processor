@@ -28,6 +28,9 @@ digest_*.json
 *.swp
 *.swo
 
+# Agent instructions (local only)
+CLAUDE.md
+
 # OS
 .DS_Store
 Thumbs.db
