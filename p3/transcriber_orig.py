@@ -1,6 +1,5 @@
 """Audio transcription using Whisper and Parakeet."""
 
-import os
 import json
 import subprocess
 import tempfile
@@ -39,7 +38,7 @@ class AudioTranscriber:
         if self.parakeet is None and PARAKEET_AVAILABLE:
             print(f"Loading Parakeet model: {self.parakeet_model}")
             self.parakeet = parakeet_from_pretrained(self.parakeet_model)
-    
+
     def transcribe_with_whisper(self, audio_path: str) -> Dict[str, Any]:
         """Transcribe audio using OpenAI Whisper."""
         self._load_whisper()
@@ -82,78 +81,21 @@ class AudioTranscriber:
         self._load_parakeet()
         
         try:
-            """
-            Split long audio files, transcribe each chunk, and merge transcripts.
-            """
-            # Step 1: Split into chunks
-            """
-            Split an audio file into smaller chunks using ffmpeg.
-            Returns a list of paths to the temporary chunk files.
-            """
-            temp_dir = tempfile.mkdtemp(prefix="p3_chunks_")
-            base_name = Path(audio_path).stem
-            output_pattern = os.path.join(temp_dir, f"{base_name}_%03d.wav")
-
-            print(f"🔪 Splitting audio into 10-minute segments…")
-
-            try:
-                subprocess.run([
-                    "ffmpeg", "-hide_banner", "-loglevel", "error",
-                    "-i", audio_path,
-                    "-f", "segment",
-                    "-segment_time", "600",
-                    "-c", "copy",
-                    output_pattern
-                ], check=True)
-            except subprocess.CalledProcessError as e:
-                print(f"⚠️ Audio splitting failed: {e}")
-                return []
-
-            # Collect all generated chunk files
-            chunks = sorted(Path(temp_dir).glob("*.wav"))
-            print(f"✅ Created {len(chunks)} chunks.")
-
-            if not chunks:
-                print(f"⚠️ No chunks created for {audio_path}. Skipping.")
-                return None
-
-            # Step 2: Transcribe each chunk
-            full_transcript = []
-            for i, chunk in enumerate(chunks, start=1):
-                print(f"🎧 Transcribing chunk {i}/{len(chunks)} → {chunk.name}")
-                try:
-                    result = self.parakeet.transcribe(str(chunk))
-
-                    # Convert Parakeet output to our format
-                    # segments = []
-                    for sentence in result.sentences:
-                        full_transcript.append({
-                            'start': 600 * (i-1) + sentence.start,
-                            'end': 600 * (i-1) + sentence.end,
-                            'text': sentence.text.strip(),
-                            'speaker': None,  # Parakeet doesn't do speaker identification
-                            'confidence': 1.0  # Parakeet doesn't provide confidence scores
-                        })                  
-                    # if result:
-                        # full_transcript.append(segments .text.strip())
-                except Exception as e:
-                    print(f"⚠️ Transcription failed for {chunk}: {e}")
-
-            # Step 3: Clean up temporary chunk files
-            for chunk in chunks:
-                try:
-                    os.remove(chunk)
-                except Exception:
-                    pass
-
-            try:
-                temp_dir = chunks[0].parent
-                os.rmdir(temp_dir)
-            except Exception:
-                pass
-
+            result = self.parakeet.transcribe(audio_path)
+            
+            # Convert Parakeet output to our format
+            segments = []
+            for sentence in result.sentences:
+                segments.append({
+                    'start': sentence.start,
+                    'end': sentence.end,
+                    'text': sentence.text.strip(),
+                    'speaker': None,  # Parakeet doesn't do speaker identification
+                    'confidence': 1.0  # Parakeet doesn't provide confidence scores
+                })
+            
             return {
-                'segments': full_transcript,
+                'segments': segments,
                 'language': 'en',  # Parakeet is English-only
                 'text': result.text,
                 'provider': 'parakeet-mlx'
@@ -163,10 +105,9 @@ class AudioTranscriber:
             print(f"Parakeet transcription failed: {e}")
             print("Falling back to Whisper")
             return self.transcribe_with_whisper(audio_path)
-      
+
     def transcribe_episode(self, episode_id: int) -> bool:
         """Transcribe a single episode and store results."""
-
         episodes = self.db.get_episodes_by_status('downloaded')
         episode = next((ep for ep in episodes if ep['id'] == episode_id), None)
         
@@ -179,7 +120,7 @@ class AudioTranscriber:
             return False
 
         print(f"Transcribing: {episode['title']}")
-
+        
         # Choose transcription method
         if self.use_parakeet:
             result = self.transcribe_with_parakeet(episode['file_path'])
@@ -194,14 +135,7 @@ class AudioTranscriber:
         
         # Update episode status
         self.db.update_episode_status(episode_id, 'transcribed')
-
-        try:
-            if os.path.exists(episode['file_path']):
-                os.remove(episode['file_path'])
-                print(f"🧹 Deleted original file: {episode['file_path']}")
-        except Exception as e:
-            print(f"⚠️ Could not delete original file {episode['file_path']}: {e}")
-
+        
         print(f"✓ Transcribed: {episode['title']}")
         return True
 
@@ -221,6 +155,27 @@ class AudioTranscriber:
         segments = self.db.get_transcripts_for_episode(episode_id)
         return "\n".join(segment['text'] for segment in segments)
 
+    def export_transcript(self, episode_id: int, format: str = "txt") -> str:
+        """Export transcript in various formats."""
+        segments = self.db.get_transcripts_for_episode(episode_id)
+        
+        if format == "txt":
+            return "\n".join(segment['text'] for segment in segments)
+        
+        elif format == "srt":
+            srt_content = []
+            for i, segment in enumerate(segments, 1):
+                start_time = self._seconds_to_srt_time(segment['timestamp_start'] or 0)
+                end_time = self._seconds_to_srt_time(segment['timestamp_end'] or 0)
+                srt_content.append(f"{i}\n{start_time} --> {end_time}\n{segment['text']}\n")
+            return "\n".join(srt_content)
+        
+        elif format == "json":
+            return json.dumps(segments, indent=2, default=str)
+        
+        else:
+            raise ValueError(f"Unsupported format: {format}")
+
     def _seconds_to_srt_time(self, seconds: float) -> str:
         """Convert seconds to SRT timestamp format."""
         hours = int(seconds // 3600)
@@ -228,4 +183,3 @@ class AudioTranscriber:
         secs = int(seconds % 60)
         millisecs = int((seconds % 1) * 1000)
         return f"{hours:02d}:{minutes:02d}:{secs:02d},{millisecs:03d}"
-

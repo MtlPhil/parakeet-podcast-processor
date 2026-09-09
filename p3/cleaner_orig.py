@@ -4,7 +4,6 @@ import json
 import re
 from datetime import datetime, date
 from typing import Dict, List, Optional, Any
-from pathlib import Path
 import httpx
 
 from .database import P3Database
@@ -18,15 +17,13 @@ except ImportError:
 
 
 class TranscriptCleaner:
-    def __init__(self, db: P3Database, data_dir: str = "data", llm_provider: str = "openai", 
+    def __init__(self, db: P3Database, llm_provider: str = "openai", 
                  llm_model: str = "gpt-3.5-turbo", api_key: str = None, ollama_base_url: str = "http://localhost:11434"):
         self.db = db
         self.llm_provider = llm_provider.lower()
         self.llm_model = llm_model
         self.api_key = api_key
         self.ollama_base_url = ollama_base_url
-        self.transcript_dir = Path(data_dir) / "transcripts"
-        self.transcript_dir.mkdir(parents=True, exist_ok=True)
         
         # Load API key from environment if not provided
         if not self.api_key and self.llm_provider != "ollama":
@@ -36,18 +33,6 @@ class TranscriptCleaner:
             elif self.llm_provider == "anthropic":
                 self.api_key = os.getenv("ANTHROPIC_API_KEY")
 
-    def export_transcript(self, raw_text: str, name: str, format: str = "txt") -> str:
-        if format == "txt":
-            output_path = self.transcript_dir / date.today().isoformat()
-            output_path.mkdir(parents=True, exist_ok=True)
-            filename = output_path / f"transcript_{name}.txt"
-            with open(filename, "w", encoding="utf-8") as f:
-                f.write(raw_text)
-
-            return str(filename)   
-        else:
-            raise ValueError(f"Unsupported format: {format}")
-        
     def clean_transcript(self, raw_text: str) -> str:
         """Clean transcript by removing filler words and improving readability."""
         # Basic cleaning without LLM first
@@ -171,33 +156,7 @@ Transcript:
         
         # Clean the transcript first
         cleaned_text = self.clean_transcript(full_text)
-
-        # Get episode info
-        episode = self.db.get_episode_by_id(episode_id)
-        if not episode:
-            return None
-
-        # Optionally export cleaned transcript  
-     #   for ep in episode:
-     #       print(f"Exporting cleaned transcript for podcast: \"{ep.get('podcast_title')}\" | Episode: \"{ep.get('title')}\"")
-     #       pod_ep = ep['podcast_title'] + " - " + ep['title']
-     #       self.export_transcript(cleaned_text,pod_ep)
-
-        # Normalize episode to a single dict (DB may return a dict or a single-item list)
-        if isinstance(episode, list):
-            episode = episode[0] if episode else None
-        if not episode:
-            return None
-
-        # Optionally export cleaned transcript
-        podcast = episode.get('podcast_title', 'unknown')
-        title = episode.get('title', 'unknown')
-        print(f'Exporting cleaned transcript for podcast: "{podcast}" | Episode: "{title}"')
-        pod_ep = f"{podcast} - {title}"
-        # sanitize filename
-        safe_name = re.sub(r'[\\/:"*?<>|]+', '_', pod_ep)
-        self.export_transcript(full_text, safe_name)
-
+        
         # Generate structured summary using LLM
         summary_data = self._generate_structured_summary(cleaned_text)
         
@@ -231,7 +190,7 @@ Transcript:
   "themes": ["theme1", "theme2", ...],  
   "quotes": ["notable quote 1", "notable quote 2", ...],
   "startups": ["company1", "company2", ...],
-  "summary": "Executive summary in approximately 250 words."
+  "summary": "Brief 2-3 sentence summary"
 }
 
 Guidelines:
@@ -239,7 +198,7 @@ Guidelines:
 - themes: Broader themes or patterns (2-4 themes)  
 - quotes: Memorable, insightful quotes (2-3 max)
 - startups: Any companies, startups, or brands mentioned
-- summary: Executive summary in approximately 250 words.
+- summary: Concise overview of the episode
 
 Transcript:
 """

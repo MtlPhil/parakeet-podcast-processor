@@ -1,33 +1,11 @@
 feeds:
-  - name: "The Tim Ferriss Show"
-    url: "https://rss.art19.com/tim-ferriss-show"
-    category: "productivity"
-  
-  - name: "a16z Podcast"
-    url: "https://feeds.feedburner.com/a16z"
-    category: "tech"
-    
-  - name: "Y Combinator Podcast"
-    url: "https://blog.ycombinator.com/feed/"
-    category: "startups"
+  - name: "Lenny's Podcast"
+    url: "https://feeds.simplecast.com/UZ12E8Qw"
+    category: "product"
 
-# Global settings
 settings:
-  audio_format: "wav"
-  max_episodes_per_feed: 10
-  cleanup_old_files: true
-  cleanup_days: 30
-  
-  # Transcription
-  whisper_model: "base"  # tiny, base, small, medium, large
-  parakeet_enabled: true  # Use Parakeet MLX on Apple Silicon
+  max_episodes_per_feed: 3
+  parakeet_enabled: true
   parakeet_model: "mlx-community/parakeet-tdt-0.6b-v2"
-  
-  # LLM cleaning
-  llm_provider: "ollama"  # openai, anthropic, ollama
-  llm_model: "llama3.2"  # For Ollama: llama3.2, qwen2.5, etc.
-  ollama_base_url: "http://localhost:11434"
-  
-  # Output
-  export_format: ["markdown", "json"]
-  email_enabled: false
+  llm_provider: "ollama"
+  llm_model: "llama3.2:latest"

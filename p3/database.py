@@ -240,6 +240,27 @@ class P3Database:
             })
         return summaries
 
+    def get_episode_by_id(self, episode_id: int) -> List[Dict[str, Any]]:
+        """Get podcast and episode name for an episode ID."""
+        results = self.conn.execute("""
+            SELECT e.*, p.title as podcast_title 
+            FROM episodes e 
+            JOIN podcasts p ON e.podcast_id = p.id 
+            WHERE e.id = ?
+            ORDER BY e.date DESC
+        """, (episode_id,)).fetchall()
+        
+        episodes = []
+        for row in results:
+            episodes.append({
+                "id": row[0],
+                "podcast_id": row[1],
+                "title": row[2],
+                "date": row[3],
+                "podcast_title": row[9]
+            })
+        return episodes
+
     def close(self):
         """Close database connection."""
         if self.conn:

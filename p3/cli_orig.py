@@ -168,7 +168,7 @@ def digest(ctx, provider, model, episode_id):
 
 @main.command()
 @click.option('--date', help='Export date (YYYY-MM-DD)')
-@click.option('--format', multiple=True, help='Export format (markdown, json, html)')
+@click.option('--format', multiple=True, help='Export format (markdown, json)')
 @click.option('--output', help='Output file path')
 @click.pass_context
 def export(ctx, date, format, output):
@@ -206,9 +206,6 @@ def export(ctx, date, format, output):
         elif fmt == 'json':
             content = exporter.export_json(summaries, target_date.date())
             filename = output or f"digest_{target_date.strftime('%Y-%m-%d')}.json"
-        elif fmt == 'html':
-            content = exporter.export_email_html(summaries, target_date.date())
-            filename = output or f"digest_{target_date.strftime('%Y-%m-%d')}.html"
         else:
             console.print(f"[red]Unsupported format: {fmt}[/red]")
             continue
@@ -218,76 +215,6 @@ def export(ctx, date, format, output):
             f.write(content)
         
         console.print(f"[green]✓ Exported {fmt}: {filename}[/green]")
-
-
-
-@main.command()
-@click.option('--date', required=False, help='Export all transcripts for a given date (YYYY-MM-DD)')
-@click.option('--format', default='txt', help='Export format (markdown, txt)')
-@click.option('--output-dir', default='exports', help='Output directory for transcripts')
-@click.pass_context
-def export_transcript(ctx, date, format, output_dir):
-    """Export transcript(s) for a specific episode or all episodes for a date."""
-    db = ctx.obj['db']
-
-    # If date is provided, export all transcripts for that date
-    if date:
-        try:
-            target_date = datetime.strptime(date, '%Y-%m-%d').date()
-        except ValueError:
-            console.print("[red]Invalid date format. Use YYYY-MM-DD[/red]")
-            return
-
-        episodes = db.get_episodes_by_date_and_status(target_date, 'transcribed')
-        if not episodes:
-            console.print(f"[yellow]No transcribed episodes found for {target_date}[/yellow]")
-            return
-
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
-        exported = 0
-        for episode in episodes:
-            transcript = db.get_transcript_by_episode_id(episode['id'])
-            if not transcript:
-                continue
-            if format == 'markdown':
-                content = f"# Transcript for Episode {episode['id']}\n\n{transcript}"
-                filename = f"transcript_{episode['id']}.md"
-            elif format == 'txt':
-                content = transcript
-                filename = f"transcript_{episode['id']}.txt"
-            else:
-                console.print(f"[red]Unsupported format: {format}[/red]")
-                continue
-            file_path = Path(output_dir) / filename
-            with open(file_path, 'w') as f:
-                f.write(content)
-            exported += 1
-        console.print(f"[green]✓ Exported {exported} transcripts to {output_dir}[/green]")
-        return
-
-    # If no date, fallback to single episode export (original behavior)
-    episode_id = click.prompt('Episode ID to export', type=int)
-    transcript = db.get_transcript_by_episode_id(episode_id)
-    if not transcript:
-        console.print(f"[red]No transcript found for episode {episode_id}[/red]")
-        return
-
-    if format == 'markdown':
-        content = f"# Transcript for Episode {episode_id}\n\n{transcript}"
-        filename = f"transcript_{episode_id}.md"
-    elif format == 'txt':
-        content = transcript
-        filename = f"transcript_{episode_id}.txt"
-    else:
-        console.print(f"[red]Unsupported format: {format}[/red]")
-        return
-
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-    file_path = Path(output_dir) / filename
-    with open(file_path, 'w') as f:
-        f.write(content)
-    console.print(f"[green]✓ Transcript exported: {file_path}[/green]")
-
 
 
 @main.command()
@@ -404,7 +331,7 @@ def init(ctx):
     console.print("[blue]Initializing P³...[/blue]")
     
     # Create directories
-    dirs = ['data', 'config', 'logs', 'data/audio', 'data/transcripts','exports', 'blog_posts']
+    dirs = ['data', 'config', 'logs', 'data/audio', 'exports', 'blog_posts']
     for dir_name in dirs:
         Path(dir_name).mkdir(parents=True, exist_ok=True)
         console.print(f"✓ Created directory: {dir_name}")

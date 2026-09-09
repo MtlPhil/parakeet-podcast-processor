@@ -81,13 +81,13 @@ class PodcastDownloader:
             
             # Save to temporary file first
             with tempfile.NamedTemporaryFile(delete=False, suffix='.tmp') as tmp_file:
-                for chunk in response.iter_content(chunk_size=8192):
+                for chunk in response.iter_content(chunk_size=4096):
                     tmp_file.write(chunk)
                 tmp_path = tmp_file.name
 
             # Convert and normalize with ffmpeg
             output_path = self.audio_dir / f"{filename}.{self.audio_format}"
-            
+
             # Use ffmpeg for reliable audio processing and normalization
             cmd = [
                 'ffmpeg', '-y',  # overwrite existing files
