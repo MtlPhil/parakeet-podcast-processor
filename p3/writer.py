@@ -5,12 +5,15 @@ with iterative grading and improvement loops.
 """
 
 import json
+import logging
 import re
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from pathlib import Path
 
 from .database import P3Database
+
+logger = logging.getLogger(__name__)
 
 # Optional Ollama support for blog generation
 try:
@@ -21,53 +24,40 @@ except ImportError:
 
 
 class BlogWriter:
-    def __init__(self, db: P3Database, llm_provider: str = "ollama", 
+    def __init__(self, db: P3Database, llm_provider: str = "ollama",
                  llm_model: str = "llama3.2:latest", target_grade: float = 91.0):
         self.db = db
         self.llm_provider = llm_provider.lower()
         self.llm_model = llm_model
         self.target_grade = target_grade
         self.max_iterations = 3
-        
-    def generate_blog_post_from_digest(self, topic: str, digest_data: Dict[str, Any], 
-                                     context_posts: List[str] = None) -> Dict[str, Any]:
-        """Generate blog post from podcast digest with iterative AP English grading.
-        
+
+    # ------------------------------------------------------------------
+    # Core blog generation
+    # ------------------------------------------------------------------
+
+    def generate_blog_post_from_digest(self, topic: str,
+                                       summaries: List[Dict[str, Any]],
+                                       context_posts: List[str] = None) -> Dict[str, Any]:
+        """Generate blog post from one or more podcast summaries with iterative AP English grading.
+
         Args:
             topic: The main topic/angle for the blog post
-            digest_data: Structured digest data from podcast analysis
+            summaries: List of structured digest dicts from podcast analysis
             context_posts: Optional list of related blog posts for style matching
-            
+
         Returns:
             Dict containing final blog post, grades, and iterations
         """
-        
-        # Extract relevant content from digest
-        episode_title = digest_data.get('episode_title', '')
-        podcast_title = digest_data.get('podcast_title', '')
-        summary = digest_data.get('full_summary', '')
-        key_topics = digest_data.get('key_topics', [])
-        themes = digest_data.get('themes', [])
-        quotes = digest_data.get('quotes', [])
-        companies = digest_data.get('startups', [])
-        
-        # Build context for the blog post
-        context = f"""
-        Episode: {episode_title} from {podcast_title}
-        Summary: {summary}
-        Key Topics: {', '.join(key_topics)}
-        Themes: {', '.join(themes)}
-        Notable Quotes: {quotes}
-        Companies Mentioned: {', '.join(companies)}
-        """
-        
-        iterations = []
-        current_post = ""
-        
+
+        context = self._build_context(summaries)
+
         # Generate initial blog post
         initial_prompt = self._build_writing_prompt(topic, context, context_posts)
         current_post = self._generate_with_llm(initial_prompt)
-        
+
+        iterations = []
+
         # Iterative grading and improvement (inspired by Tunguz's approach)
         for iteration in range(self.max_iterations):
             grade_result = self._grade_blog_post(current_post)
@@ -78,21 +68,22 @@ class BlogWriter:
                 'score': grade_result['score'],
                 'feedback': grade_result['feedback']
             })
-            
-            # Check if we've reached target grade
+
             if grade_result['score'] >= self.target_grade:
                 break
-                
+
             # Improve based on feedback
             if iteration < self.max_iterations - 1:
                 improvement_prompt = self._build_improvement_prompt(
                     current_post, grade_result['feedback']
                 )
                 current_post = self._generate_with_llm(improvement_prompt)
-        
-        # Generate SEO-friendly slug
+
         slug = self._generate_slug(topic)
-        
+
+        # Use first summary for metadata, but all summaries contributed to context
+        primary = summaries[0]
+
         return {
             'final_post': current_post,
             'final_grade': iterations[-1]['grade'],
@@ -101,158 +92,212 @@ class BlogWriter:
             'topic': topic,
             'slug': slug,
             'metadata': {
-                'episode_title': episode_title,
-                'podcast_title': podcast_title,
+                'episode_title': primary.get('episode_title', ''),
+                'podcast_title': primary.get('podcast_title', ''),
+                'source_count': len(summaries),
                 'generated_at': datetime.now().isoformat(),
                 'model_used': self.llm_model
             }
         }
-    
-    def _build_writing_prompt(self, topic: str, context: str, context_posts: List[str] = None) -> str:
+
+    # ------------------------------------------------------------------
+    # Context building
+    # ------------------------------------------------------------------
+
+    def _build_context(self, summaries: List[Dict[str, Any]]) -> str:
+        """Build combined context from multiple podcast summaries."""
+        sections = []
+        for i, s in enumerate(summaries, 1):
+            episode_title = s.get('episode_title', '')
+            podcast_title = s.get('podcast_title', '')
+            summary = s.get('full_summary', '')
+            key_topics = s.get('key_topics', [])
+            themes = s.get('themes', [])
+            quotes = s.get('quotes', [])
+            companies = s.get('startups', [])
+
+            section = (
+                f"Source {i}: {episode_title} from {podcast_title}\n"
+                f"Summary: {summary}\n"
+                f"Key Topics: {', '.join(key_topics)}\n"
+                f"Themes: {', '.join(themes)}\n"
+                f"Notable Quotes: {quotes}\n"
+                f"Companies Mentioned: {', '.join(companies)}"
+            )
+            sections.append(section)
+
+        return "\n\n".join(sections)
+
+    # ------------------------------------------------------------------
+    # Prompts
+    # ------------------------------------------------------------------
+
+    def _build_writing_prompt(self, topic: str, context: str,
+                              context_posts: List[str] = None) -> str:
         """Build the initial writing prompt based on Tunguz's style guidelines."""
-        
+
         style_guidelines = """
-        Style Guidelines (inspired by Tomasz Tunguz's approach):
-        - 500 words or less (49 seconds with reader)
-        - No section headers (headers hurt dwell time)
-        - Flowing paragraphs that transition smoothly
-        - Limit each paragraph to at most two long sentences
-        - Strong hook in first few sentences
-        - Conclusion that ties back to opening
-        - Focus on actionable insights
-        - Include specific examples and quotes when relevant
-        """
-        
+Style Guidelines (inspired by Tomasz Tunguz's approach):
+- 500 words or less (49 seconds with reader)
+- No section headers (headers hurt dwell time)
+- Flowing paragraphs that transition smoothly
+- Limit each paragraph to at most two long sentences
+- Strong hook in first few sentences
+- Conclusion that ties back to opening
+- Focus on actionable insights
+- Include specific examples and quotes when relevant
+"""
+
         context_section = ""
         if context_posts:
-            context_section = f"""
-            Related Content for Style Reference:
-            {chr(10).join(context_posts[:3])}  # Limit to 3 for context window
-            """
-        
-        return f"""You are an expert blog writer specializing in technology and business content.
-        
-        {style_guidelines}
-        
-        Topic: {topic}
-        
-        Source Material:
-        {context}
-        
-        {context_section}
-        
-        Write a compelling blog post that:
-        1. Opens with a strong hook that draws readers in
-        2. Presents insights from the podcast content
-        3. Provides actionable takeaways for business/tech readers
-        4. Includes relevant quotes to support key points
-        5. Concludes with a thought-provoking statement that ties back to the opening
-        
-        Remember: Be concise, engaging, and focused on delivering value quickly.
-        """
-    
-    def _grade_blog_post(self, blog_post: str) -> Dict[str, Any]:
-        """Grade blog post like an AP English teacher (Tunguz's innovation)."""
-        
-        grading_prompt = f"""You are an experienced AP English teacher grading a blog post. 
-        
-        Evaluate this blog post and provide:
-        1. Letter grade (A+, A, A-, B+, B, B-, C+, C, C-, D+, D, F)
-        2. Numerical score (0-100)
-        3. Detailed feedback on each criterion
-        
-        Evaluation Criteria:
-        - Hook/Opening (20 points): Does it grab attention immediately?
-        - Argument Clarity (20 points): Is the main point clear and well-supported?
-        - Evidence and Examples (20 points): Are quotes and examples used effectively?
-        - Paragraph Structure (20 points): Do paragraphs flow smoothly with good transitions?
-        - Conclusion Strength (20 points): Does it tie back and leave lasting impact?
-        - Overall Engagement (bonus/penalty): Would readers stay engaged throughout?
-        
-        Blog Post to Grade:
-        {blog_post}
-        
-        Format your response as:
-        GRADE: [Letter Grade]
-        SCORE: [Numerical Score]
-        FEEDBACK: [Detailed feedback with specific suggestions for improvement]
-        """
-        
-        response = self._generate_with_llm(grading_prompt)
-        
-        # Parse response
-        grade_match = re.search(r'GRADE:\s*([A-F][+-]?)', response)
-        score_match = re.search(r'SCORE:\s*(\d+)', response)
-        feedback_match = re.search(r'FEEDBACK:\s*(.*)', response, re.DOTALL)
-        
-        return {
-            'grade': grade_match.group(1) if grade_match else 'C',
-            'score': float(score_match.group(1)) if score_match else 75.0,
-            'feedback': feedback_match.group(1).strip() if feedback_match else response,
-            'raw_response': response
-        }
-    
+            joined = "\n".join(context_posts[:3])
+            context_section = f"\nRelated Content for Style Reference:\n{joined}\n"
+
+        return (
+            "You are an expert blog writer specializing in technology and business content.\n"
+            f"{style_guidelines}\n"
+            f"Topic: {topic}\n\n"
+            f"Source Material:\n{context}\n"
+            f"{context_section}\n"
+            "Write a compelling blog post that:\n"
+            "1. Opens with a strong hook that draws readers in\n"
+            "2. Presents insights from the podcast content\n"
+            "3. Provides actionable takeaways for business/tech readers\n"
+            "4. Includes relevant quotes to support key points\n"
+            "5. Concludes with a thought-provoking statement that ties back to the opening\n\n"
+            "Remember: Be concise, engaging, and focused on delivering value quickly."
+        )
+
     def _build_improvement_prompt(self, current_post: str, feedback: str) -> str:
         """Build prompt to improve blog post based on feedback."""
-        
-        return f"""You are revising a blog post based on AP English teacher feedback.
-        
-        Current Blog Post:
-        {current_post}
-        
-        Teacher Feedback:
-        {feedback}
-        
-        Please rewrite the blog post incorporating the feedback while maintaining:
-        - The core message and insights
-        - Concise, engaging style (500 words or less)
-        - Strong hook and conclusion
-        - Smooth paragraph transitions
-        - Actionable takeaways
-        
-        Focus especially on addressing the specific issues mentioned in the feedback.
+        return (
+            "You are revising a blog post based on AP English teacher feedback.\n\n"
+            f"Current Blog Post:\n{current_post}\n\n"
+            f"Teacher Feedback:\n{feedback}\n\n"
+            "Please rewrite the blog post incorporating the feedback while maintaining:\n"
+            "- The core message and insights\n"
+            "- Concise, engaging style (500 words or less)\n"
+            "- Strong hook and conclusion\n"
+            "- Smooth paragraph transitions\n"
+            "- Actionable takeaways\n\n"
+            "Focus especially on addressing the specific issues mentioned in the feedback."
+        )
+
+    # ------------------------------------------------------------------
+    # Grading (uses a distinct persona to reduce self-grading bias)
+    # ------------------------------------------------------------------
+
+    def _grade_blog_post(self, blog_post: str) -> Dict[str, Any]:
+        """Grade blog post like an AP English teacher (Tunguz's innovation).
+
+        Uses a strict evaluator persona distinct from the writer persona
+        to reduce self-grading bias.
         """
-    
-    def _generate_slug(self, topic: str) -> str:
-        """Generate URL-friendly slug from topic."""
-        # Convert to lowercase and replace spaces/special chars with hyphens
-        slug = re.sub(r'[^\w\s-]', '', topic.lower())
-        slug = re.sub(r'[-\s]+', '-', slug)
-        return slug.strip('-')
-    
-    def _generate_with_llm(self, prompt: str) -> str:
-        """Generate text using configured LLM."""
+
+        grading_prompt = (
+            "Evaluate this blog post and provide:\n"
+            "1. Letter grade (A+, A, A-, B+, B, B-, C+, C, C-, D+, D, F)\n"
+            "2. Numerical score (0-100)\n"
+            "3. Detailed feedback on each criterion\n\n"
+            "Evaluation Criteria:\n"
+            "- Hook/Opening (20 points): Does it grab attention immediately?\n"
+            "- Argument Clarity (20 points): Is the main point clear and well-supported?\n"
+            "- Evidence and Examples (20 points): Are quotes and examples used effectively?\n"
+            "- Paragraph Structure (20 points): Do paragraphs flow smoothly with good transitions?\n"
+            "- Conclusion Strength (20 points): Does it tie back and leave lasting impact?\n"
+            "- Overall Engagement (bonus/penalty): Would readers stay engaged throughout?\n\n"
+            f"Blog Post to Grade:\n{blog_post}\n\n"
+            "Format your response EXACTLY as:\n"
+            "GRADE: [Letter Grade]\n"
+            "SCORE: [Numerical Score]\n"
+            "FEEDBACK: [Detailed feedback with specific suggestions for improvement]"
+        )
+
+        response = self._generate_with_llm(
+            grading_prompt,
+            system="You are a strict AP English teacher and writing critic. "
+                   "You grade rigorously and are harder to impress than most readers. "
+                   "Be specific about weaknesses and provide actionable improvement suggestions."
+        )
+
+        return self._parse_grade(response)
+
+    def _parse_grade(self, response: str) -> Dict[str, Any]:
+        """Parse grade, score, and feedback from grader response.
+
+        Falls back gracefully when the LLM doesn't follow the format exactly.
+        """
+        grade_match = re.search(r'GRADE:\s*([A-F][+-]?)', response, re.IGNORECASE)
+        score_match = re.search(r'SCORE:\s*(\d+(?:\.\d+)?)', response, re.IGNORECASE)
+        feedback_match = re.search(r'FEEDBACK:\s*(.*)', response, re.DOTALL | re.IGNORECASE)
+
+        grade = grade_match.group(1).upper() if grade_match else None
+        score = float(score_match.group(1)) if score_match else None
+        feedback = feedback_match.group(1).strip() if feedback_match else response
+
+        # If parsing failed, don't pretend we got a low grade — signal unknown
+        if score is None:
+            logger.warning("Could not parse score from grader response, defaulting to 0 (will retry)")
+            score = 0.0
+        if grade is None:
+            logger.warning("Could not parse letter grade from grader response")
+            grade = "?"
+
+        return {
+            'grade': grade,
+            'score': score,
+            'feedback': feedback,
+            'raw_response': response
+        }
+
+    # ------------------------------------------------------------------
+    # LLM interface
+    # ------------------------------------------------------------------
+
+    def _generate_with_llm(self, prompt: str,
+                           system: str = "You are an expert blog writer and writing instructor.") -> str:
+        """Generate text using configured LLM. Raises on failure."""
         if not OLLAMA_AVAILABLE:
-            return "Error: Ollama not available for blog generation"
-        
+            raise RuntimeError("Ollama is not installed — cannot generate blog content")
+
         try:
             response = ollama.chat(
                 model=self.llm_model,
                 messages=[
-                    {"role": "system", "content": "You are an expert blog writer and writing instructor."},
+                    {"role": "system", "content": system},
                     {"role": "user", "content": prompt}
                 ]
             )
             return response['message']['content'].strip()
         except Exception as e:
-            return f"Error generating content: {e}"
-    
+            raise RuntimeError(f"LLM generation failed: {e}") from e
+
+    # ------------------------------------------------------------------
+    # Output
+    # ------------------------------------------------------------------
+
     def save_blog_post(self, blog_result: Dict[str, Any], output_dir: str = "blog_posts") -> str:
         """Save generated blog post to file."""
         output_path = Path(output_dir)
         output_path.mkdir(exist_ok=True)
-        
-        # Create filename with date and slug
+
         date_str = datetime.now().strftime('%Y-%m-%d')
         filename = f"{date_str}-{blog_result['slug']}.md"
         file_path = output_path / filename
-        
-        # Generate markdown content
+
+        source_count = blog_result['metadata'].get('source_count', 1)
+        source_line = (
+            f"{blog_result['metadata']['episode_title']} from {blog_result['metadata']['podcast_title']}"
+            if source_count == 1
+            else f"{source_count} podcast episodes"
+        )
+
         content = f"""---
 title: "{blog_result['topic']}"
 date: {blog_result['metadata']['generated_at']}
 source_episode: "{blog_result['metadata']['episode_title']}"
 source_podcast: "{blog_result['metadata']['podcast_title']}"
+source_count: {source_count}
 final_grade: {blog_result['final_grade']}
 final_score: {blog_result['final_score']}
 model: {blog_result['metadata']['model_used']}
@@ -269,90 +314,99 @@ inspired_by: "Tomasz Tunguz's AP English grading system"
 
 - **Final Grade**: {blog_result['final_grade']} ({blog_result['final_score']}/100)
 - **Iterations**: {len(blog_result['iterations'])}
-- **Source**: {blog_result['metadata']['episode_title']} from {blog_result['metadata']['podcast_title']}
+- **Source**: {source_line}
 - **Generated**: {blog_result['metadata']['generated_at']}
 
 ### Grading History
 """
-        
-        # Add iteration details
+
         for iteration in blog_result['iterations']:
             content += f"""
 **Iteration {iteration['iteration']}**: {iteration['grade']} ({iteration['score']}/100)
 {iteration['feedback'][:200]}...
 
 """
-        
-        # Write to file
+
         with open(file_path, 'w') as f:
             f.write(content)
-        
+
         return str(file_path)
+
+    # ------------------------------------------------------------------
+    # Social media
+    # ------------------------------------------------------------------
 
     def generate_social_posts(self, blog_result: Dict[str, Any]) -> Dict[str, List[str]]:
         """Generate social media posts from blog content (Tunguz's feature)."""
-        
+
         blog_post = blog_result['final_post']
         topic = blog_result['topic']
-        
-        # Extract key quotes and insights
+
+        twitter_prompt = (
+            f"Generate 3 engaging Twitter posts based on this blog post about {topic}.\n\n"
+            f"Blog Post:\n{blog_post}\n\n"
+            "Requirements:\n"
+            "- Each post under 280 characters\n"
+            "- Include relevant hashtags\n"
+            "- Make them engaging and actionable\n"
+            "- Reference key insights or quotes when possible\n\n"
+            "Format each post on its own line, numbered 1. 2. 3."
+        )
+
+        linkedin_prompt = (
+            f"Generate 2 LinkedIn posts based on this blog post about {topic}.\n\n"
+            f"Blog Post:\n{blog_post}\n\n"
+            "Requirements:\n"
+            "- Professional tone suitable for business audience\n"
+            "- 100-200 words each\n"
+            "- Include call-to-action\n"
+            "- Reference source material appropriately\n\n"
+            "Format each post on its own line, numbered 1. 2."
+        )
+
+        try:
+            twitter_response = self._generate_with_llm(twitter_prompt)
+            linkedin_response = self._generate_with_llm(linkedin_prompt)
+        except RuntimeError as e:
+            logger.error("Social post generation failed: %s", e)
+            return {'twitter': [], 'linkedin': [], 'quotes': [], 'insights': []}
+
+        twitter_posts = self._parse_numbered_list(twitter_response)
+        linkedin_posts = self._parse_numbered_list(linkedin_response)
+
+        # Extract quotable excerpts from the blog post
         quotes = []
         insights = []
-        
-        # Simple extraction (could be enhanced with better parsing)
         sentences = blog_post.split('. ')
         for sentence in sentences:
-            if len(sentence) > 50 and len(sentence) < 280:  # Twitter length
-                if any(word in sentence.lower() for word in ['key', 'important', 'crucial', 'insight']):
-                    insights.append(sentence.strip() + '.')
-                elif '"' in sentence:
-                    quotes.append(sentence.strip())
-        
-        # Generate Twitter posts
-        twitter_prompt = f"""Generate 3 engaging Twitter posts based on this blog post about {topic}.
-        
-        Blog Post:
-        {blog_post}
-        
-        Requirements:
-        - Each post under 280 characters
-        - Include relevant hashtags
-        - Make them engaging and actionable
-        - Reference key insights or quotes when possible
-        
-        Format as:
-        POST 1: [content]
-        POST 2: [content]  
-        POST 3: [content]
-        """
-        
-        # Generate LinkedIn posts
-        linkedin_prompt = f"""Generate 2 LinkedIn posts based on this blog post about {topic}.
-        
-        Blog Post:
-        {blog_post}
-        
-        Requirements:
-        - Professional tone suitable for business audience
-        - 100-200 words each
-        - Include call-to-action
-        - Reference source material appropriately
-        
-        Format as:
-        POST 1: [content]
-        POST 2: [content]
-        """
-        
-        twitter_response = self._generate_with_llm(twitter_prompt)
-        linkedin_response = self._generate_with_llm(linkedin_prompt)
-        
-        # Parse responses (simple parsing - could be enhanced)
-        twitter_posts = re.findall(r'POST \d+: (.+?)(?=POST \d+:|$)', twitter_response, re.DOTALL)
-        linkedin_posts = re.findall(r'POST \d+: (.+?)(?=POST \d+:|$)', linkedin_response, re.DOTALL)
-        
+            stripped = sentence.strip()
+            if 50 < len(stripped) < 280:
+                if any(word in stripped.lower() for word in ['key', 'important', 'crucial', 'insight']):
+                    insights.append(stripped + '.')
+                elif '"' in stripped:
+                    quotes.append(stripped)
+
         return {
-            'twitter': [post.strip() for post in twitter_posts],
-            'linkedin': [post.strip() for post in linkedin_posts],
-            'quotes': quotes[:3],  # Top 3 quotable excerpts
-            'insights': insights[:5]  # Top 5 key insights
+            'twitter': twitter_posts,
+            'linkedin': linkedin_posts,
+            'quotes': quotes[:3],
+            'insights': insights[:5]
         }
+
+    @staticmethod
+    def _parse_numbered_list(text: str) -> List[str]:
+        """Parse a numbered list from LLM output.
+
+        Handles formats like '1. ...', '1) ...', 'POST 1: ...' etc.
+        """
+        pattern = r'(?:^|\n)\s*(?:\d+[\.\)]\s*|POST\s*\d+\s*:\s*)'
+        items = re.split(pattern, text)
+        # The first element is whatever came before the first number — usually empty
+        return [item.strip() for item in items if item.strip()]
+
+    @staticmethod
+    def _generate_slug(topic: str) -> str:
+        """Generate URL-friendly slug from topic."""
+        slug = re.sub(r'[^\w\s-]', '', topic.lower())
+        slug = re.sub(r'[-\s]+', '-', slug)
+        return slug.strip('-')

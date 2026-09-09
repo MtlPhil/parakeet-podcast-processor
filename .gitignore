@@ -22,6 +22,10 @@ digest_*.json
 *.wav
 *.mp3
 
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
 # IDE
 .vscode/
 .idea/

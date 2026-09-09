@@ -1,28 +1,68 @@
 """Podcast episode downloader and RSS feed processor."""
 
+import logging
 import os
-import requests
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Dict, List, Optional
-from urllib.parse import urlparse
-import feedparser
-# from pydub import AudioSegment  # Disabled due to Python 3.13 compatibility
+import re
 import subprocess
 import tempfile
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Callable, Dict, List, Optional
+from urllib.parse import urlparse
+
+import feedparser
+import requests
 
 from .database import P3Database
 
+logger = logging.getLogger(__name__)
+
+MAX_RETRIES = 3
+RETRY_BACKOFF_BASE = 2  # seconds
+
+
+def _retry_request(method: str, url: str, **kwargs) -> requests.Response:
+    """Execute an HTTP request with retry and exponential backoff."""
+    for attempt in range(MAX_RETRIES):
+        try:
+            response = requests.request(method, url, **kwargs)
+            response.raise_for_status()
+            return response
+        except (requests.RequestException, requests.HTTPError) as e:
+            if attempt == MAX_RETRIES - 1:
+                raise
+            wait = RETRY_BACKOFF_BASE ** (attempt + 1)
+            logger.warning("Request to %s failed (attempt %d/%d): %s. Retrying in %ds...",
+                           url, attempt + 1, MAX_RETRIES, e, wait)
+            time.sleep(wait)
+
+
+def _safe_filename(title: str, max_length: int = 50) -> str:
+    """Generate a filesystem-safe filename from a title.
+
+    Strips non-alphanumeric characters (keeping spaces, hyphens, underscores),
+    collapses whitespace, and enforces a maximum length. Returns a fallback
+    name if the result is empty.
+    """
+    cleaned = re.sub(r'[^\w\s-]', '', title)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    if not cleaned:
+        cleaned = "untitled"
+    return cleaned[:max_length]
+
 
 class PodcastDownloader:
-    def __init__(self, db: P3Database, data_dir: str = "data", 
-                 max_episodes: int = 10, audio_format: str = "wav"):
+    def __init__(self, db: P3Database, data_dir: str = "data",
+                 max_episodes: int = 10, audio_format: str = "wav",
+                 progress_callback: Optional[Callable[[int, int], None]] = None):
         self.db = db
         self.data_dir = Path(data_dir)
         self.audio_dir = self.data_dir / "audio"
         self.audio_dir.mkdir(parents=True, exist_ok=True)
         self.max_episodes = max_episodes
         self.audio_format = audio_format
+        self.progress_callback = progress_callback
 
     def add_feed(self, name: str, url: str, category: str = None) -> int:
         """Add a new podcast feed to the database."""
@@ -39,7 +79,7 @@ class PodcastDownloader:
         try:
             feed = feedparser.parse(rss_url)
             episodes = []
-            
+
             for entry in feed.entries[:limit]:
                 # Find audio enclosure
                 audio_url = None
@@ -47,7 +87,7 @@ class PodcastDownloader:
                     if enclosure.type and 'audio' in enclosure.type:
                         audio_url = enclosure.href
                         break
-                
+
                 if not audio_url:
                     continue
 
@@ -65,104 +105,98 @@ class PodcastDownloader:
                     'description': entry.get('description', ''),
                     'guid': entry.get('id', audio_url)
                 })
-            
+
             return episodes
-            
+
         except Exception as e:
-            print(f"Error fetching RSS feed {rss_url}: {e}")
+            logger.error("Error fetching RSS feed %s: %s", rss_url, e)
             return []
 
     def download_episode(self, episode_url: str, filename: str) -> Optional[str]:
         """Download and normalize audio episode."""
+        tmp_path = None
         try:
-            # Download audio file
-            response = requests.get(episode_url, stream=True, timeout=300)
-            response.raise_for_status()
-            
+            response = _retry_request('GET', episode_url, stream=True, timeout=300)
+
             # Save to temporary file first
             with tempfile.NamedTemporaryFile(delete=False, suffix='.tmp') as tmp_file:
-                for chunk in response.iter_content(chunk_size=4096):
+                for chunk in response.iter_content(chunk_size=8192):
                     tmp_file.write(chunk)
                 tmp_path = tmp_file.name
 
             # Convert and normalize with ffmpeg
             output_path = self.audio_dir / f"{filename}.{self.audio_format}"
 
-            # Use ffmpeg for reliable audio processing and normalization
             cmd = [
-                'ffmpeg', '-y',  # overwrite existing files
+                'ffmpeg', '-y',
                 '-i', tmp_path,
-                '-ar', '16000',  # 16kHz sample rate for Whisper
-                '-ac', '1',      # mono
+                '-ar', '16000',   # 16kHz sample rate for Whisper/Parakeet
+                '-ac', '1',       # mono
                 '-c:a', 'pcm_s16le' if self.audio_format == 'wav' else 'libmp3lame',
                 '-af', 'loudnorm',  # normalize audio levels
                 str(output_path)
             ]
-            
+
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode != 0:
-                print(f"FFmpeg error: {result.stderr}")
-                # Fallback to pydub
+                logger.warning("FFmpeg normalization failed: %s", result.stderr)
                 return self._fallback_conversion(tmp_path, output_path)
-            
-            # Clean up temp file
-            os.unlink(tmp_path)
-            
+
             return str(output_path)
-            
+
         except Exception as e:
-            print(f"Error downloading {episode_url}: {e}")
+            logger.error("Error downloading %s: %s", episode_url, e)
             return None
 
-    def _fallback_conversion(self, input_path: str, output_path: Path) -> str:
-        """Fallback audio conversion using ffmpeg directly."""
+        finally:
+            # Always clean up temp file
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+    def _fallback_conversion(self, input_path: str, output_path: Path) -> Optional[str]:
+        """Fallback audio conversion using ffmpeg without normalization."""
         try:
-            # Use ffmpeg without pydub as fallback
             cmd = [
                 'ffmpeg', '-y', '-i', input_path,
                 '-ar', '16000', '-ac', '1',
                 str(output_path)
             ]
             result = subprocess.run(cmd, capture_output=True, text=True)
-            
+
             if result.returncode == 0:
-                os.unlink(input_path)
                 return str(output_path)
             else:
-                print(f"Fallback conversion failed: {result.stderr}")
-                os.unlink(input_path)
+                logger.error("Fallback conversion failed: %s", result.stderr)
                 return None
-            
+
         except Exception as e:
-            print(f"Fallback conversion failed: {e}")
-            os.unlink(input_path)
+            logger.error("Fallback conversion failed: %s", e)
             return None
 
     def process_feed(self, rss_url: str) -> int:
         """Process a single RSS feed and download new episodes."""
         podcast = self.db.get_podcast_by_url(rss_url)
         if not podcast:
-            print(f"Podcast not found for URL: {rss_url}")
+            logger.error("Podcast not found for URL: %s", rss_url)
             return 0
 
         episodes = self.fetch_episodes(rss_url)
         downloaded_count = 0
-        
-        for ep_data in episodes:
+
+        for i, ep_data in enumerate(episodes):
             # Skip if episode already exists
             if self.db.episode_exists(ep_data['url']):
                 continue
-                
-            print(f"Downloading: {ep_data['title']}")
-            
+
+            logger.info("Downloading: %s", ep_data['title'])
+
             # Generate safe filename
-            safe_title = "".join(c for c in ep_data['title'] if c.isalnum() or c in (' ', '-', '_')).rstrip()
-            filename = f"{podcast['id']}_{safe_title[:50]}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            
+            safe_title = _safe_filename(ep_data['title'])
+            filename = f"{podcast['id']}_{safe_title}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
             # Download episode
             file_path = self.download_episode(ep_data['url'], filename)
             if file_path:
-                # Add to database
                 self.db.add_episode(
                     podcast_id=podcast['id'],
                     title=ep_data['title'],
@@ -171,30 +205,33 @@ class PodcastDownloader:
                     file_path=file_path
                 )
                 downloaded_count += 1
-                print(f"✓ Downloaded: {ep_data['title']}")
+                logger.info("Downloaded: %s", ep_data['title'])
             else:
-                print(f"✗ Failed to download: {ep_data['title']}")
-        
+                logger.warning("Failed to download: %s", ep_data['title'])
+
+            if self.progress_callback:
+                self.progress_callback(i + 1, len(episodes))
+
         return downloaded_count
 
     def fetch_all_feeds(self, feeds_config: List[Dict]) -> Dict[str, int]:
         """Process all configured RSS feeds."""
         results = {}
-        
+
         for feed_config in feeds_config:
             name = feed_config['name']
             url = feed_config['url']
             category = feed_config.get('category')
-            
-            print(f"Processing feed: {name}")
-            
+
+            logger.info("Processing feed: %s", name)
+
             # Ensure podcast exists in database
             self.add_feed(name, url, category)
-            
+
             # Process episodes
             count = self.process_feed(url)
             results[name] = count
-            
-            print(f"Downloaded {count} new episodes from {name}")
-        
+
+            logger.info("Downloaded %d new episodes from %s", count, name)
+
         return results
