@@ -5,11 +5,14 @@ These run in FastAPI BackgroundTasks (thread pool).
 """
 
 import logging
+import threading
+import time
 import traceback
 from datetime import datetime
 from pathlib import Path
 
 from p3.api.deps import get_db, load_config
+from p3.api.job_queue import job_runner
 from p3.database import P3Database
 
 logger = logging.getLogger(__name__)
@@ -18,6 +21,35 @@ logger = logging.getLogger(__name__)
 def _get_settings() -> dict:
     config = load_config()
     return config.get("settings", {})
+
+
+def _start_heartbeat(db, job_id: str, label: str, interval: float = 15.0):
+    """Periodically update a running job's message with elapsed time.
+
+    Some steps (transcription) are a single blocking library call with no
+    internal progress hook — without this the message never changes while
+    it runs and the job looks frozen. Returns a stop() callable; it blocks
+    briefly until the heartbeat thread has exited, so the caller's own
+    final message is never overwritten by a late tick.
+    """
+    stop_event = threading.Event()
+    start = time.monotonic()
+
+    def tick():
+        while not stop_event.wait(interval):
+            elapsed = int(time.monotonic() - start)
+            db.update_job(
+                job_id, message=f"{label} ({elapsed // 60}m{elapsed % 60:02d}s elapsed)"
+            )
+
+    thread = threading.Thread(target=tick, daemon=True)
+    thread.start()
+
+    def stop():
+        stop_event.set()
+        thread.join(timeout=5)
+
+    return stop
 
 
 # ------------------------------------------------------------------
@@ -40,13 +72,21 @@ def task_fetch(job_id: str, podcast_id: int, max_episodes: int | None = None):
             db.update_job(job_id, status="failed", error=f"Podcast {podcast_id} not found")
             return
 
+        def on_progress(done: int, total: int, message: str):
+            # Reserve the tail of the bar for per-episode progress so the job
+            # visibly advances instead of sitting at a flat 10% the whole
+            # time a feed with several (or very long) episodes downloads.
+            frac = done / total if total else 0
+            db.update_job(job_id, progress=0.05 + frac * 0.9, message=message)
+
         downloader = PodcastDownloader(
             db=db,
             max_episodes=max_eps,
             audio_format=settings.get("audio_format", "wav"),
+            progress_callback=on_progress,
         )
 
-        db.update_job(job_id, progress=0.1, message=f"Fetching feed: {podcast['title']}")
+        db.update_job(job_id, progress=0.05, message=f"Fetching feed: {podcast['title']}")
         count = downloader.process_feed(podcast["rss_url"])
 
         db.update_job(
@@ -68,7 +108,12 @@ def task_transcribe(job_id: str, episode_id: int):
     """Transcribe a single episode."""
     db = get_db()
     try:
-        db.update_job(job_id, status="running", message="Loading transcription model...")
+        episode = db.get_episode_by_id(episode_id)
+        title = episode["title"] if episode else f"episode {episode_id}"
+
+        db.update_job(
+            job_id, status="running", message=f"Loading transcription model for: {title}"
+        )
 
         from p3.transcriber import AudioTranscriber
 
@@ -80,12 +125,16 @@ def task_transcribe(job_id: str, episode_id: int):
             parakeet_model=settings.get("parakeet_model", "mlx-community/parakeet-tdt-0.6b-v2"),
         )
 
-        db.update_job(job_id, progress=0.2, message="Transcribing audio...")
-        success = transcriber.transcribe_episode(episode_id)
+        db.update_job(job_id, progress=0.2, message=f"Transcribing: {title}")
+        stop_heartbeat = _start_heartbeat(db, job_id, f"Transcribing: {title}")
+        try:
+            success = transcriber.transcribe_episode(episode_id)
+        finally:
+            stop_heartbeat()
         transcriber.unload_models()
 
         if success:
-            db.update_job(job_id, status="completed", progress=1.0, message="Transcription complete")
+            db.update_job(job_id, status="completed", progress=1.0, message=f"Transcribed: {title}")
         else:
             db.update_job(job_id, status="failed", error="Transcription returned no result")
     except Exception as e:
@@ -216,9 +265,75 @@ def task_write_blog(job_id: str, topic: str, target_date: str, target_grade: flo
         db.update_job(job_id, status="failed", error=str(e))
 
 
+def task_write_linkedin(job_id: str, episode_id: int):
+    """Generate a LinkedIn post (English + Quebec French) from one episode."""
+    db = get_db()
+    try:
+        db.update_job(job_id, status="running", message="Preparing LinkedIn post...")
+
+        from p3.writer import BlogWriter
+
+        settings = _get_settings()
+        summary = db.get_summary_by_episode(episode_id)
+
+        if not summary:
+            db.update_job(job_id, status="failed", error=f"No summary for episode {episode_id}")
+            return
+
+        writer = BlogWriter(
+            db=db,
+            llm_provider=settings.get("llm_provider", "ollama"),
+            llm_model=settings.get("llm_model", "llama3.2:latest"),
+        )
+
+        db.update_job(job_id, progress=0.3, message="Generating LinkedIn post...")
+        result = writer.generate_linkedin_post(summary)
+
+        db.update_job(job_id, progress=0.8, message="Saving LinkedIn post...")
+        file_path = writer.save_linkedin_post(result)
+
+        db.update_job(
+            job_id,
+            status="completed",
+            progress=1.0,
+            message=f"LinkedIn post saved: {file_path}",
+        )
+    except Exception as e:
+        logger.exception("LinkedIn write task failed")
+        db.update_job(job_id, status="failed", error=str(e))
+
+
 # ------------------------------------------------------------------
 # Full pipeline for an episode
 # ------------------------------------------------------------------
+
+def queue_step_jobs(db, episodes, step: str) -> list[str]:
+    """Create one job per eligible episode for a pipeline step and hand it to
+    the serial job runner.
+
+    step is one of 'transcribe', 'digest', 'pipeline'. Episodes whose status
+    does not match the step's precondition are skipped.
+    """
+    plans = {
+        "transcribe": (task_transcribe, "transcribe", lambda s: s == "downloaded"),
+        "digest": (task_digest, "digest", lambda s: s == "transcribed"),
+        "pipeline": (task_full_pipeline, "full_pipeline", lambda s: s != "processed"),
+    }
+    if step not in plans:
+        raise ValueError(f"Unknown step: {step}")
+    task_fn, job_type, eligible = plans[step]
+
+    job_ids = []
+    for ep in episodes:
+        if not eligible(ep["status"]):
+            continue
+        job_id = db.create_job(
+            job_type, episode_id=ep["id"], podcast_id=ep["podcast_id"]
+        )
+        job_runner.enqueue(task_fn, job_id, ep["id"])
+        job_ids.append(job_id)
+    return job_ids
+
 
 def task_full_pipeline(job_id: str, episode_id: int):
     """Run transcribe → digest for a single episode."""

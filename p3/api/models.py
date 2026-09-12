@@ -15,6 +15,11 @@ class PodcastCreate(BaseModel):
     category: Optional[str] = None
 
 
+class PodcastUpdate(BaseModel):
+    title: Optional[str] = None
+    category: Optional[str] = None
+
+
 class PodcastOut(BaseModel):
     id: int
     title: str
@@ -68,6 +73,7 @@ class SummaryOut(BaseModel):
     startups: List[str] = []
     digest_date: Optional[Any] = None
     full_summary: Optional[str] = None
+    long_summary: Optional[str] = None
     created_at: Optional[Any] = None
     episode_title: Optional[str] = None
     podcast_title: Optional[str] = None
@@ -80,6 +86,7 @@ class SummaryOut(BaseModel):
 class JobOut(BaseModel):
     id: str
     episode_id: Optional[int] = None
+    podcast_id: Optional[int] = None
     job_type: str
     status: str
     progress: float = 0.0
@@ -88,6 +95,8 @@ class JobOut(BaseModel):
     created_at: Optional[Any] = None
     started_at: Optional[Any] = None
     completed_at: Optional[Any] = None
+    episode_title: Optional[str] = None
+    podcast_title: Optional[str] = None
 
 
 # ------------------------------------------------------------------
@@ -107,6 +116,20 @@ class BlogOut(BaseModel):
     filename: str
     final_grade: Optional[str] = None
     final_score: Optional[float] = None
+    content: Optional[str] = None
+
+
+class LinkedInCreate(BaseModel):
+    episode_id: int
+
+
+class LinkedInOut(BaseModel):
+    slug: str
+    title: str
+    date: str
+    filename: str
+    episode_title: Optional[str] = None
+    podcast_title: Optional[str] = None
     content: Optional[str] = None
 
 
@@ -150,3 +173,5 @@ class StatsOut(BaseModel):
     episodes_processed: int = 0
     total_summaries: int = 0
     active_jobs: int = 0
+    running_jobs: int = 0
+    queued_jobs: int = 0

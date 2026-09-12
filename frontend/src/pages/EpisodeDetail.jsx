@@ -78,7 +78,7 @@ export default function EpisodeDetail() {
       </p>
 
       {/* Pipeline progress */}
-      <div className="flex gap-2 mb-6">
+      <div className="flex flex-wrap gap-x-2 gap-y-1 mb-6">
         {steps.map(({ label, done }, i) => (
           <div key={label} className="flex items-center gap-2">
             <div className={`w-3 h-3 rounded-full ${done ? 'bg-green-500' : 'bg-gray-300'}`} />
@@ -91,7 +91,7 @@ export default function EpisodeDetail() {
       </div>
 
       {/* Action buttons */}
-      <div className="flex gap-3 mb-6">
+      <div className="flex flex-wrap gap-3 mb-6">
         {episode.status === 'downloaded' && (
           <>
             <button
@@ -195,6 +195,16 @@ export default function EpisodeDetail() {
                 <div>
                   <h3 className="font-medium text-gray-800 mb-1">Summary</h3>
                   <p className="text-sm text-gray-700">{summary.full_summary}</p>
+                </div>
+              )}
+              {summary.long_summary && (
+                <div>
+                  <h3 className="font-medium text-gray-800 mb-1">Study Notes</h3>
+                  <div className="space-y-2">
+                    {summary.long_summary.split('\n\n').map((para, i) => (
+                      <p key={i} className="text-sm text-gray-700">{para}</p>
+                    ))}
+                  </div>
                 </div>
               )}
               {summary.key_topics?.length > 0 && (

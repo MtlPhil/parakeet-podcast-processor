@@ -9,8 +9,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from p3.api.deps import get_db, close_db
+from p3.api.job_queue import job_runner
 from p3.api.models import StatsOut
-from p3.api.routers import podcasts, episodes, jobs, transcripts, summaries, exports, blogs, settings
+from p3.api.routers import podcasts, episodes, jobs, transcripts, summaries, exports, blogs, linkedin, settings
 
 logger = logging.getLogger(__name__)
 
@@ -21,10 +22,16 @@ async def lifespan(app: FastAPI):
     # Ensure directories exist
     for d in ("data", "data/audio", "exports", "blog_posts", "config"):
         Path(d).mkdir(parents=True, exist_ok=True)
-    # Warm up database
-    get_db()
+    # Warm up database and clear jobs orphaned by a previous process
+    db = get_db()
+    stale = db.fail_stale_jobs()
+    if stale:
+        logger.warning("Marked %d interrupted job(s) as failed", stale)
+    # Start the serial pipeline worker
+    job_runner.start()
     logger.info("P3 API started")
     yield
+    job_runner.stop()
     close_db()
     logger.info("P3 API stopped")
 
@@ -53,6 +60,7 @@ app.include_router(transcripts.router)
 app.include_router(summaries.router)
 app.include_router(exports.router)
 app.include_router(blogs.router)
+app.include_router(linkedin.router)
 app.include_router(settings.router)
 
 

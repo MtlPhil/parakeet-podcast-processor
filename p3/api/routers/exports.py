@@ -3,10 +3,11 @@
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 
 from p3.api.deps import get_db
+from p3.api.job_queue import job_runner
 from p3.api.tasks import task_export
 
 router = APIRouter(prefix="/api/exports", tags=["exports"])
@@ -29,7 +30,6 @@ def download_export(date_str: str, format: str = Query("markdown")):
 def generate_export(
     date: str = Query(None, description="YYYY-MM-DD, defaults to today"),
     formats: str = Query("markdown,json", description="Comma-separated formats"),
-    background_tasks: BackgroundTasks = None,
 ):
     """Generate export files for a given date."""
     db = get_db()
@@ -37,5 +37,5 @@ def generate_export(
     fmt_list = [f.strip() for f in formats.split(",")]
 
     job_id = db.create_job("export")
-    background_tasks.add_task(task_export, job_id, target_date, fmt_list)
+    job_runner.enqueue(task_export, job_id, target_date, fmt_list)
     return {"job_id": job_id}

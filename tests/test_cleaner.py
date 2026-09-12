@@ -4,7 +4,13 @@ import json
 
 import pytest
 
-from p3.cleaner import TranscriptCleaner, _extract_json, _truncate_transcript
+from p3.cleaner import (
+    TranscriptCleaner,
+    _coerce_str_list,
+    _extract_json,
+    _split_into_sections,
+    _truncate_transcript,
+)
 
 
 class TestTruncateTranscript:
@@ -92,3 +98,56 @@ class TestCleanTranscript:
         result = cleaner.clean_transcript(text)
         assert "actually" in result
         assert "basically" in result
+
+
+class TestSplitIntoSections:
+    def test_splits_into_requested_count(self):
+        text = "word " * 1000
+        sections = _split_into_sections(text, 4)
+        assert len(sections) == 4
+
+    def test_does_not_cut_words_in_half(self):
+        text = "alpha beta gamma delta epsilon zeta eta theta"
+        sections = _split_into_sections(text, 3)
+        rejoined = " ".join(sections)
+        for word in text.split():
+            assert word in rejoined.split()
+
+    def test_covers_the_whole_text(self):
+        text = "one two three four five six seven eight nine ten"
+        sections = _split_into_sections(text, 3)
+        assert "".join(sections).replace(" ", "") == text.replace(" ", "")
+
+    def test_single_section_returns_whole_text(self):
+        assert _split_into_sections("hello world", 1) == ["hello world"]
+
+    def test_empty_text_returns_empty_list(self):
+        assert _split_into_sections("", 4) == []
+        assert _split_into_sections("   ", 4) == []
+
+
+class TestCoerceStrList:
+    def test_list_of_strings_unchanged(self):
+        assert _coerce_str_list(["a", "b"]) == ["a", "b"]
+
+    def test_dict_items_use_name_field(self):
+        items = [
+            {"theme_name": "Informed Analysis", "description": ""},
+            {"theme_name": "Book Movement Detection", "description": None},
+        ]
+        assert _coerce_str_list(items) == ["Informed Analysis", "Book Movement Detection"]
+
+    def test_dict_items_without_known_key_use_first_string_value(self):
+        items = [{"label": "Foo", "count": 3}]
+        assert _coerce_str_list(items) == ["Foo"]
+
+    def test_dict_items_with_no_string_value_stringified(self):
+        items = [{"count": 3}]
+        assert _coerce_str_list(items) == [str({"count": 3})]
+
+    def test_non_list_returns_empty_list(self):
+        assert _coerce_str_list(None) == []
+        assert _coerce_str_list("not a list") == []
+
+    def test_non_string_non_dict_items_stringified(self):
+        assert _coerce_str_list([1, 2.5]) == ["1", "2.5"]

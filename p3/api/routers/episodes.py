@@ -1,11 +1,17 @@
 """Episode listing, detail, and pipeline trigger routes."""
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 from typing import Optional
 
 from p3.api.deps import get_db
+from p3.api.job_queue import job_runner
 from p3.api.models import EpisodeOut
-from p3.api.tasks import task_transcribe, task_digest, task_full_pipeline
+from p3.api.tasks import (
+    queue_step_jobs,
+    task_digest,
+    task_full_pipeline,
+    task_transcribe,
+)
 
 router = APIRouter(prefix="/api/episodes", tags=["episodes"])
 
@@ -25,6 +31,22 @@ def list_episodes(
     return episodes
 
 
+@router.post("/process/{step}", response_model=dict)
+def process_all_episodes(step: str):
+    """Queue a pipeline step (transcribe|digest|pipeline) for every eligible
+    episode in the library. One job per episode; the runner executes them one
+    at a time.
+
+    Declared before ``/{episode_id}`` so ``process`` is not read as an id.
+    """
+    db = get_db()
+    try:
+        job_ids = queue_step_jobs(db, db.get_all_episodes(), step)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"queued": len(job_ids), "job_ids": job_ids}
+
+
 @router.get("/{episode_id}", response_model=EpisodeOut)
 def get_episode(episode_id: int):
     db = get_db()
@@ -35,7 +57,7 @@ def get_episode(episode_id: int):
 
 
 @router.post("/{episode_id}/transcribe", response_model=dict)
-def transcribe_episode(episode_id: int, background_tasks: BackgroundTasks):
+def transcribe_episode(episode_id: int):
     db = get_db()
     episode = db.get_episode_by_id(episode_id)
     if not episode:
@@ -43,27 +65,31 @@ def transcribe_episode(episode_id: int, background_tasks: BackgroundTasks):
     if episode["status"] != "downloaded":
         raise HTTPException(400, f"Episode status is '{episode['status']}', expected 'downloaded'")
 
-    job_id = db.create_job("transcribe", episode_id=episode_id)
-    background_tasks.add_task(task_transcribe, job_id, episode_id)
+    job_id = db.create_job(
+        "transcribe", episode_id=episode_id, podcast_id=episode["podcast_id"]
+    )
+    job_runner.enqueue(task_transcribe, job_id, episode_id)
     return {"job_id": job_id}
 
 
 @router.post("/{episode_id}/digest", response_model=dict)
-def digest_episode(episode_id: int, background_tasks: BackgroundTasks):
+def digest_episode(episode_id: int):
     db = get_db()
     episode = db.get_episode_by_id(episode_id)
     if not episode:
         raise HTTPException(404, "Episode not found")
-    if episode["status"] != "transcribed":
-        raise HTTPException(400, f"Episode status is '{episode['status']}', expected 'transcribed'")
+    if episode["status"] not in ("transcribed", "processed"):
+        raise HTTPException(400, f"Episode status is '{episode['status']}', expected 'transcribed' or 'processed'")
 
-    job_id = db.create_job("digest", episode_id=episode_id)
-    background_tasks.add_task(task_digest, job_id, episode_id)
+    job_id = db.create_job(
+        "digest", episode_id=episode_id, podcast_id=episode["podcast_id"]
+    )
+    job_runner.enqueue(task_digest, job_id, episode_id)
     return {"job_id": job_id}
 
 
 @router.post("/{episode_id}/pipeline", response_model=dict)
-def run_pipeline(episode_id: int, background_tasks: BackgroundTasks):
+def run_pipeline(episode_id: int):
     """Run the full pipeline (transcribe → digest) on an episode."""
     db = get_db()
     episode = db.get_episode_by_id(episode_id)
@@ -72,6 +98,8 @@ def run_pipeline(episode_id: int, background_tasks: BackgroundTasks):
     if episode["status"] == "processed":
         raise HTTPException(400, "Episode already fully processed")
 
-    job_id = db.create_job("full_pipeline", episode_id=episode_id)
-    background_tasks.add_task(task_full_pipeline, job_id, episode_id)
+    job_id = db.create_job(
+        "full_pipeline", episode_id=episode_id, podcast_id=episode["podcast_id"]
+    )
+    job_runner.enqueue(task_full_pipeline, job_id, episode_id)
     return {"job_id": job_id}

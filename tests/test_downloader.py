@@ -1,11 +1,15 @@
 """Tests for downloader utilities.
 
-These tests exercise the pure utility functions without importing the full
+Most tests here exercise pure utility functions without importing the full
 downloader module (which requires feedparser, which may not be installable
-in all environments).
+in all environments). TestProcessFeedResume does import it — network and
+ffmpeg calls are mocked out, matching the "no mocking of external services
+beyond that" convention: only PodcastDownloader's own methods are stubbed.
 """
 
+import hashlib
 import re
+from unittest.mock import MagicMock
 
 
 def _safe_filename(title: str, max_length: int = 50) -> str:
@@ -41,3 +45,89 @@ class TestSafeFilename:
     def test_whitespace_collapse(self):
         result = _safe_filename("Too   many    spaces")
         assert "  " not in result
+
+
+class TestProcessFeedResume:
+    """A completed download+normalize must survive an interrupted process:
+    process_feed uses a stable (non-timestamped) filename per episode and
+    reuses it if already present, instead of redoing the download and the
+    slow ffmpeg normalize."""
+
+    def _episode(self, url="http://example.com/ep.mp3", title="Ep 1"):
+        return {"title": title, "url": url, "date": None, "description": "", "guid": url}
+
+    def _downloader(self, tmp_path, progress_callback=None):
+        from p3.downloader import PodcastDownloader
+
+        db = MagicMock()
+        db.get_podcast_by_url.return_value = {"id": 1, "title": "Pod"}
+        db.episode_exists.return_value = False
+        dl = PodcastDownloader(
+            db=db, data_dir=str(tmp_path), max_episodes=5,
+            progress_callback=progress_callback,
+        )
+        return dl, db
+
+    def test_reuses_existing_file_without_redownloading(self, tmp_path, monkeypatch):
+        ep = self._episode()
+        dl, db = self._downloader(tmp_path)
+        monkeypatch.setattr(dl, "fetch_episodes", lambda url: [ep])
+
+        # Pre-create the deterministic output file, as if a prior run
+        # finished the download+normalize but crashed before it got recorded.
+        url_hash = hashlib.sha1(ep["url"].encode()).hexdigest()[:10]
+        expected_path = tmp_path / "audio" / f"1_Ep 1_{url_hash}.wav"
+        expected_path.parent.mkdir(parents=True, exist_ok=True)
+        expected_path.write_bytes(b"fake audio")
+
+        def boom(*a, **k):
+            raise AssertionError("should not re-download when the file already exists")
+        monkeypatch.setattr(dl, "download_episode", boom)
+
+        count = dl.process_feed("http://example.com/feed.xml")
+
+        assert count == 1
+        db.add_episode.assert_called_once()
+        assert db.add_episode.call_args.kwargs["file_path"] == str(expected_path)
+
+    def test_downloads_when_no_existing_file(self, tmp_path, monkeypatch):
+        ep = self._episode(url="http://example.com/ep2.mp3", title="Ep 2")
+        dl, db = self._downloader(tmp_path)
+        monkeypatch.setattr(dl, "fetch_episodes", lambda url: [ep])
+        monkeypatch.setattr(
+            dl, "download_episode", lambda url, filename: f"data/audio/{filename}.wav"
+        )
+
+        count = dl.process_feed("http://example.com/feed.xml")
+
+        assert count == 1
+        db.add_episode.assert_called_once()
+
+    def test_progress_callback_reports_per_episode_messages(self, tmp_path, monkeypatch):
+        ep = self._episode(url="http://example.com/ep3.mp3", title="Ep 3")
+        calls = []
+        dl, db = self._downloader(
+            tmp_path, progress_callback=lambda done, total, msg: calls.append((done, total, msg))
+        )
+        monkeypatch.setattr(dl, "fetch_episodes", lambda url: [ep])
+        monkeypatch.setattr(
+            dl, "download_episode", lambda url, filename: f"data/audio/{filename}.wav"
+        )
+
+        dl.process_feed("http://example.com/feed.xml")
+
+        assert calls == [
+            (0, 1, "Downloading: Ep 3"),
+            (1, 1, "Downloaded: Ep 3"),
+        ]
+
+    def test_skips_episodes_already_in_db(self, tmp_path, monkeypatch):
+        ep = self._episode()
+        dl, db = self._downloader(tmp_path)
+        db.episode_exists.return_value = True
+        monkeypatch.setattr(dl, "fetch_episodes", lambda url: [ep])
+
+        count = dl.process_feed("http://example.com/feed.xml")
+
+        assert count == 0
+        db.add_episode.assert_not_called()

@@ -104,3 +104,27 @@ class TestBuildContext:
         assert 'Source 1' in context
         assert 'Source 2' in context
         assert 'Source 3' in context
+
+
+class TestSaveLinkedInPost:
+    def test_saves_both_languages_to_file(self, tmp_path):
+        writer = BlogWriter(db=None)
+        result = {
+            'english': 'This is the English post.',
+            'french_quebec': "Voici le billet en français québécois.",
+            'slug': 'pod-a-episode-1',
+            'metadata': {
+                'episode_title': 'Episode 1',
+                'podcast_title': 'Podcast A',
+                'generated_at': '2026-09-12T12:00:00',
+                'model_used': 'llama3.2:latest',
+            },
+        }
+        file_path = writer.save_linkedin_post(result, output_dir=str(tmp_path))
+        content = open(file_path).read()
+        assert 'This is the English post.' in content
+        assert 'Voici le billet en français québécois.' in content
+        assert '## English' in content
+        assert 'Français (Québec)' in content
+        assert 'Episode 1' in content
+        assert 'Podcast A' in content

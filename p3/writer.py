@@ -333,6 +333,103 @@ inspired_by: "Tomasz Tunguz's AP English grading system"
         return str(file_path)
 
     # ------------------------------------------------------------------
+    # LinkedIn posts (direct from a single episode, no grading loop)
+    # ------------------------------------------------------------------
+
+    def generate_linkedin_post(self, summary: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate a LinkedIn post from one episode's summary, in English
+        and Quebec French.
+
+        This is the default, lightweight content path: one direct
+        generation per language, no AP-grading iterations — appropriate for
+        a short-form post tied to a specific episode rather than a themed
+        essay. The French version is translated from the English draft
+        (rather than generated independently) so the two stay consistent.
+        """
+        context = self._build_context([summary])
+        episode_title = summary.get('episode_title', '')
+        podcast_title = summary.get('podcast_title', '')
+
+        english_prompt = (
+            "Write a LinkedIn post about this podcast episode.\n\n"
+            f"Source Material:\n{context}\n\n"
+            "Requirements:\n"
+            "- Professional tone for a business/tech LinkedIn audience\n"
+            "- 150-200 words\n"
+            "- Strong hook in the first line\n"
+            "- Reference the episode and podcast by name\n"
+            "- Share the most interesting insight or argument, not a generic teaser\n"
+            "- End with a short takeaway or a question inviting engagement\n"
+            "- At most 3 relevant hashtags at the end, no hashtag spam\n\n"
+            "Return only the post text."
+        )
+        english_post = self._generate_with_llm(
+            english_prompt,
+            system="You are a professional writer creating LinkedIn posts that "
+                   "summarize podcast insights for a business audience."
+        ).strip()
+
+        french_prompt = (
+            "Traduis et adapte le billet LinkedIn suivant en français québécois "
+            "(pas le français de France : utilise le vocabulaire, les tournures et "
+            "le registre du Québec). Garde le même sens, le même ton professionnel "
+            "et une longueur similaire.\n\n"
+            f"Billet original (anglais) :\n{english_post}\n\n"
+            "Retourne uniquement le texte du billet, sans commentaire."
+        )
+        french_post = self._generate_with_llm(
+            french_prompt,
+            system="Tu es un rédacteur professionnel qui écrit des billets LinkedIn "
+                   "en français québécois."
+        ).strip()
+
+        slug = self._generate_slug(f"{podcast_title}-{episode_title}")
+
+        return {
+            'english': english_post,
+            'french_quebec': french_post,
+            'slug': slug,
+            'metadata': {
+                'episode_title': episode_title,
+                'podcast_title': podcast_title,
+                'generated_at': datetime.now().isoformat(),
+                'model_used': self.llm_model,
+            },
+        }
+
+    def save_linkedin_post(self, result: Dict[str, Any], output_dir: str = "linkedin_posts") -> str:
+        """Save a generated LinkedIn post (both languages) to file."""
+        output_path = Path(output_dir)
+        output_path.mkdir(exist_ok=True)
+
+        date_str = datetime.now().strftime('%Y-%m-%d')
+        filename = f"{date_str}-{result['slug']}.md"
+        file_path = output_path / filename
+
+        meta = result['metadata']
+        content = f"""---
+title: "{meta['episode_title']}"
+date: {meta['generated_at']}
+source_episode: "{meta['episode_title']}"
+source_podcast: "{meta['podcast_title']}"
+model: {meta['model_used']}
+---
+
+## English
+
+{result['english']}
+
+## Français (Québec)
+
+{result['french_quebec']}
+"""
+
+        with open(file_path, 'w') as f:
+            f.write(content)
+
+        return str(file_path)
+
+    # ------------------------------------------------------------------
     # Social media
     # ------------------------------------------------------------------
 

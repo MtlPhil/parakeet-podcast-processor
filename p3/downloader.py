@@ -1,5 +1,6 @@
 """Podcast episode downloader and RSS feed processor."""
 
+import hashlib
 import logging
 import os
 import re
@@ -55,7 +56,7 @@ def _safe_filename(title: str, max_length: int = 50) -> str:
 class PodcastDownloader:
     def __init__(self, db: P3Database, data_dir: str = "data",
                  max_episodes: int = 10, audio_format: str = "wav",
-                 progress_callback: Optional[Callable[[int, int], None]] = None):
+                 progress_callback: Optional[Callable[[int, int, str], None]] = None):
         self.db = db
         self.data_dir = Path(data_dir)
         self.audio_dir = self.data_dir / "audio"
@@ -124,8 +125,12 @@ class PodcastDownloader:
                     tmp_file.write(chunk)
                 tmp_path = tmp_file.name
 
-            # Convert and normalize with ffmpeg
+            # Convert and normalize with ffmpeg. Write to a staging path and
+            # rename only on success, so a killed/interrupted ffmpeg never
+            # leaves a truncated file at the final path — callers use the
+            # final path's existence to detect already-completed work.
             output_path = self.audio_dir / f"{filename}.{self.audio_format}"
+            staging_path = output_path.parent / f"{output_path.name}.partial"
 
             cmd = [
                 'ffmpeg', '-y',
@@ -134,7 +139,7 @@ class PodcastDownloader:
                 '-ac', '1',       # mono
                 '-c:a', 'pcm_s16le' if self.audio_format == 'wav' else 'libmp3lame',
                 '-af', 'loudnorm',  # normalize audio levels
-                str(output_path)
+                str(staging_path)
             ]
 
             result = subprocess.run(cmd, capture_output=True, text=True)
@@ -142,6 +147,7 @@ class PodcastDownloader:
                 logger.warning("FFmpeg normalization failed: %s", result.stderr)
                 return self._fallback_conversion(tmp_path, output_path)
 
+            os.replace(staging_path, output_path)
             return str(output_path)
 
         except Exception as e:
@@ -155,15 +161,17 @@ class PodcastDownloader:
 
     def _fallback_conversion(self, input_path: str, output_path: Path) -> Optional[str]:
         """Fallback audio conversion using ffmpeg without normalization."""
+        staging_path = output_path.parent / f"{output_path.name}.partial"
         try:
             cmd = [
                 'ffmpeg', '-y', '-i', input_path,
                 '-ar', '16000', '-ac', '1',
-                str(output_path)
+                str(staging_path)
             ]
             result = subprocess.run(cmd, capture_output=True, text=True)
 
             if result.returncode == 0:
+                os.replace(staging_path, output_path)
                 return str(output_path)
             else:
                 logger.error("Fallback conversion failed: %s", result.stderr)
@@ -172,6 +180,12 @@ class PodcastDownloader:
         except Exception as e:
             logger.error("Fallback conversion failed: %s", e)
             return None
+        finally:
+            if staging_path.exists():
+                try:
+                    staging_path.unlink()
+                except OSError:
+                    pass
 
     def process_feed(self, rss_url: str) -> int:
         """Process a single RSS feed and download new episodes."""
@@ -181,6 +195,7 @@ class PodcastDownloader:
             return 0
 
         episodes = self.fetch_episodes(rss_url)
+        total = len(episodes)
         downloaded_count = 0
 
         for i, ep_data in enumerate(episodes):
@@ -188,14 +203,25 @@ class PodcastDownloader:
             if self.db.episode_exists(ep_data['url']):
                 continue
 
-            logger.info("Downloading: %s", ep_data['title'])
-
-            # Generate safe filename
+            # Stable filename per episode (not time-stamped), so a completed
+            # download+normalize survives an interrupted process: if the file
+            # is already there from a prior run that died before it could be
+            # recorded, reuse it instead of redoing the download and the slow
+            # ffmpeg normalize.
             safe_title = _safe_filename(ep_data['title'])
-            filename = f"{podcast['id']}_{safe_title}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            url_hash = hashlib.sha1(ep_data['url'].encode()).hexdigest()[:10]
+            filename = f"{podcast['id']}_{safe_title}_{url_hash}"
+            output_path = self.audio_dir / f"{filename}.{self.audio_format}"
 
-            # Download episode
-            file_path = self.download_episode(ep_data['url'], filename)
+            if output_path.exists() and output_path.stat().st_size > 0:
+                logger.info("Reusing existing audio file for: %s", ep_data['title'])
+                file_path = str(output_path)
+            else:
+                logger.info("Downloading: %s", ep_data['title'])
+                if self.progress_callback:
+                    self.progress_callback(i, total, f"Downloading: {ep_data['title']}")
+                file_path = self.download_episode(ep_data['url'], filename)
+
             if file_path:
                 self.db.add_episode(
                     podcast_id=podcast['id'],
@@ -206,11 +232,12 @@ class PodcastDownloader:
                 )
                 downloaded_count += 1
                 logger.info("Downloaded: %s", ep_data['title'])
+                if self.progress_callback:
+                    self.progress_callback(i + 1, total, f"Downloaded: {ep_data['title']}")
             else:
                 logger.warning("Failed to download: %s", ep_data['title'])
-
-            if self.progress_callback:
-                self.progress_callback(i + 1, len(episodes))
+                if self.progress_callback:
+                    self.progress_callback(i + 1, total, f"Failed: {ep_data['title']}")
 
         return downloaded_count
 

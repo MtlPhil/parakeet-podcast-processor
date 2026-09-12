@@ -4,9 +4,10 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, HTTPException
 
 from p3.api.deps import get_db
+from p3.api.job_queue import job_runner
 from p3.api.models import BlogCreate, BlogOut
 from p3.api.tasks import task_write_blog
 
@@ -77,13 +78,13 @@ def get_blog(slug: str):
 
 
 @router.post("", response_model=dict)
-def create_blog(body: BlogCreate, background_tasks: BackgroundTasks):
+def create_blog(body: BlogCreate):
     """Generate a new blog post from podcast summaries."""
     db = get_db()
     target_date = body.date or datetime.now().strftime("%Y-%m-%d")
 
     job_id = db.create_job("write")
-    background_tasks.add_task(
+    job_runner.enqueue(
         task_write_blog, job_id, body.topic, target_date, body.target_grade
     )
     return {"job_id": job_id}

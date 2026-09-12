@@ -1,82 +1,55 @@
 feeds:
-  # High-value business/investment podcasts
-  - name: "Lenny's Podcast"
-    url: "https://api.substack.com/feed/podcast/10845.rss"
-    category: "AI"
-
-  - name: "How I AI"
-    url: "https://anchor.fm/s/1035b1568/podcast/rss"
-    category: "AI"
-
-  - name: "Sharp or Square"
-    url: "https://www.omnycontent.com/d/playlist/e73c998e-6e60-432f-8610-ae210140c5b1/291fe8ed-f80d-4107-9ee1-b34c015266d0/51f38aeb-0341-43f7-a21b-b34c01526b07/podcast.rss"
-    category: "Gambling"
-
-  # - name: "Acquired"
-  #   url: "hhttps://feeds.transistor.fm/acquired"
-  #   category: "Business"
-
-  # - name: "Invest Like the Best"
-  #   url: "https://feeds.megaphone.fm/CLS2859450455"
-  #   category: "Investing"
-    
-  - name: "The Twenty Minute VC"
-    url: "https://thetwentyminutevc.libsyn.com/rss"
-    category: "Investing"
-      
-  - name: "The AI Breakdown"
-    url: "https://feed.podbean.com/theaibreakdown/feed.xml"
-    category: "AI"
-
-  - name: "Masters in Business"
-    url: "https://omnycontent.com/d/playlist/e73c998e-6e60-432f-8610-ae210140c5b1/4E4CD910-40A1-4619-A5F3-AE2B0012FFFF/5873A3CB-298F-40BC-B71F-AE2B0013000D/podcast.rss"
-    category: "Business"
-
-  - name: "The So What from BCG"
-    url: "https://feeds.captivate.fm/the-so-what-from-bcg/"
-    category: "Business"
-
-  - name: "The So What from BCG"
-    url: "https://feeds.captivate.fm/thinkers-and-ideas/"
-    category: "Business"
-
-  - name: "The McKinsey Podcast"
-    url: "https://www.omnycontent.com/d/playlist/708664bd-6843-4623-8066-aede00ce0c8a/3f6f52af-fba1-496d-b11b-af040139456a/bfe0b44a-082f-495a-952a-af0401394590/podcast.rss"
-    category: "Business"
-
-  - name: "The Economics Show"
-    url: "https://feeds.acast.com/public/shows/the-economics-show-with-soumaya-keynes"
-    category: "Business"
-
-  - name: "The Happiness Lab with Dr. Laurie Santos"
-    url: "https://www.omnycontent.com/d/playlist/e73c998e-6e60-432f-8610-ae210140c5b1/96c5c41e-0bc8-4661-b184-ae32006cd726/d623ef0b-3fee-4c26-b815-ae32006cd739/podcast.rss"
-    category: "Self-Improvement"
-
-  - name: "HBR IdeaCast"
-    url: "http://feeds.harvardbusiness.org/harvardbusiness/ideacast"
-    category: "Business"
-
-  - name: "Think Fast Talk Smart: Communication Techniques"
-    url: "https://feeds.transistor.fm/think-fast-talk-smart-communication-techniques"
-    category: "Self-Improvement"
-
-# Global settings
+- name: Lenny's Podcast
+  url: https://api.substack.com/feed/podcast/10845.rss
+  category: AI
+- name: How I AI
+  url: https://anchor.fm/s/1035b1568/podcast/rss
+  category: AI
+- name: Sharp or Square
+  url: https://www.omnycontent.com/d/playlist/e73c998e-6e60-432f-8610-ae210140c5b1/291fe8ed-f80d-4107-9ee1-b34c015266d0/51f38aeb-0341-43f7-a21b-b34c01526b07/podcast.rss
+  category: Gambling
+- name: The Twenty Minute VC
+  url: https://thetwentyminutevc.libsyn.com/rss
+  category: Investing
+- name: The AI Breakdown
+  url: https://feed.podbean.com/theaibreakdown/feed.xml
+  category: AI
+- name: Masters in Business
+  url: https://omnycontent.com/d/playlist/e73c998e-6e60-432f-8610-ae210140c5b1/4E4CD910-40A1-4619-A5F3-AE2B0012FFFF/5873A3CB-298F-40BC-B71F-AE2B0013000D/podcast.rss
+  category: Business
+- name: The So What from BCG
+  url: https://feeds.captivate.fm/the-so-what-from-bcg/
+  category: Business
+- name: The So What from BCG
+  url: https://feeds.captivate.fm/thinkers-and-ideas/
+  category: Business
+- name: The McKinsey Podcast
+  url: https://www.omnycontent.com/d/playlist/708664bd-6843-4623-8066-aede00ce0c8a/3f6f52af-fba1-496d-b11b-af040139456a/bfe0b44a-082f-495a-952a-af0401394590/podcast.rss
+  category: Business
+- name: The Economics Show
+  url: https://feeds.acast.com/public/shows/the-economics-show-with-soumaya-keynes
+  category: Business
+- name: The Happiness Lab with Dr. Laurie Santos
+  url: https://www.omnycontent.com/d/playlist/e73c998e-6e60-432f-8610-ae210140c5b1/96c5c41e-0bc8-4661-b184-ae32006cd726/d623ef0b-3fee-4c26-b815-ae32006cd739/podcast.rss
+  category: Self-Improvement
+- name: HBR IdeaCast
+  url: http://feeds.harvardbusiness.org/harvardbusiness/ideacast
+  category: Business
+- name: 'Think Fast Talk Smart: Communication Techniques'
+  url: https://feeds.transistor.fm/think-fast-talk-smart-communication-techniques
+  category: Self-Improvement
 settings:
-  audio_format: "wav"
-  max_episodes_per_feed: 2
+  audio_format: wav
+  max_episodes_per_feed: 5
   cleanup_old_files: true
   cleanup_days: 30
-  
-  # Transcription
-  whisper_model: "base"  # tiny, base, small, medium, large
-  parakeet_enabled: true  # Use Parakeet MLX on Apple Silicon
-  parakeet_model: "mlx-community/parakeet-tdt-0.6b-v3"
-  
-  # LLM cleaning
-  llm_provider: "ollama"  # openai, anthropic, ollama
-  llm_model: "llama3.2:latest"  # For Ollama: llama3.2, qwen2.5, etc.
-  ollama_base_url: "http://localhost:11434"
-  
-  # Output
-  export_format: ["html", "markdown"]
+  whisper_model: base
+  parakeet_enabled: true
+  parakeet_model: mlx-community/parakeet-tdt-0.6b-v3
+  llm_provider: ollama
+  llm_model: llama3.2:latest
+  ollama_base_url: http://localhost:11434
+  export_format:
+  - html
+  - markdown
   email_enabled: false

@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import threading
 import uuid
 from datetime import datetime
 from typing import Dict, List, Optional, Any
@@ -16,8 +17,25 @@ class P3Database:
     def __init__(self, db_path: str = "data/p3.duckdb"):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = duckdb.connect(str(self.db_path))
+        self._base_conn = duckdb.connect(str(self.db_path))
+        self._local = threading.local()
         self._initialize_schema()
+
+    @property
+    def conn(self):
+        """Per-thread cursor over the shared DuckDB connection.
+
+        A single DuckDB connection object is not safe for concurrent use. Under
+        FastAPI, sync endpoints run in threadpool workers, so each thread gets
+        its own cursor (sharing the same underlying database) instead.
+        """
+        if self._base_conn is None:
+            return None
+        cursor = getattr(self._local, "cursor", None)
+        if cursor is None:
+            cursor = self._base_conn.cursor()
+            self._local.cursor = cursor
+        return cursor
 
     def __enter__(self):
         return self
@@ -105,6 +123,11 @@ class P3Database:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # Migration: a second, much longer "Coles Notes" style writeup
+        # alongside the short full_summary.
+        self.conn.execute(
+            "ALTER TABLE summaries ADD COLUMN IF NOT EXISTS long_summary TEXT"
+        )
 
         # Jobs table for background task tracking
         self.conn.execute("""
@@ -121,15 +144,79 @@ class P3Database:
                 completed_at TIMESTAMP
             )
         """)
+        # Migration: link jobs to a podcast (fetch jobs have no episode_id)
+        self.conn.execute(
+            "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS podcast_id INTEGER"
+        )
 
-        # Indexes for common query patterns
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_episodes_status ON episodes(status)")
+        # Indexes for common query patterns.
+        #
+        # No index on episodes(status): DuckDB implements an UPDATE of an
+        # indexed column as delete+reinsert of the row, which fails with a
+        # foreign key ConstraintException once any transcript or summary
+        # references that episode (every transcribe/digest job hit this —
+        # the update to 'transcribed'/'processed' failed 100% of the time
+        # after the child row was inserted). A migration below drops the
+        # index if an older database still has it. At this app's scale a
+        # full scan for status filtering is effectively free.
+        self.conn.execute("DROP INDEX IF EXISTS idx_episodes_status")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_episodes_url ON episodes(url)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_transcripts_episode_id ON transcripts(episode_id)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_summaries_digest_date ON summaries(digest_date)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_summaries_episode_id ON summaries(episode_id)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_episode_id ON jobs(episode_id)")
+
+        self._resync_sequences()
+
+    def _resync_sequences(self):
+        """Ensure each id sequence starts past its table's current max id.
+
+        A hard-killed process can leave a sequence's on-disk position behind
+        the table's actual rows (observed after several forced restarts:
+        nextval() handed out an id that already existed, raising a duplicate
+        key constraint error on insert).
+
+        This only issues DDL when a sequence is actually found behind — the
+        common case on every startup is a handful of read-only checks and
+        nothing else. That matters because repairing a sequence requires
+        DROP DEFAULT / DROP SEQUENCE / CREATE SEQUENCE / SET DEFAULT (the id
+        column's DEFAULT nextval(...) is a catalog dependency, so the
+        sequence can't be dropped directly), and a process killed mid-way
+        through that leaves a WAL entry DuckDB cannot replay on next open —
+        which happened here running it unconditionally on every connect.
+        Checking first keeps that four-statement window rare instead of
+        hitting it on every single restart.
+        """
+        for table, seq in (
+            ("podcasts", "podcast_id_seq"),
+            ("episodes", "episode_id_seq"),
+            ("transcripts", "transcript_id_seq"),
+            ("summaries", "summary_id_seq"),
+        ):
+            max_id = self.conn.execute(
+                f"SELECT COALESCE(MAX(id), 0) FROM {table}"
+            ).fetchone()[0]
+            needed = max_id + 1
+
+            row = self.conn.execute(
+                "SELECT last_value, start_value FROM duckdb_sequences() "
+                "WHERE sequence_name = ?",
+                [seq],
+            ).fetchone()
+            if row is None:
+                continue  # sequence missing entirely; leave schema init to create it
+            last_value, start_value = row
+            next_from_seq = last_value + 1 if last_value is not None else start_value
+            if needed <= next_from_seq:
+                continue  # already healthy — no DDL needed
+
+            self.conn.execute(f"ALTER TABLE {table} ALTER COLUMN id DROP DEFAULT")
+            self.conn.execute(f"DROP SEQUENCE IF EXISTS {seq}")
+            self.conn.execute(f"CREATE SEQUENCE {seq} START {needed}")
+            self.conn.execute(
+                f"ALTER TABLE {table} ALTER COLUMN id SET DEFAULT nextval('{seq}')"
+            )
 
     def add_podcast(self, title: str, rss_url: str, category: str = None) -> int:
         """Add new podcast feed."""
@@ -216,7 +303,16 @@ class P3Database:
         )
 
     def add_transcript_segments(self, episode_id: int, segments: List[Dict[str, Any]]):
-        """Add transcript segments for an episode."""
+        """Replace an episode's transcript segments with a fresh set.
+
+        Deletes any existing segments for this episode first. Without this,
+        an episode that was fully transcribed but interrupted before its
+        status flipped to 'transcribed' (a crash, or the FK bug fixed
+        earlier) stays eligible for transcription and gets picked up again —
+        a plain INSERT would then duplicate every segment. This makes a
+        retry idempotent instead.
+        """
+        self.conn.execute("DELETE FROM transcripts WHERE episode_id = ?", (episode_id,))
         for segment in segments:
             self.conn.execute("""
                 INSERT INTO transcripts (episode_id, speaker, timestamp_start, timestamp_end, text, confidence)
@@ -238,6 +334,21 @@ class P3Database:
         """, (episode_id,))
         return self._fetchall_as_dicts(cursor)
 
+    def dedupe_transcripts(self) -> int:
+        """Remove duplicate transcript segments (same episode, timestamps,
+        and text), keeping the earliest-inserted copy. Cleans up episodes
+        that were fully transcribed more than once before this became
+        impossible (see add_transcript_segments). Returns rows deleted."""
+        before = self.conn.execute("SELECT COUNT(*) FROM transcripts").fetchone()[0]
+        self.conn.execute("""
+            DELETE FROM transcripts WHERE id NOT IN (
+                SELECT MIN(id) FROM transcripts
+                GROUP BY episode_id, timestamp_start, timestamp_end, text
+            )
+        """)
+        after = self.conn.execute("SELECT COUNT(*) FROM transcripts").fetchone()[0]
+        return before - after
+
     def get_transcript_by_episode_id(self, episode_id: int) -> Optional[str]:
         """Get the full transcript text for an episode, or None if not transcribed."""
         cursor = self.conn.execute("""
@@ -252,14 +363,25 @@ class P3Database:
 
     def add_summary(self, episode_id: int, key_topics: List[str], themes: List[str],
                    quotes: List[str], startups: List[str], full_summary: str,
-                   digest_date: datetime = None):
-        """Add episode summary."""
+                   digest_date: datetime = None, long_summary: str = None):
+        """Replace this episode's summary with a fresh one. long_summary is
+        the longer, section-by-section "Coles Notes" writeup alongside the
+        short full_summary.
+
+        Deletes any existing summary for the episode first — without this, a
+        redigested episode (e.g. backfilling long_summary onto episodes
+        processed before that field existed) would get a second summary row
+        instead of replacing the first, the same duplication bug fixed
+        earlier for transcripts.
+        """
         if digest_date is None:
             digest_date = datetime.now().date()
 
+        self.conn.execute("DELETE FROM summaries WHERE episode_id = ?", (episode_id,))
         self.conn.execute("""
-            INSERT INTO summaries (episode_id, key_topics, themes, quotes, startups, full_summary, digest_date)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO summaries
+                (episode_id, key_topics, themes, quotes, startups, full_summary, digest_date, long_summary)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             episode_id,
             json.dumps(key_topics),
@@ -267,7 +389,8 @@ class P3Database:
             json.dumps(quotes),
             json.dumps(startups),
             full_summary,
-            digest_date
+            digest_date,
+            long_summary
         ))
 
     def get_summaries_by_date(self, date: datetime) -> List[Dict[str, Any]]:
@@ -302,6 +425,29 @@ class P3Database:
         cursor = self.conn.execute("SELECT * FROM podcasts ORDER BY created_at DESC")
         return self._fetchall_as_dicts(cursor)
 
+    def update_podcast(self, podcast_id: int, title: str = None,
+                       category: str = None):
+        """Update podcast fields. Only non-None arguments are changed.
+
+        rss_url is deliberately not updatable here: DuckDB cannot update an
+        indexed (UNIQUE) column on a row referenced by a foreign key once the
+        podcast has episodes.
+        """
+        parts = []
+        params = []
+        if title is not None:
+            parts.append("title = ?")
+            params.append(title)
+        if category is not None:
+            parts.append("category = ?")
+            params.append(category)
+        if not parts:
+            return
+        params.append(podcast_id)
+        self.conn.execute(
+            f"UPDATE podcasts SET {', '.join(parts)} WHERE id = ?", params
+        )
+
     def delete_podcast(self, podcast_id: int):
         """Delete a podcast and all related data."""
         # Delete in dependency order
@@ -313,6 +459,12 @@ class P3Database:
             DELETE FROM transcripts WHERE episode_id IN
                 (SELECT id FROM episodes WHERE podcast_id = ?)
         """, (podcast_id,))
+        # Jobs for this podcast (fetch jobs) or any of its episodes
+        # (transcribe/digest/pipeline jobs) — must run before episodes are gone.
+        self.conn.execute("""
+            DELETE FROM jobs WHERE podcast_id = ? OR episode_id IN
+                (SELECT id FROM episodes WHERE podcast_id = ?)
+        """, (podcast_id, podcast_id))
         self.conn.execute("DELETE FROM episodes WHERE podcast_id = ?", (podcast_id,))
         self.conn.execute("DELETE FROM podcasts WHERE id = ?", (podcast_id,))
 
@@ -383,13 +535,14 @@ class P3Database:
     # Job tracking
     # ------------------------------------------------------------------
 
-    def create_job(self, job_type: str, episode_id: int = None) -> str:
+    def create_job(self, job_type: str, episode_id: int = None,
+                   podcast_id: int = None) -> str:
         """Create a new background job. Returns the job ID."""
         job_id = str(uuid.uuid4())
         self.conn.execute("""
-            INSERT INTO jobs (id, episode_id, job_type, status)
-            VALUES (?, ?, ?, 'pending')
-        """, (job_id, episode_id, job_type))
+            INSERT INTO jobs (id, episode_id, podcast_id, job_type, status)
+            VALUES (?, ?, ?, ?, 'pending')
+        """, (job_id, episode_id, podcast_id, job_type))
         return job_id
 
     def update_job(self, job_id: str, status: str = None, progress: float = None,
@@ -418,24 +571,87 @@ class P3Database:
         params.append(job_id)
         self.conn.execute(f"UPDATE jobs SET {', '.join(parts)} WHERE id = ?", params)
 
+    def fail_stale_jobs(self) -> int:
+        """Mark jobs left 'pending'/'running' by a previous process as failed.
+
+        The job runner is in-process, so anything not finished when the server
+        stopped will never resume. Returns the number of rows updated.
+        """
+        cursor = self.conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE status IN ('pending', 'running')"
+        )
+        count = cursor.fetchone()[0]
+        if count:
+            self.conn.execute(
+                "UPDATE jobs SET status = 'failed', "
+                "error = 'interrupted: server restarted', "
+                "completed_at = CURRENT_TIMESTAMP "
+                "WHERE status IN ('pending', 'running')"
+            )
+        return count
+
+    # A job's podcast/episode names for display. Fetch jobs carry podcast_id
+    # directly; per-episode jobs resolve it through the episode.
+    _JOBS_SELECT = """
+        SELECT j.*,
+               e.title AS episode_title,
+               p.title AS podcast_title
+        FROM jobs j
+        LEFT JOIN episodes e ON e.id = j.episode_id
+        LEFT JOIN podcasts p ON p.id = COALESCE(j.podcast_id, e.podcast_id)
+    """
+
     def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
         """Get a single job by ID."""
-        cursor = self.conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
+        cursor = self.conn.execute(
+            self._JOBS_SELECT + " WHERE j.id = ?", (job_id,)
+        )
         return self._fetchone_as_dict(cursor)
 
-    def get_recent_jobs(self, limit: int = 20) -> List[Dict[str, Any]]:
-        """Get recent jobs ordered by creation time."""
-        cursor = self.conn.execute(
-            "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)
-        )
+    def get_recent_jobs(self, limit: Optional[int] = 20) -> List[Dict[str, Any]]:
+        """Get recent jobs ordered by creation time. limit=None (or <=0)
+        returns all of them."""
+        sql = self._JOBS_SELECT + " ORDER BY j.created_at DESC"
+        if limit is not None and limit > 0:
+            cursor = self.conn.execute(sql + " LIMIT ?", (limit,))
+        else:
+            cursor = self.conn.execute(sql)
         return self._fetchall_as_dicts(cursor)
 
     def get_active_jobs(self) -> List[Dict[str, Any]]:
         """Get all pending or running jobs."""
         cursor = self.conn.execute(
-            "SELECT * FROM jobs WHERE status IN ('pending', 'running') ORDER BY created_at"
+            self._JOBS_SELECT
+            + " WHERE j.status IN ('pending', 'running') ORDER BY j.created_at"
         )
         return self._fetchall_as_dicts(cursor)
+
+    def get_failed_jobs(self) -> List[Dict[str, Any]]:
+        """Get all failed jobs, newest first."""
+        cursor = self.conn.execute(
+            self._JOBS_SELECT + " WHERE j.status = 'failed' ORDER BY j.created_at DESC"
+        )
+        return self._fetchall_as_dicts(cursor)
+
+    def clear_finished_jobs(self) -> int:
+        """Delete completed and failed jobs. Pending/running jobs are kept."""
+        cursor = self.conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE status IN ('completed', 'failed')"
+        )
+        count = cursor.fetchone()[0]
+        if count:
+            self.conn.execute(
+                "DELETE FROM jobs WHERE status IN ('completed', 'failed')"
+            )
+        return count
+
+    def clear_failed_jobs(self) -> int:
+        """Delete only failed jobs."""
+        cursor = self.conn.execute("SELECT COUNT(*) FROM jobs WHERE status = 'failed'")
+        count = cursor.fetchone()[0]
+        if count:
+            self.conn.execute("DELETE FROM jobs WHERE status = 'failed'")
+        return count
 
     # ------------------------------------------------------------------
     # Stats
@@ -460,10 +676,17 @@ class P3Database:
         stats['active_jobs'] = self.conn.execute(
             "SELECT COUNT(*) FROM jobs WHERE status IN ('pending', 'running')"
         ).fetchone()[0]
+        stats['running_jobs'] = self.conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE status = 'running'"
+        ).fetchone()[0]
+        stats['queued_jobs'] = self.conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE status = 'pending'"
+        ).fetchone()[0]
         return stats
 
     def close(self):
         """Close database connection."""
-        if self.conn:
-            self.conn.close()
-            self.conn = None
+        if self._base_conn is not None:
+            self._base_conn.close()
+            self._base_conn = None
+            self._local = threading.local()

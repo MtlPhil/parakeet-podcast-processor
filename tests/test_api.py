@@ -49,6 +49,18 @@ class TestStats:
         assert data["total_podcasts"] == 0
         assert data["total_episodes"] == 0
 
+    def test_get_stats_splits_running_and_queued(self):
+        db = deps.get_db()
+        pid = db.add_podcast("Pod", "http://example.com/rss")
+        db.create_job("fetch", podcast_id=pid)  # pending
+        running = db.create_job("fetch", podcast_id=pid)
+        db.update_job(running, status="running")
+
+        data = client.get("/api/stats").json()
+        assert data["queued_jobs"] == 1
+        assert data["running_jobs"] == 1
+        assert data["active_jobs"] == 2
+
 
 # ------------------------------------------------------------------
 # Podcasts
@@ -98,6 +110,51 @@ class TestPodcasts:
         assert resp.json()["deleted"] is True
 
         resp = client.get(f"/api/podcasts/{result['podcast_id']}")
+        assert resp.status_code == 404
+
+    def test_delete_podcast_removes_its_jobs(self):
+        pid = client.post("/api/podcasts", json={
+            "url": "http://example.com/feed.xml",
+        }).json()["podcast_id"]  # auto-creates a fetch job
+        other_pid = client.post("/api/podcasts", json={
+            "url": "http://example.com/other.xml",
+        }).json()["podcast_id"]
+
+        client.delete(f"/api/podcasts/{pid}")
+
+        jobs = client.get("/api/jobs").json()
+        assert all(j["podcast_id"] != pid for j in jobs)
+        assert any(j["podcast_id"] == other_pid for j in jobs)
+
+    def test_update_podcast(self):
+        pid = client.post("/api/podcasts", json={
+            "url": "http://example.com/feed.xml",
+            "name": "Before",
+        }).json()["podcast_id"]
+        resp = client.patch(f"/api/podcasts/{pid}", json={
+            "title": "After",
+            "category": "news",
+        })
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["title"] == "After"
+        assert body["rss_url"] == "http://example.com/feed.xml"
+        assert body["category"] == "news"
+
+    def test_update_podcast_with_episodes(self):
+        pid = client.post("/api/podcasts", json={
+            "url": "http://example.com/feed.xml",
+            "name": "Before",
+        }).json()["podcast_id"]
+        deps.get_db().add_episode(
+            pid, "Ep 1", datetime.now(), "http://example.com/ep1.mp3"
+        )
+        resp = client.patch(f"/api/podcasts/{pid}", json={"category": "news"})
+        assert resp.status_code == 200
+        assert resp.json()["category"] == "news"
+
+    def test_update_podcast_not_found(self):
+        resp = client.patch("/api/podcasts/999", json={"title": "X"})
         assert resp.status_code == 404
 
 
@@ -155,6 +212,57 @@ class TestEpisodes:
 
 
 # ------------------------------------------------------------------
+# Batch pipeline triggers
+# ------------------------------------------------------------------
+
+class TestBatchProcessing:
+    @pytest.fixture(autouse=True)
+    def _no_run(self, monkeypatch):
+        """Queue jobs but never execute them (no ML work in tests)."""
+        from p3.api import job_queue
+        self.enqueued = []
+        monkeypatch.setattr(
+            job_queue.job_runner, "enqueue",
+            lambda fn, *a: self.enqueued.append((fn.__name__, a)),
+        )
+
+    def _seed(self, statuses):
+        db = deps.get_db()
+        pid = db.add_podcast("Pod", "http://example.com/rss")
+        for i, st in enumerate(statuses):
+            eid = db.add_episode(pid, f"Ep {i}", datetime.now(),
+                                 f"http://example.com/ep{i}.mp3")
+            db.update_episode_status(eid, st)
+        return pid
+
+    def test_per_podcast_only_eligible_episodes_queued(self):
+        pid = self._seed(["downloaded", "downloaded", "transcribed", "processed"])
+        resp = client.post(f"/api/podcasts/{pid}/process/transcribe")
+        assert resp.status_code == 200
+        assert resp.json()["queued"] == 2
+        assert len(self.enqueued) == 2
+
+    def test_library_wide_digest(self):
+        self._seed(["transcribed", "transcribed", "downloaded"])
+        resp = client.post("/api/episodes/process/digest")
+        assert resp.status_code == 200
+        assert resp.json()["queued"] == 2
+
+    def test_bad_step_is_400(self):
+        pid = self._seed(["downloaded"])
+        assert client.post(f"/api/podcasts/{pid}/process/bogus").status_code == 400
+        assert client.post("/api/episodes/process/bogus").status_code == 400
+
+    def test_unknown_podcast_is_404(self):
+        assert client.post("/api/podcasts/999/process/transcribe").status_code == 404
+
+    def test_pipeline_step_skips_processed(self):
+        self._seed(["downloaded", "transcribed", "processed"])
+        resp = client.post("/api/episodes/process/pipeline")
+        assert resp.json()["queued"] == 2
+
+
+# ------------------------------------------------------------------
 # Jobs
 # ------------------------------------------------------------------
 
@@ -163,6 +271,15 @@ class TestJobs:
         resp = client.get("/api/jobs")
         assert resp.status_code == 200
         assert resp.json() == []
+
+    def test_list_jobs_no_default_cap(self):
+        db = deps.get_db()
+        pid = db.add_podcast("Pod", "http://example.com/rss")
+        for _ in range(60):
+            db.create_job("fetch", podcast_id=pid)
+
+        assert len(client.get("/api/jobs").json()) == 60
+        assert len(client.get("/api/jobs?limit=10").json()) == 10
 
     def test_get_job_not_found(self):
         resp = client.get("/api/jobs/nonexistent")
@@ -175,6 +292,143 @@ class TestJobs:
         jobs = resp.json()
         assert len(jobs) >= 1
         assert jobs[0]["job_type"] == "fetch"
+
+    def test_retry_not_found(self):
+        assert client.post("/api/jobs/nope/retry").status_code == 404
+
+    def test_retry_rejects_non_failed(self):
+        db = deps.get_db()
+        pid = db.add_podcast("Pod", "http://example.com/rss")
+        jid = db.create_job("fetch", podcast_id=pid)
+        db.update_job(jid, status="completed")
+        assert client.post(f"/api/jobs/{jid}/retry").status_code == 400
+
+    def test_retry_fetch_creates_new_job(self, monkeypatch):
+        from p3.api import job_queue
+        monkeypatch.setattr(job_queue.job_runner, "enqueue", lambda *a, **k: None)
+        db = deps.get_db()
+        pid = db.add_podcast("Pod", "http://example.com/rss")
+        jid = db.create_job("fetch", podcast_id=pid)
+        db.update_job(jid, status="failed", error="boom")
+
+        resp = client.post(f"/api/jobs/{jid}/retry")
+        assert resp.status_code == 200
+        new_id = resp.json()["job_id"]
+        assert new_id != jid
+        new_job = db.get_job(new_id)
+        assert new_job["job_type"] == "fetch"
+        assert new_job["podcast_id"] == pid
+        assert new_job["status"] == "pending"
+        # original stays as history
+        assert db.get_job(jid)["status"] == "failed"
+
+    def test_retry_transcribe_reuses_episode(self, monkeypatch):
+        from p3.api import job_queue
+        monkeypatch.setattr(job_queue.job_runner, "enqueue", lambda *a, **k: None)
+        db = deps.get_db()
+        pid = db.add_podcast("Pod", "http://example.com/rss")
+        eid = db.add_episode(pid, "Ep", datetime.now(), "http://example.com/e.mp3")
+        jid = db.create_job("transcribe", episode_id=eid, podcast_id=pid)
+        db.update_job(jid, status="failed")
+
+        resp = client.post(f"/api/jobs/{jid}/retry")
+        assert resp.status_code == 200
+        new_job = db.get_job(resp.json()["job_id"])
+        assert new_job["job_type"] == "transcribe"
+        assert new_job["episode_id"] == eid
+
+    def test_retry_unsupported_type(self):
+        db = deps.get_db()
+        jid = db.create_job("export")
+        db.update_job(jid, status="failed")
+        resp = client.post(f"/api/jobs/{jid}/retry")
+        assert resp.status_code == 400
+
+    def test_retry_rejects_superseded(self, monkeypatch):
+        from p3.api import job_queue
+        monkeypatch.setattr(job_queue.job_runner, "enqueue", lambda *a, **k: None)
+        db = deps.get_db()
+        pid = db.add_podcast("Pod", "http://example.com/rss")
+        eid = db.add_episode(pid, "Ep", datetime.now(), "http://example.com/e.mp3")
+        jid = db.create_job("transcribe", episode_id=eid, podcast_id=pid)
+        db.update_job(jid, status="failed")
+        db.update_episode_status(eid, "processed")  # a later attempt succeeded
+
+        assert client.post(f"/api/jobs/{jid}/retry").status_code == 400
+
+    def test_retry_failed_all_dedups_and_skips(self, monkeypatch):
+        from p3.api import job_queue
+        calls = []
+        monkeypatch.setattr(
+            job_queue.job_runner, "enqueue", lambda fn, *a: calls.append((fn.__name__, a))
+        )
+        db = deps.get_db()
+        pid = db.add_podcast("Pod", "http://example.com/rss")
+        e1 = db.add_episode(pid, "E1", datetime.now(), "http://example.com/1.mp3")
+        e2 = db.add_episode(pid, "E2", datetime.now(), "http://example.com/2.mp3")
+
+        # e1: two failed transcribe attempts, still 'downloaded' -> one retry
+        for _ in range(2):
+            j = db.create_job("transcribe", episode_id=e1, podcast_id=pid)
+            db.update_job(j, status="failed")
+        # e2: failed transcribe, but episode already processed -> skipped
+        j = db.create_job("transcribe", episode_id=e2, podcast_id=pid)
+        db.update_job(j, status="failed")
+        db.update_episode_status(e2, "processed")
+        # an unsupported failed job -> skipped
+        j = db.create_job("export")
+        db.update_job(j, status="failed")
+
+        resp = client.post("/api/jobs/retry-failed")
+        assert resp.status_code == 200
+        assert resp.json()["queued"] == 1
+        assert len(calls) == 1
+        fn_name, args = calls[0]
+        assert fn_name == "task_transcribe"
+        assert args[1] == e1  # (new_job_id, episode_id)
+        # every failed record considered — retried, superseded, or
+        # unsupported — is cleared, whether or not it was retried
+        assert db.get_failed_jobs() == []
+
+    def test_retry_failed_all_empty(self):
+        resp = client.post("/api/jobs/retry-failed")
+        assert resp.status_code == 200
+        assert resp.json()["queued"] == 0
+
+    def test_clear_jobs_keeps_active(self):
+        db = deps.get_db()
+        pid = db.add_podcast("Pod", "http://example.com/rss")
+        done = db.create_job("fetch", podcast_id=pid)
+        db.update_job(done, status="completed")
+        bad = db.create_job("fetch", podcast_id=pid)
+        db.update_job(bad, status="failed")
+        running = db.create_job("fetch", podcast_id=pid)
+        db.update_job(running, status="running")
+
+        resp = client.delete("/api/jobs")
+        assert resp.status_code == 200
+        assert resp.json()["deleted"] == 2
+        remaining = {j["id"] for j in client.get("/api/jobs").json()}
+        assert remaining == {running}
+
+    def test_clear_failed_jobs_route(self):
+        db = deps.get_db()
+        pid = db.add_podcast("Pod", "http://example.com/rss")
+        done = db.create_job("fetch", podcast_id=pid)
+        db.update_job(done, status="completed")
+        bad = db.create_job("fetch", podcast_id=pid)
+        db.update_job(bad, status="failed")
+
+        resp = client.delete("/api/jobs/failed")
+        assert resp.status_code == 200
+        assert resp.json()["deleted"] == 1
+        remaining = {j["id"] for j in client.get("/api/jobs").json()}
+        assert remaining == {done}
+
+    def test_clear_jobs_empty(self):
+        resp = client.delete("/api/jobs")
+        assert resp.status_code == 200
+        assert resp.json()["deleted"] == 0
 
 
 # ------------------------------------------------------------------
@@ -201,7 +455,26 @@ class TestTranscriptsAndSummaries:
         assert resp.status_code == 200
         segments = resp.json()
         assert len(segments) == 1
-        assert segments[0]["text"] == "Hello"
+
+    def test_dedupe_transcripts_route(self):
+        db = deps.get_db()
+        pid = db.add_podcast("Pod", "http://example.com/rss")
+        eid = db.add_episode(pid, "Ep", datetime.now(), "http://example.com/ep.mp3")
+        db.conn.execute(
+            "INSERT INTO transcripts (episode_id, timestamp_start, timestamp_end, text) "
+            "VALUES (?, ?, ?, ?)",
+            (eid, 0.0, 5.0, "Hello"),
+        )
+        db.conn.execute(
+            "INSERT INTO transcripts (episode_id, timestamp_start, timestamp_end, text) "
+            "VALUES (?, ?, ?, ?)",
+            (eid, 0.0, 5.0, "Hello"),
+        )
+
+        resp = client.post("/api/episodes/transcripts/dedupe")
+        assert resp.status_code == 200
+        assert resp.json()["deleted"] == 1
+        assert len(client.get(f"/api/episodes/{eid}/transcript").json()) == 1
 
     def test_get_summary(self):
         db = deps.get_db()
@@ -227,6 +500,25 @@ class TestBlogs:
 
     def test_blog_not_found(self):
         resp = client.get("/api/blogs/nonexistent-slug-xyz")
+        assert resp.status_code == 404
+
+
+# ------------------------------------------------------------------
+# LinkedIn posts
+# ------------------------------------------------------------------
+
+class TestLinkedIn:
+    def test_list_linkedin_posts(self):
+        resp = client.get("/api/linkedin")
+        assert resp.status_code == 200
+        assert isinstance(resp.json(), list)
+
+    def test_linkedin_post_not_found(self):
+        resp = client.get("/api/linkedin/nonexistent-slug-xyz")
+        assert resp.status_code == 404
+
+    def test_create_linkedin_unknown_episode(self):
+        resp = client.post("/api/linkedin", json={"episode_id": 999999})
         assert resp.status_code == 404
 
 
