@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import {
   getPodcast,
@@ -28,25 +28,23 @@ export default function PodcastDetail() {
   const [busy, setBusy] = useState(false);
   const { job, isPolling, startPolling } = useJobPoller();
 
-  const load = async () => {
-    try {
-      const [p, eps] = await Promise.all([
-        getPodcast(id),
-        getEpisodes({ podcast_id: id }),
-      ]);
-      setPodcast(p);
-      setEpisodes(eps);
-    } catch (e) {
-      setError(e.message);
-    }
-  };
+  const load = useCallback(
+    () =>
+      Promise.all([getPodcast(id), getEpisodes({ podcast_id: id })])
+        .then(([p, eps]) => {
+          setPodcast(p);
+          setEpisodes(eps);
+        })
+        .catch((e) => setError(e.message)),
+    [id]
+  );
 
-  useEffect(() => { load(); }, [id]);
+  useEffect(() => { load(); }, [load]);
 
   // Reload episodes when a job finishes
   useEffect(() => {
     if (job?.status === 'completed') load();
-  }, [job?.status]);
+  }, [job?.status, load]);
 
   const handleFetch = async () => {
     try {

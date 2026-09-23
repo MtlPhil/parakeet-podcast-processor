@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   getBlogs, getBlog, createBlog,
   getLinkedInPosts, getLinkedInPost, createLinkedInPost,
@@ -30,34 +30,28 @@ export default function BlogPosts() {
   const [error, setError] = useState(null);
   const { job, isPolling, startPolling } = useJobPoller();
 
-  const loadLinkedin = async () => {
-    try {
-      setLinkedinPosts(await getLinkedInPosts());
-    } catch (e) {
-      setError(e.message);
-    }
-  };
+  const loadLinkedin = useCallback(
+    () => getLinkedInPosts().then(setLinkedinPosts).catch((e) => setError(e.message)),
+    []
+  );
 
-  const loadBlogs = async () => {
-    try {
-      setBlogs(await getBlogs());
-    } catch (e) {
-      setError(e.message);
-    }
-  };
+  const loadBlogs = useCallback(
+    () => getBlogs().then(setBlogs).catch((e) => setError(e.message)),
+    []
+  );
 
   useEffect(() => {
     loadLinkedin();
     loadBlogs();
     getEpisodes({ status: 'processed' }).then(setEpisodes).catch((e) => setError(e.message));
-  }, []);
+  }, [loadLinkedin, loadBlogs]);
 
   useEffect(() => {
     if (job?.status === 'completed') {
       loadLinkedin();
       loadBlogs();
     }
-  }, [job?.status]);
+  }, [job?.status, loadLinkedin, loadBlogs]);
 
   // Distinct podcasts derived from the processed-episode list, for the
   // first-level dropdown.

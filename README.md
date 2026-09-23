@@ -386,9 +386,9 @@ pip install -e ".[dev,web]"
 PYTHONPATH=. pytest tests/ -v        # full suite, no network or models needed
 ```
 
-`black`, `isort` and `mypy` are included in the `dev` extra and configured in
-`pyproject.toml`, and `npm run lint` runs ESLint for the frontend. The codebase
-is not yet fully clean under these tools (see [ROADMAP.md](ROADMAP.md)).
+`npm run lint` (in `frontend/`) runs ESLint for the frontend. `black`, `isort`
+and `mypy` are included in the `dev` extra and configured in `pyproject.toml`;
+the Python code is not yet fully clean under them (see [ROADMAP.md](ROADMAP.md)).
 
 Tests cover the database layer, API endpoints (through `TestClient` against a
 temporary database), the job queue, text-processing helpers in the cleaner and

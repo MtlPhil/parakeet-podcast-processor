@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { getPodcasts, deletePodcast } from '../api/client';
 
@@ -6,15 +6,12 @@ export default function PodcastList() {
   const [podcasts, setPodcasts] = useState([]);
   const [error, setError] = useState(null);
 
-  const load = async () => {
-    try {
-      setPodcasts(await getPodcasts());
-    } catch (e) {
-      setError(e.message);
-    }
-  };
+  const load = useCallback(
+    () => getPodcasts().then(setPodcasts).catch((e) => setError(e.message)),
+    []
+  );
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [load]);
 
   const handleDelete = async (id, title) => {
     if (!confirm(`Delete "${title}" and all its episodes?`)) return;

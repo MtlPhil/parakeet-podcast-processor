@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
   getEpisode,
@@ -30,28 +30,27 @@ export default function EpisodeDetail() {
   const [linkedinProvider, setLinkedinProvider] = useState('');
   const { job, isPolling, startPolling } = useJobPoller();
 
-  const load = async () => {
-    try {
-      const ep = await getEpisode(id);
-      setEpisode(ep);
-      // Load transcript if transcribed
-      if (ep.status === 'transcribed' || ep.status === 'processed') {
-        getTranscript(id).then(setTranscript).catch(() => {});
-      }
-      // Load summary if processed
-      if (ep.status === 'processed') {
-        getSummary(id).then(setSummary).catch(() => {});
-      }
-    } catch (e) {
-      setError(e.message);
-    }
-  };
+  const load = useCallback(
+    () =>
+      getEpisode(id)
+        .then((ep) => {
+          setEpisode(ep);
+          if (ep.status === 'transcribed' || ep.status === 'processed') {
+            getTranscript(id).then(setTranscript).catch(() => {});
+          }
+          if (ep.status === 'processed') {
+            getSummary(id).then(setSummary).catch(() => {});
+          }
+        })
+        .catch((e) => setError(e.message)),
+    [id]
+  );
 
-  useEffect(() => { load(); }, [id]);
+  useEffect(() => { load(); }, [load]);
 
   useEffect(() => {
     if (job?.status === 'completed') load();
-  }, [job?.status]);
+  }, [job?.status, load]);
 
   const handleAction = async (action) => {
     try {
