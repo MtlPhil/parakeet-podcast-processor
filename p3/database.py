@@ -4,7 +4,7 @@ import json
 import logging
 import threading
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -215,7 +215,9 @@ class P3Database:
                 f"ALTER TABLE {table} ALTER COLUMN id SET DEFAULT nextval('{seq}')"
             )
 
-    def add_podcast(self, title: str, rss_url: str, category: str = None) -> int:
+    def add_podcast(
+        self, title: str, rss_url: str, category: Optional[str] = None
+    ) -> int:
         """Add new podcast feed."""
         next_id = self.conn.execute("SELECT nextval('podcast_id_seq')").fetchone()[0]
         self.conn.execute(
@@ -237,7 +239,7 @@ class P3Database:
         title: str,
         date: datetime,
         url: str,
-        file_path: str = None,
+        file_path: Optional[str] = None,
     ) -> int:
         """Add new episode."""
         next_id = self.conn.execute("SELECT nextval('episode_id_seq')").fetchone()[0]
@@ -285,7 +287,7 @@ class P3Database:
         return self._fetchall_as_dicts(cursor)
 
     def get_episodes_by_date_and_status(
-        self, target_date, status: str = None
+        self, target_date, status: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """Get episodes matching a publication date, optionally filtered by status.
 
@@ -394,8 +396,8 @@ class P3Database:
         quotes: List[str],
         startups: List[str],
         full_summary: str,
-        digest_date: datetime = None,
-        long_summary: str = None,
+        digest_date: Optional[date] = None,
+        long_summary: Optional[str] = None,
     ):
         """Replace this episode's summary with a fresh one.
 
@@ -468,7 +470,12 @@ class P3Database:
         cursor = self.conn.execute("SELECT * FROM podcasts ORDER BY created_at DESC")
         return self._fetchall_as_dicts(cursor)
 
-    def update_podcast(self, podcast_id: int, title: str = None, category: str = None):
+    def update_podcast(
+        self,
+        podcast_id: int,
+        title: Optional[str] = None,
+        category: Optional[str] = None,
+    ):
         """Update podcast fields. Only non-None arguments are changed.
 
         rss_url is deliberately not updatable here: DuckDB cannot update an
@@ -476,7 +483,7 @@ class P3Database:
         podcast has episodes.
         """
         parts = []
-        params = []
+        params: List[Any] = []
         if title is not None:
             parts.append("title = ?")
             params.append(title)
@@ -593,7 +600,10 @@ class P3Database:
     # ------------------------------------------------------------------
 
     def create_job(
-        self, job_type: str, episode_id: int = None, podcast_id: int = None
+        self,
+        job_type: str,
+        episode_id: Optional[int] = None,
+        podcast_id: Optional[int] = None,
     ) -> str:
         """Create a new background job. Returns the job ID."""
         job_id = str(uuid.uuid4())
@@ -609,14 +619,14 @@ class P3Database:
     def update_job(
         self,
         job_id: str,
-        status: str = None,
-        progress: float = None,
-        message: str = None,
-        error: str = None,
+        status: Optional[str] = None,
+        progress: Optional[float] = None,
+        message: Optional[str] = None,
+        error: Optional[str] = None,
     ):
         """Update job status/progress."""
         parts = []
-        params = []
+        params: List[Any] = []
         if status is not None:
             parts.append("status = ?")
             params.append(status)

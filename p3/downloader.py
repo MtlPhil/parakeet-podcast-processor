@@ -1,5 +1,6 @@
 """Podcast episode downloader and RSS feed processor."""
 
+import calendar
 import hashlib
 import logging
 import os
@@ -42,6 +43,7 @@ def _retry_request(method: str, url: str, **kwargs) -> requests.Response:
                 wait,
             )
             time.sleep(wait)
+    raise AssertionError("unreachable: the final attempt re-raises")
 
 
 def _safe_filename(title: str, max_length: int = 50) -> str:
@@ -75,14 +77,14 @@ class PodcastDownloader:
         self.audio_format = audio_format
         self.progress_callback = progress_callback
 
-    def add_feed(self, name: str, url: str, category: str = None) -> int:
+    def add_feed(self, name: str, url: str, category: Optional[str] = None) -> int:
         """Add a new podcast feed to the database."""
         existing = self.db.get_podcast_by_url(url)
         if existing:
             return existing["id"]
         return self.db.add_podcast(name, url, category)
 
-    def fetch_episodes(self, rss_url: str, limit: int = None) -> List[Dict]:
+    def fetch_episodes(self, rss_url: str, limit: Optional[int] = None) -> List[Dict]:
         """Fetch episode metadata from RSS feed."""
         if limit is None:
             limit = self.max_episodes
@@ -102,14 +104,13 @@ class PodcastDownloader:
                 if not audio_url:
                     continue
 
-                # Parse publication date
-                pub_date = None
-                if hasattr(entry, "published_parsed") and entry.published_parsed:
-                    pub_date = datetime(
-                        *entry.published_parsed[:6], tzinfo=timezone.utc
-                    )
-                elif hasattr(entry, "updated_parsed") and entry.updated_parsed:
-                    pub_date = datetime(*entry.updated_parsed[:6], tzinfo=timezone.utc)
+                # Publication date; feedparser normalizes both fields to UTC.
+                parsed = entry.get("published_parsed") or entry.get("updated_parsed")
+                pub_date = (
+                    datetime.fromtimestamp(calendar.timegm(parsed), tz=timezone.utc)
+                    if parsed
+                    else None
+                )
 
                 episodes.append(
                     {
@@ -242,6 +243,7 @@ class PodcastDownloader:
             filename = f"{podcast['id']}_{safe_title}_{url_hash}"
             output_path = self.audio_dir / f"{filename}.{self.audio_format}"
 
+            file_path: Optional[str]
             if output_path.exists() and output_path.stat().st_size > 0:
                 logger.info("Reusing existing audio file for: %s", ep_data["title"])
                 file_path = str(output_path)

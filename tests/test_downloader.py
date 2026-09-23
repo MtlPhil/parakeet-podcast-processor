@@ -143,3 +143,27 @@ class TestProcessFeedResume:
 
         assert count == 0
         db.add_episode.assert_not_called()
+
+
+class TestFetchEpisodesDates:
+    _FEED = """<?xml version="1.0"?><rss version="2.0"><channel><title>T</title>
+<item><title>A</title><pubDate>Tue, 02 Sep 2025 14:30:00 -0400</pubDate>
+<enclosure url="http://x/a.mp3" type="audio/mpeg"/></item>
+<item><title>B</title><enclosure url="http://x/b.mp3" type="audio/mpeg"/></item>
+</channel></rss>"""
+
+    def test_publication_dates_are_utc_or_none(self, tmp_path, monkeypatch):
+        from datetime import datetime, timezone
+
+        import feedparser
+
+        from p3 import downloader
+
+        feed = feedparser.parse(self._FEED)
+        monkeypatch.setattr(downloader.feedparser, "parse", lambda url: feed)
+        dl = downloader.PodcastDownloader(db=MagicMock(), data_dir=str(tmp_path))
+
+        episodes = dl.fetch_episodes("http://example.com/rss")
+
+        assert episodes[0]["date"] == datetime(2025, 9, 2, 18, 30, tzinfo=timezone.utc)
+        assert episodes[1]["date"] is None

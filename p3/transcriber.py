@@ -39,8 +39,9 @@ class AudioTranscriber:
         self.whisper_model = whisper_model
         self.use_parakeet = use_parakeet
         self.parakeet_model = parakeet_model
-        self._whisper = None
-        self._parakeet = None
+        # Loaded lazily; both libraries are untyped.
+        self._whisper: Any = None
+        self._parakeet: Any = None
 
     def _load_whisper(self):
         """Lazy load Whisper model."""

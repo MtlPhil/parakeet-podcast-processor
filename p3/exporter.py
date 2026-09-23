@@ -5,7 +5,7 @@ import logging
 from datetime import date, datetime
 from html import escape
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,7 @@ def _segments_to_prose(
 
 
 class DigestExporter:
-    def __init__(self, db, export_dir: str = None):
+    def __init__(self, db, export_dir: Optional[str] = None):
         self.db = db
         self.export_dir = Path(export_dir) if export_dir else DEFAULT_EXPORT_DIR
         self.export_dir.mkdir(parents=True, exist_ok=True)

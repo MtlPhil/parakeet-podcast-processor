@@ -41,11 +41,6 @@ area, not ordered by priority.
 - **Investment-thesis generation.** Turn recurring themes across episodes into
   structured investment or research theses.
 
-## Code quality
-
-- Bring the codebase to a clean `black`/`isort`/`mypy` baseline and enforce it
-  in CI.
-
 ## Testing
 
 - Integration coverage for the CLI commands, RSS parsing and download,

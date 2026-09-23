@@ -2,6 +2,7 @@
 
 import io
 import zipfile
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
@@ -66,7 +67,7 @@ def add_podcast(body: PodcastCreate):
 
 
 @router.post("/{podcast_id}/fetch", response_model=dict)
-def fetch_podcast(podcast_id: int, body: FetchAction = None):
+def fetch_podcast(podcast_id: int, body: Optional[FetchAction] = None):
     """Trigger a new fetch for an existing podcast."""
     db = get_db()
     podcast = db.get_podcast_by_id(podcast_id)
@@ -146,6 +147,8 @@ def update_podcast(podcast_id: int, body: PodcastUpdate):
 
     db.update_podcast(podcast_id, title=body.title, category=body.category)
     updated = db.get_podcast_by_id(podcast_id)
+    if not updated:
+        raise HTTPException(404, "Podcast not found")
     updated["episode_count"] = len(db.get_episodes_by_podcast(podcast_id))
     return updated
 

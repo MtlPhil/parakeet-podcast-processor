@@ -10,6 +10,7 @@ import logging
 import threading
 import time
 from datetime import datetime
+from typing import Optional
 
 from p3.api.deps import get_db, load_config
 from p3.api.job_queue import job_runner
@@ -34,7 +35,9 @@ def _make_transcriber(db, settings: dict):
     )
 
 
-def _make_cleaner(db, settings: dict, provider: str = None, model: str = None):
+def _make_cleaner(
+    db, settings: dict, provider: Optional[str] = None, model: Optional[str] = None
+):
     from p3.cleaner import TranscriptCleaner
 
     llm_provider, llm_model = resolve_provider_and_model(settings, provider, model)
@@ -46,7 +49,13 @@ def _make_cleaner(db, settings: dict, provider: str = None, model: str = None):
     )
 
 
-def _make_writer(db, settings: dict, provider: str = None, model: str = None, **kwargs):
+def _make_writer(
+    db,
+    settings: dict,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    **kwargs,
+):
     from p3.writer import BlogWriter
 
     llm_provider, llm_model = resolve_provider_and_model(settings, provider, model)
@@ -271,8 +280,8 @@ def task_write_blog(
     topic: str,
     target_date: str,
     target_grade: float = 91.0,
-    provider: str = None,
-    model: str = None,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
 ):
     """Generate a blog post from podcast summaries."""
     db = get_db()
@@ -310,7 +319,10 @@ def task_write_blog(
 
 
 def task_write_linkedin(
-    job_id: str, episode_id: int, provider: str = None, model: str = None
+    job_id: str,
+    episode_id: int,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
 ):
     """Generate a LinkedIn post (English + Quebec French) from one episode."""
     db = get_db()
@@ -345,7 +357,10 @@ def task_write_linkedin(
 
 
 def task_generate_synopsis(
-    job_id: str, episode_id: int, provider: str = None, model: str = None
+    job_id: str,
+    episode_id: int,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
 ):
     """Generate the on-demand long-form synopsis for one episode."""
     db = get_db()
@@ -429,6 +444,11 @@ def task_full_pipeline(job_id: str, episode_id: int):
 
         # Step 2: Digest (if needed)
         episode = db.get_episode_by_id(episode_id)
+        if not episode:
+            db.update_job(
+                job_id, status="failed", error=f"Episode {episode_id} not found"
+            )
+            return
         if episode["status"] == "transcribed":
             db.update_job(job_id, progress=0.5, message="Generating summary...")
             cleaner = _make_cleaner(db, settings)

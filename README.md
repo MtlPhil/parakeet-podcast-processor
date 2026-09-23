@@ -384,11 +384,15 @@ balanced-brace matching. List fields are coerced to plain strings.
 ```bash
 pip install -e ".[dev,web]"
 PYTHONPATH=. pytest tests/ -v        # full suite, no network or models needed
+black . && isort .                   # formatting
+mypy p3/                             # type checking
+cd frontend && npm run lint          # frontend lint
 ```
 
-`npm run lint` (in `frontend/`) runs ESLint for the frontend. `black`, `isort`
-and `mypy` are included in the `dev` extra and configured in `pyproject.toml`;
-the Python code is not yet fully clean under them (see [ROADMAP.md](ROADMAP.md)).
+GitHub Actions runs all of these on every push to `main` and on pull requests
+(`.github/workflows/ci.yml`): formatting checks, mypy and the test suite on an
+Apple Silicon macOS runner, and ESLint plus a production build for the
+frontend.
 
 Tests cover the database layer, API endpoints (through `TestClient` against a
 temporary database), the job queue, text-processing helpers in the cleaner and

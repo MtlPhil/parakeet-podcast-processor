@@ -9,7 +9,7 @@ import logging
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from .database import P3Database
 from .llm import DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_URL, LLMClient
@@ -50,7 +50,7 @@ class BlogWriter:
         self,
         topic: str,
         summaries: List[Dict[str, Any]],
-        context_posts: List[str] = None,
+        context_posts: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Generate blog post from one or more podcast summaries with iterative AP English grading.
 
@@ -147,7 +147,7 @@ class BlogWriter:
     # ------------------------------------------------------------------
 
     def _build_writing_prompt(
-        self, topic: str, context: str, context_posts: List[str] = None
+        self, topic: str, context: str, context_posts: Optional[List[str]] = None
     ) -> str:
         """Build the initial writing prompt."""
 
