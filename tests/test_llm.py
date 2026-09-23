@@ -15,15 +15,22 @@ class TestResolveProviderAndModel:
         assert resolve_provider_and_model(settings) == ("openai", "gpt-4o-mini")
 
     def test_gemini_uses_gemini_model_setting(self):
-        settings = {"llm_provider": "ollama", "llm_model": "llama3.2:latest",
-                    "gemini_model": "gemini-test"}
+        settings = {
+            "llm_provider": "ollama",
+            "llm_model": "llama3.2:latest",
+            "gemini_model": "gemini-test",
+        }
         assert resolve_provider_and_model(settings, provider="gemini") == (
-            "gemini", "gemini-test"
+            "gemini",
+            "gemini-test",
         )
 
     def test_explicit_model_wins(self):
         settings = {"llm_provider": "gemini", "gemini_model": "gemini-test"}
-        assert resolve_provider_and_model(settings, model="custom") == ("gemini", "custom")
+        assert resolve_provider_and_model(settings, model="custom") == (
+            "gemini",
+            "custom",
+        )
 
 
 class TestLoadApiKey:

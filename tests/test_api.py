@@ -14,6 +14,7 @@ _tmp_dir = tempfile.mkdtemp()
 _tmp_db = os.path.join(_tmp_dir, "test.duckdb")
 
 import p3.api.deps as deps
+
 deps._DB_PATH = _tmp_db
 deps._CONFIG_PATH = os.path.join(_tmp_dir, "feeds.yaml")
 
@@ -41,6 +42,7 @@ def _reset_db():
 # Stats
 # ------------------------------------------------------------------
 
+
 class TestStats:
     def test_get_stats(self):
         resp = client.get("/api/stats")
@@ -66,6 +68,7 @@ class TestStats:
 # Podcasts
 # ------------------------------------------------------------------
 
+
 class TestPodcasts:
     def test_list_empty(self):
         resp = client.get("/api/podcasts")
@@ -73,11 +76,14 @@ class TestPodcasts:
         assert resp.json() == []
 
     def test_add_podcast(self):
-        resp = client.post("/api/podcasts", json={
-            "url": "http://example.com/feed.xml",
-            "name": "Test Podcast",
-            "category": "tech",
-        })
+        resp = client.post(
+            "/api/podcasts",
+            json={
+                "url": "http://example.com/feed.xml",
+                "name": "Test Podcast",
+                "category": "tech",
+            },
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert "podcast_id" in data
@@ -89,10 +95,13 @@ class TestPodcasts:
         assert resp.status_code == 409
 
     def test_get_podcast(self):
-        result = client.post("/api/podcasts", json={
-            "url": "http://example.com/feed.xml",
-            "name": "My Pod",
-        }).json()
+        result = client.post(
+            "/api/podcasts",
+            json={
+                "url": "http://example.com/feed.xml",
+                "name": "My Pod",
+            },
+        ).json()
         resp = client.get(f"/api/podcasts/{result['podcast_id']}")
         assert resp.status_code == 200
         assert resp.json()["title"] == "My Pod"
@@ -102,9 +111,12 @@ class TestPodcasts:
         assert resp.status_code == 404
 
     def test_delete_podcast(self):
-        result = client.post("/api/podcasts", json={
-            "url": "http://example.com/feed.xml",
-        }).json()
+        result = client.post(
+            "/api/podcasts",
+            json={
+                "url": "http://example.com/feed.xml",
+            },
+        ).json()
         resp = client.delete(f"/api/podcasts/{result['podcast_id']}")
         assert resp.status_code == 200
         assert resp.json()["deleted"] is True
@@ -113,12 +125,20 @@ class TestPodcasts:
         assert resp.status_code == 404
 
     def test_delete_podcast_removes_its_jobs(self):
-        pid = client.post("/api/podcasts", json={
-            "url": "http://example.com/feed.xml",
-        }).json()["podcast_id"]  # auto-creates a fetch job
-        other_pid = client.post("/api/podcasts", json={
-            "url": "http://example.com/other.xml",
-        }).json()["podcast_id"]
+        pid = client.post(
+            "/api/podcasts",
+            json={
+                "url": "http://example.com/feed.xml",
+            },
+        ).json()[
+            "podcast_id"
+        ]  # auto-creates a fetch job
+        other_pid = client.post(
+            "/api/podcasts",
+            json={
+                "url": "http://example.com/other.xml",
+            },
+        ).json()["podcast_id"]
 
         client.delete(f"/api/podcasts/{pid}")
 
@@ -127,14 +147,20 @@ class TestPodcasts:
         assert any(j["podcast_id"] == other_pid for j in jobs)
 
     def test_update_podcast(self):
-        pid = client.post("/api/podcasts", json={
-            "url": "http://example.com/feed.xml",
-            "name": "Before",
-        }).json()["podcast_id"]
-        resp = client.patch(f"/api/podcasts/{pid}", json={
-            "title": "After",
-            "category": "news",
-        })
+        pid = client.post(
+            "/api/podcasts",
+            json={
+                "url": "http://example.com/feed.xml",
+                "name": "Before",
+            },
+        ).json()["podcast_id"]
+        resp = client.patch(
+            f"/api/podcasts/{pid}",
+            json={
+                "title": "After",
+                "category": "news",
+            },
+        )
         assert resp.status_code == 200
         body = resp.json()
         assert body["title"] == "After"
@@ -142,10 +168,13 @@ class TestPodcasts:
         assert body["category"] == "news"
 
     def test_update_podcast_with_episodes(self):
-        pid = client.post("/api/podcasts", json={
-            "url": "http://example.com/feed.xml",
-            "name": "Before",
-        }).json()["podcast_id"]
+        pid = client.post(
+            "/api/podcasts",
+            json={
+                "url": "http://example.com/feed.xml",
+                "name": "Before",
+            },
+        ).json()["podcast_id"]
         deps.get_db().add_episode(
             pid, "Ep 1", datetime.now(), "http://example.com/ep1.mp3"
         )
@@ -162,12 +191,18 @@ class TestPodcasts:
 # Episodes
 # ------------------------------------------------------------------
 
+
 class TestEpisodes:
     def _seed_episode(self):
         db = deps.get_db()
         pid = db.add_podcast("Pod", "http://example.com/rss")
-        eid = db.add_episode(pid, "Ep 1", datetime.now(), "http://example.com/ep1.mp3",
-                             file_path="/tmp/audio.wav")
+        eid = db.add_episode(
+            pid,
+            "Ep 1",
+            datetime.now(),
+            "http://example.com/ep1.mp3",
+            file_path="/tmp/audio.wav",
+        )
         return pid, eid
 
     def test_list_episodes_empty(self):
@@ -227,14 +262,17 @@ class TestEpisodes:
 # Batch pipeline triggers
 # ------------------------------------------------------------------
 
+
 class TestBatchProcessing:
     @pytest.fixture(autouse=True)
     def _no_run(self, monkeypatch):
         """Queue jobs but never execute them (no ML work in tests)."""
         from p3.api import job_queue
+
         self.enqueued = []
         monkeypatch.setattr(
-            job_queue.job_runner, "enqueue",
+            job_queue.job_runner,
+            "enqueue",
             lambda fn, *a: self.enqueued.append((fn.__name__, a)),
         )
 
@@ -242,8 +280,9 @@ class TestBatchProcessing:
         db = deps.get_db()
         pid = db.add_podcast("Pod", "http://example.com/rss")
         for i, st in enumerate(statuses):
-            eid = db.add_episode(pid, f"Ep {i}", datetime.now(),
-                                 f"http://example.com/ep{i}.mp3")
+            eid = db.add_episode(
+                pid, f"Ep {i}", datetime.now(), f"http://example.com/ep{i}.mp3"
+            )
             db.update_episode_status(eid, st)
         return pid
 
@@ -277,6 +316,7 @@ class TestBatchProcessing:
 # ------------------------------------------------------------------
 # Jobs
 # ------------------------------------------------------------------
+
 
 class TestJobs:
     def test_list_jobs_empty(self):
@@ -317,6 +357,7 @@ class TestJobs:
 
     def test_retry_fetch_creates_new_job(self, monkeypatch):
         from p3.api import job_queue
+
         monkeypatch.setattr(job_queue.job_runner, "enqueue", lambda *a, **k: None)
         db = deps.get_db()
         pid = db.add_podcast("Pod", "http://example.com/rss")
@@ -336,6 +377,7 @@ class TestJobs:
 
     def test_retry_transcribe_reuses_episode(self, monkeypatch):
         from p3.api import job_queue
+
         monkeypatch.setattr(job_queue.job_runner, "enqueue", lambda *a, **k: None)
         db = deps.get_db()
         pid = db.add_podcast("Pod", "http://example.com/rss")
@@ -358,6 +400,7 @@ class TestJobs:
 
     def test_retry_rejects_superseded(self, monkeypatch):
         from p3.api import job_queue
+
         monkeypatch.setattr(job_queue.job_runner, "enqueue", lambda *a, **k: None)
         db = deps.get_db()
         pid = db.add_podcast("Pod", "http://example.com/rss")
@@ -370,9 +413,12 @@ class TestJobs:
 
     def test_retry_failed_all_dedups_and_skips(self, monkeypatch):
         from p3.api import job_queue
+
         calls = []
         monkeypatch.setattr(
-            job_queue.job_runner, "enqueue", lambda fn, *a: calls.append((fn.__name__, a))
+            job_queue.job_runner,
+            "enqueue",
+            lambda fn, *a: calls.append((fn.__name__, a)),
         )
         db = deps.get_db()
         pid = db.add_podcast("Pod", "http://example.com/rss")
@@ -447,6 +493,7 @@ class TestJobs:
 # Transcripts & Summaries
 # ------------------------------------------------------------------
 
+
 class TestTranscriptsAndSummaries:
     def test_transcript_not_found(self):
         resp = client.get("/api/episodes/999/transcript")
@@ -460,9 +507,18 @@ class TestTranscriptsAndSummaries:
         db = deps.get_db()
         pid = db.add_podcast("Pod", "http://example.com/rss")
         eid = db.add_episode(pid, "Ep", datetime.now(), "http://example.com/ep.mp3")
-        db.add_transcript_segments(eid, [
-            {"start": 0, "end": 5, "text": "Hello", "speaker": None, "confidence": 0.9}
-        ])
+        db.add_transcript_segments(
+            eid,
+            [
+                {
+                    "start": 0,
+                    "end": 5,
+                    "text": "Hello",
+                    "speaker": None,
+                    "confidence": 0.9,
+                }
+            ],
+        )
         resp = client.get(f"/api/episodes/{eid}/transcript")
         assert resp.status_code == 200
         segments = resp.json()
@@ -504,6 +560,7 @@ class TestTranscriptsAndSummaries:
 # Blogs
 # ------------------------------------------------------------------
 
+
 class TestBlogs:
     def test_list_blogs(self):
         resp = client.get("/api/blogs")
@@ -518,6 +575,7 @@ class TestBlogs:
 # ------------------------------------------------------------------
 # LinkedIn posts
 # ------------------------------------------------------------------
+
 
 class TestLinkedIn:
     def test_list_linkedin_posts(self):
@@ -538,6 +596,7 @@ class TestLinkedIn:
 # Settings
 # ------------------------------------------------------------------
 
+
 class TestSettings:
     def test_get_settings(self):
         resp = client.get("/api/settings")
@@ -547,9 +606,10 @@ class TestSettings:
         assert "feeds" in data
 
     def test_update_settings(self):
-        resp = client.put("/api/settings", json={
-            "settings": {"llm_provider": "openai", "llm_model": "gpt-4"}
-        })
+        resp = client.put(
+            "/api/settings",
+            json={"settings": {"llm_provider": "openai", "llm_model": "gpt-4"}},
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert data["settings"]["llm_provider"] == "openai"
@@ -561,7 +621,9 @@ class TestSettings:
 
 class TestCrossOriginGuard:
     def test_foreign_origin_write_is_refused(self):
-        resp = client.post("/api/jobs/retry-failed", headers={"Origin": "https://evil.example"})
+        resp = client.post(
+            "/api/jobs/retry-failed", headers={"Origin": "https://evil.example"}
+        )
         assert resp.status_code == 403
 
     def test_foreign_origin_read_is_allowed(self):

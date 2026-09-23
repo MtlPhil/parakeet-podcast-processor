@@ -78,8 +78,12 @@ def _truncate_transcript(text: str, max_chars: int = _MAX_TRANSCRIPT_CHARS) -> s
     if len(text) <= max_chars:
         return text
     half = max_chars // 2
-    logger.warning("Transcript too long (%d chars), truncating to %d chars", len(text), max_chars)
-    return text[:half] + "\n\n[... transcript truncated for length ...]\n\n" + text[-half:]
+    logger.warning(
+        "Transcript too long (%d chars), truncating to %d chars", len(text), max_chars
+    )
+    return (
+        text[:half] + "\n\n[... transcript truncated for length ...]\n\n" + text[-half:]
+    )
 
 
 def _split_into_sections(text: str, num_sections: int) -> List[str]:
@@ -104,7 +108,7 @@ def _split_into_sections(text: str, num_sections: int) -> List[str]:
     return [s.strip() for s in sections if s.strip()]
 
 
-_SENTENCE_BOUNDARY = re.compile(r'(?<=[.!?])\s+')
+_SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+")
 
 # Target chunk size for LLM-based transcript cleaning (see clean_transcript).
 _CLEAN_CHUNK_CHARS = 6000
@@ -183,17 +187,17 @@ def _split_segments_by_gaps(
 
     raw_chunks = []
     current: List[str] = []
-    prev_end = segments[0]['timestamp_end']
+    prev_end = segments[0]["timestamp_end"]
     for seg in segments:
-        gap = seg['timestamp_start'] - prev_end
+        gap = seg["timestamp_start"] - prev_end
         if gap >= min_gap and current:
-            raw_chunks.append(' '.join(current))
+            raw_chunks.append(" ".join(current))
             current = []
-        if seg['text']:
-            current.append(seg['text'])
-        prev_end = seg['timestamp_end']
+        if seg["text"]:
+            current.append(seg["text"])
+        prev_end = seg["timestamp_end"]
     if current:
-        raw_chunks.append(' '.join(current))
+        raw_chunks.append(" ".join(current))
 
     merged: List[str] = []
     for chunk in raw_chunks:
@@ -214,7 +218,9 @@ def _split_segments_by_gaps(
     return final_chunks
 
 
-def _truncate_chunks(chunks: List[str], max_chars: int = _MAX_TRANSCRIPT_CHARS) -> List[str]:
+def _truncate_chunks(
+    chunks: List[str], max_chars: int = _MAX_TRANSCRIPT_CHARS
+) -> List[str]:
     """Cap total chunk length by keeping chunks from the start and end and
     dropping the middle. Like _truncate_transcript, but cuts on chunk (topic)
     boundaries instead of an arbitrary character offset."""
@@ -240,7 +246,8 @@ def _truncate_chunks(chunks: List[str], max_chars: int = _MAX_TRANSCRIPT_CHARS) 
 
     logger.warning(
         "Transcript too long (%d chars across %d chunks), truncating to head+tail",
-        total, len(chunks),
+        total,
+        len(chunks),
     )
     return head + ["[... transcript truncated for length ...]"] + tail
 
@@ -248,8 +255,8 @@ def _truncate_chunks(chunks: List[str], max_chars: int = _MAX_TRANSCRIPT_CHARS) 
 def _strip_llm_meta_lines(text: str) -> str:
     """Remove lines the LLM prepends/appends about its own output rather
     than the requested content (see _LLM_META_LINE_RE)."""
-    lines = [ln for ln in text.split('\n') if not _LLM_META_LINE_RE.match(ln.strip())]
-    return '\n'.join(lines).strip()
+    lines = [ln for ln in text.split("\n") if not _LLM_META_LINE_RE.match(ln.strip())]
+    return "\n".join(lines).strip()
 
 
 def _extract_json(text: str) -> Optional[Dict[str, Any]]:
@@ -258,23 +265,23 @@ def _extract_json(text: str) -> Optional[Dict[str, Any]]:
     Handles markdown code fences and finds the outermost balanced braces.
     """
     # Strip markdown code fences if present
-    text = re.sub(r'```(?:json)?\s*', '', text)
-    text = text.replace('```', '')
+    text = re.sub(r"```(?:json)?\s*", "", text)
+    text = text.replace("```", "")
 
     # Find the first '{' and then find its matching '}'
-    start = text.find('{')
+    start = text.find("{")
     if start == -1:
         return None
 
     depth = 0
     for i in range(start, len(text)):
-        if text[i] == '{':
+        if text[i] == "{":
             depth += 1
-        elif text[i] == '}':
+        elif text[i] == "}":
             depth -= 1
             if depth == 0:
                 try:
-                    return json.loads(text[start:i + 1])
+                    return json.loads(text[start : i + 1])
                 except json.JSONDecodeError:
                     logger.warning("Found balanced braces but JSON decode failed")
                     return None
@@ -297,13 +304,15 @@ def _coerce_str_list(items: Any) -> List[str]:
         if isinstance(item, str):
             result.append(item)
         elif isinstance(item, dict):
-            for key in ('theme_name', 'name', 'title', 'topic'):
+            for key in ("theme_name", "name", "title", "topic"):
                 value = item.get(key)
                 if isinstance(value, str) and value:
                     result.append(value)
                     break
             else:
-                str_value = next((v for v in item.values() if isinstance(v, str) and v), None)
+                str_value = next(
+                    (v for v in item.values() if isinstance(v, str) and v), None
+                )
                 result.append(str_value if str_value else str(item))
         else:
             result.append(str(item))
@@ -313,9 +322,14 @@ def _coerce_str_list(items: Any) -> List[str]:
 class TranscriptCleaner:
     """Cleans transcripts and produces per-episode summaries with an LLM."""
 
-    def __init__(self, db: P3Database, llm_provider: str = "ollama",
-                 llm_model: str = DEFAULT_OLLAMA_MODEL, api_key: Optional[str] = None,
-                 ollama_base_url: str = DEFAULT_OLLAMA_URL):
+    def __init__(
+        self,
+        db: P3Database,
+        llm_provider: str = "ollama",
+        llm_model: str = DEFAULT_OLLAMA_MODEL,
+        api_key: Optional[str] = None,
+        ollama_base_url: str = DEFAULT_OLLAMA_URL,
+    ):
         self.db = db
         self.llm = LLMClient(
             provider=llm_provider,
@@ -331,11 +345,13 @@ class TranscriptCleaner:
     @staticmethod
     def _basic_clean_text(text: str) -> str:
         """Strip unambiguous filler words and collapse whitespace."""
-        fillers = r'\b(um|uh|ah|er|hmm)\b'
-        text = re.sub(fillers, '', text, flags=re.IGNORECASE)
-        return re.sub(r'\s+', ' ', text).strip()
+        fillers = r"\b(um|uh|ah|er|hmm)\b"
+        text = re.sub(fillers, "", text, flags=re.IGNORECASE)
+        return re.sub(r"\s+", " ", text).strip()
 
-    def clean_transcript(self, raw_text: str, segments: Optional[List[Dict[str, Any]]] = None) -> str:
+    def clean_transcript(
+        self, raw_text: str, segments: Optional[List[Dict[str, Any]]] = None
+    ) -> str:
         """Remove filler words, ads and disfluencies from a transcript.
 
         Filler words are always stripped with a regex. When an LLM is
@@ -352,7 +368,7 @@ class TranscriptCleaner:
             try:
                 if segments:
                     cleaned_segments = [
-                        {**seg, 'text': self._basic_clean_text(seg['text'])}
+                        {**seg, "text": self._basic_clean_text(seg["text"])}
                         for seg in segments
                     ]
                     chunks = _truncate_chunks(_split_segments_by_gaps(cleaned_segments))
@@ -372,7 +388,9 @@ class TranscriptCleaner:
                     except Exception as e:
                         logger.warning(
                             "Chunk %d/%d cleaning failed, keeping original text for that chunk: %s",
-                            i, len(chunks), e,
+                            i,
+                            len(chunks),
+                            e,
                         )
                         cleaned_chunks.append(chunk)
                 if cleaned_chunks:
@@ -390,7 +408,7 @@ class TranscriptCleaner:
         demand (see generate_synopsis) to keep the pipeline step fast.
         """
         segments = self.db.get_transcripts_for_episode(episode_id)
-        full_text = "\n".join(segment['text'] for segment in segments)
+        full_text = "\n".join(segment["text"] for segment in segments)
 
         if not full_text.strip():
             return None
@@ -404,25 +422,25 @@ class TranscriptCleaner:
         if summary_data and self.llm.is_configured:
             short_summary = self._generate_short_summary(cleaned_text)
             if short_summary:
-                summary_data['summary'] = short_summary
+                summary_data["summary"] = short_summary
 
         if summary_data:
             # add_summary replaces the whole row; carry over any synopsis
             # generated earlier so a re-digest does not discard it.
             existing = self.db.get_summary_by_episode(episode_id)
-            existing_long_summary = existing.get('long_summary') if existing else None
+            existing_long_summary = existing.get("long_summary") if existing else None
 
             self.db.add_summary(
                 episode_id=episode_id,
-                key_topics=summary_data.get('key_topics', []),
-                themes=summary_data.get('themes', []),
-                quotes=summary_data.get('quotes', []),
-                startups=summary_data.get('startups', []),
-                full_summary=summary_data.get('summary', ''),
+                key_topics=summary_data.get("key_topics", []),
+                themes=summary_data.get("themes", []),
+                quotes=summary_data.get("quotes", []),
+                startups=summary_data.get("startups", []),
+                full_summary=summary_data.get("summary", ""),
                 long_summary=existing_long_summary,
-                digest_date=datetime.now()
+                digest_date=datetime.now(),
             )
-            self.db.update_episode_status(episode_id, 'processed')
+            self.db.update_episode_status(episode_id, "processed")
 
         return summary_data
 
@@ -430,7 +448,7 @@ class TranscriptCleaner:
         """Generate and store the long-form study-notes synopsis for one
         episode. Requested on demand; not part of the digest pipeline."""
         segments = self.db.get_transcripts_for_episode(episode_id)
-        full_text = "\n".join(segment['text'] for segment in segments)
+        full_text = "\n".join(segment["text"] for segment in segments)
 
         if not full_text.strip():
             return None
@@ -470,9 +488,11 @@ class TranscriptCleaner:
             )
             result = _extract_json(response)
             if result is None:
-                logger.warning("Could not parse JSON from LLM response, falling back to basic extraction")
+                logger.warning(
+                    "Could not parse JSON from LLM response, falling back to basic extraction"
+                )
                 return self._basic_extraction(text)
-            for field in ('key_topics', 'themes', 'quotes', 'startups'):
+            for field in ("key_topics", "themes", "quotes", "startups"):
                 if field in result:
                     result[field] = _coerce_str_list(result[field])
             return result
@@ -513,13 +533,20 @@ class TranscriptCleaner:
             if len(word) > 4 and word.isalpha():
                 word_freq[word] = word_freq.get(word, 0) + 1
 
-        key_topics = [word for word, _ in
-                     sorted(word_freq.items(), key=lambda x: x[1], reverse=True)[:5]]
+        key_topics = [
+            word
+            for word, _ in sorted(word_freq.items(), key=lambda x: x[1], reverse=True)[
+                :5
+            ]
+        ]
 
         # Simple company extraction (words ending in common suffixes)
         potential_companies = set()
         for word in text.split():
-            if any(word.lower().endswith(suffix) for suffix in ['inc', 'corp', 'llc', 'labs']):
+            if any(
+                word.lower().endswith(suffix)
+                for suffix in ["inc", "corp", "llc", "labs"]
+            ):
                 potential_companies.add(word)
 
         return {
@@ -527,20 +554,20 @@ class TranscriptCleaner:
             "themes": ["general discussion"],
             "quotes": [],
             "startups": list(potential_companies),
-            "summary": "Podcast episode discussion covering various topics."
+            "summary": "Podcast episode discussion covering various topics.",
         }
 
     def process_all_transcribed(self) -> int:
         """Process all episodes with 'transcribed' status."""
-        episodes = self.db.get_episodes_by_status('transcribed')
+        episodes = self.db.get_episodes_by_status("transcribed")
         processed_count = 0
 
         for episode in episodes:
-            logger.info("Processing summary for: %s", episode['title'])
-            if self.generate_summary(episode['id']):
+            logger.info("Processing summary for: %s", episode["title"])
+            if self.generate_summary(episode["id"]):
                 processed_count += 1
-                logger.info("Processed: %s", episode['title'])
+                logger.info("Processed: %s", episode["title"])
             else:
-                logger.warning("Failed to process: %s", episode['title'])
+                logger.warning("Failed to process: %s", episode["title"])
 
         return processed_count

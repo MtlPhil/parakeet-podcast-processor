@@ -4,7 +4,9 @@ from typing import Any, List, Optional
 
 from pydantic import BaseModel, Field
 
-_PROVIDER_HELP = "LLM provider override (ollama, openai, gemini). Defaults to configured settings."
+_PROVIDER_HELP = (
+    "LLM provider override (ollama, openai, gemini). Defaults to configured settings."
+)
 _MODEL_HELP = "LLM model override. Defaults to the configured model for the provider."
 
 
@@ -12,9 +14,12 @@ _MODEL_HELP = "LLM model override. Defaults to the configured model for the prov
 # Podcasts
 # ------------------------------------------------------------------
 
+
 class PodcastCreate(BaseModel):
     url: str = Field(..., description="RSS feed URL or Apple Podcasts link")
-    name: Optional[str] = Field(None, description="Display name (auto-detected from feed if omitted)")
+    name: Optional[str] = Field(
+        None, description="Display name (auto-detected from feed if omitted)"
+    )
     category: Optional[str] = None
 
 
@@ -36,6 +41,7 @@ class PodcastOut(BaseModel):
 # Episodes
 # ------------------------------------------------------------------
 
+
 class EpisodeOut(BaseModel):
     id: int
     podcast_id: int
@@ -53,6 +59,7 @@ class EpisodeOut(BaseModel):
 # Transcripts
 # ------------------------------------------------------------------
 
+
 class TranscriptSegment(BaseModel):
     id: int
     episode_id: int
@@ -66,6 +73,7 @@ class TranscriptSegment(BaseModel):
 # ------------------------------------------------------------------
 # Summaries
 # ------------------------------------------------------------------
+
 
 class SummaryOut(BaseModel):
     id: int
@@ -86,6 +94,7 @@ class SummaryOut(BaseModel):
 # Jobs
 # ------------------------------------------------------------------
 
+
 class JobOut(BaseModel):
     id: str
     episode_id: Optional[int] = None
@@ -105,6 +114,7 @@ class JobOut(BaseModel):
 # ------------------------------------------------------------------
 # Blog posts
 # ------------------------------------------------------------------
+
 
 class BlogCreate(BaseModel):
     topic: str
@@ -149,14 +159,17 @@ class LinkedInOut(BaseModel):
 # Pipeline actions
 # ------------------------------------------------------------------
 
+
 class FetchAction(BaseModel):
     """Trigger a fetch for a podcast."""
+
     max_episodes: Optional[int] = None
 
 
 # ------------------------------------------------------------------
 # Settings
 # ------------------------------------------------------------------
+
 
 class SettingsOut(BaseModel):
     feeds: List[dict] = []
@@ -171,6 +184,7 @@ class SettingsUpdate(BaseModel):
 # ------------------------------------------------------------------
 # Stats
 # ------------------------------------------------------------------
+
 
 class StatsOut(BaseModel):
     total_podcasts: int = 0

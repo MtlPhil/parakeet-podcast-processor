@@ -69,25 +69,28 @@ class TestExtractJson:
 class TestBasicExtraction:
     def test_returns_expected_keys(self):
         cleaner = TranscriptCleaner(db=None, llm_provider="ollama")
-        result = cleaner._basic_extraction("This is a test with some words about technology and innovation")
-        assert 'key_topics' in result
-        assert 'themes' in result
-        assert 'quotes' in result
-        assert 'startups' in result
-        assert 'summary' in result
+        result = cleaner._basic_extraction(
+            "This is a test with some words about technology and innovation"
+        )
+        assert "key_topics" in result
+        assert "themes" in result
+        assert "quotes" in result
+        assert "startups" in result
+        assert "summary" in result
 
     def test_extracts_frequent_words(self):
         text = "technology " * 20 + "innovation " * 15 + "startup " * 10
         cleaner = TranscriptCleaner(db=None, llm_provider="ollama")
         result = cleaner._basic_extraction(text)
-        assert 'technology' in result['key_topics']
+        assert "technology" in result["key_topics"]
 
     def test_extracts_company_suffixes(self):
         text = "We spoke with representatives from AcmeCorp and InnovateLabs about their products."
         cleaner = TranscriptCleaner(db=None, llm_provider="ollama")
         result = cleaner._basic_extraction(text)
-        assert any('AcmeCorp' in s for s in result['startups']) or \
-               any('InnovateLabs' in s for s in result['startups'])
+        assert any("AcmeCorp" in s for s in result["startups"]) or any(
+            "InnovateLabs" in s for s in result["startups"]
+        )
 
 
 class TestCleanTranscript:
@@ -150,7 +153,10 @@ class TestCoerceStrList:
             {"theme_name": "Informed Analysis", "description": ""},
             {"theme_name": "Book Movement Detection", "description": None},
         ]
-        assert _coerce_str_list(items) == ["Informed Analysis", "Book Movement Detection"]
+        assert _coerce_str_list(items) == [
+            "Informed Analysis",
+            "Book Movement Detection",
+        ]
 
     def test_dict_items_without_known_key_use_first_string_value(self):
         items = [{"label": "Foo", "count": 3}]
@@ -188,7 +194,9 @@ class TestSplitIntoChunks:
             assert word in rejoined
 
     def test_single_sentence_longer_than_max_chars_kept_whole(self):
-        sentence = "This is one very long sentence with no other punctuation in it at all"
+        sentence = (
+            "This is one very long sentence with no other punctuation in it at all"
+        )
         chunks = _split_into_chunks(sentence, max_chars=10)
         assert chunks == [sentence]
 
@@ -241,9 +249,17 @@ class TestSplitSegmentsByGaps:
 
     def test_small_fragments_merged_into_neighbor(self):
         segments = [
-            _seg("A fairly long opening segment about the main topic being discussed.", 0.0, 2.0),
+            _seg(
+                "A fairly long opening segment about the main topic being discussed.",
+                0.0,
+                2.0,
+            ),
             _seg("Hi.", 10.0, 10.5),
-            _seg("Another fairly long segment continuing the conversation afterward.", 20.0, 22.0),
+            _seg(
+                "Another fairly long segment continuing the conversation afterward.",
+                20.0,
+                22.0,
+            ),
         ]
         chunks = _split_segments_by_gaps(segments, min_gap=0.5, min_chars=20)
         assert len(chunks) == 2
@@ -254,7 +270,7 @@ class TestSplitSegmentsByGaps:
         segments = [_seg(long_text, 0.0, 100.0)]
         chunks = _split_segments_by_gaps(segments, max_chars=1000, min_chars=0)
         assert len(chunks) > 1
-        assert all(len(c) <= 1000 or ' ' not in c for c in chunks)
+        assert all(len(c) <= 1000 or " " not in c for c in chunks)
 
     def test_empty_segments_returns_empty_list(self):
         assert _split_segments_by_gaps([]) == []
@@ -284,14 +300,27 @@ class TestGenerateSummaryPreservesSynopsis:
             pid = db.add_podcast("Pod", "http://example.com/rss")
             now = datetime.now()
             eid = db.add_episode(pid, "Ep 1", now, "http://example.com/ep1.mp3")
-            db.add_transcript_segments(eid, [
-                {"text": "Some transcript content.", "start": 0.0, "end": 2.0,
-                 "speaker": None, "confidence": 1.0},
-            ])
+            db.add_transcript_segments(
+                eid,
+                [
+                    {
+                        "text": "Some transcript content.",
+                        "start": 0.0,
+                        "end": 2.0,
+                        "speaker": None,
+                        "confidence": 1.0,
+                    },
+                ],
+            )
             db.add_summary(
-                episode_id=eid, key_topics=["a"], themes=["b"], quotes=[],
-                startups=[], full_summary="old summary",
-                long_summary="a hand-generated synopsis", digest_date=now,
+                episode_id=eid,
+                key_topics=["a"],
+                themes=["b"],
+                quotes=[],
+                startups=[],
+                full_summary="old summary",
+                long_summary="a hand-generated synopsis",
+                digest_date=now,
             )
 
             # llm_provider="openai" with no api_key falls back to
@@ -301,6 +330,6 @@ class TestGenerateSummaryPreservesSynopsis:
             cleaner.generate_summary(eid)
 
             summary = db.get_summary_by_episode(eid)
-            assert summary['long_summary'] == "a hand-generated synopsis"
+            assert summary["long_summary"] == "a hand-generated synopsis"
         finally:
             db.close()

@@ -44,7 +44,9 @@ def _resolve_apple(podcast_id: str) -> tuple[str, str]:
         if feed_url:
             logger.info(
                 "Resolved Apple Podcasts id=%s -> %s (%s)",
-                podcast_id, feed_url, name,
+                podcast_id,
+                feed_url,
+                name,
             )
             return feed_url, name
 

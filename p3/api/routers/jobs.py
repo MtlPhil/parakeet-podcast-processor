@@ -36,7 +36,9 @@ def _newer_completed_fetch(db, podcast_id, after) -> bool:
             j["job_type"] == "fetch"
             and j["podcast_id"] == podcast_id
             and j["status"] == "completed"
-            and j["created_at"] and after and j["created_at"] > after
+            and j["created_at"]
+            and after
+            and j["created_at"] > after
         ):
             return True
     return False

@@ -91,6 +91,7 @@ def _start_heartbeat(db, job_id: str, label: str, interval: float = 15.0):
 # Fetch episodes for a podcast
 # ------------------------------------------------------------------
 
+
 def task_fetch(job_id: str, podcast_id: int, max_episodes: int | None = None):
     """Download new episodes from a podcast's RSS feed."""
     db = get_db()
@@ -104,7 +105,9 @@ def task_fetch(job_id: str, podcast_id: int, max_episodes: int | None = None):
 
         podcast = db.get_podcast_by_id(podcast_id)
         if not podcast:
-            db.update_job(job_id, status="failed", error=f"Podcast {podcast_id} not found")
+            db.update_job(
+                job_id, status="failed", error=f"Podcast {podcast_id} not found"
+            )
             return
 
         def on_progress(done: int, total: int, message: str):
@@ -119,7 +122,9 @@ def task_fetch(job_id: str, podcast_id: int, max_episodes: int | None = None):
             progress_callback=on_progress,
         )
 
-        db.update_job(job_id, progress=0.05, message=f"Fetching feed: {podcast['title']}")
+        db.update_job(
+            job_id, progress=0.05, message=f"Fetching feed: {podcast['title']}"
+        )
         count = downloader.process_feed(podcast["rss_url"])
 
         db.update_job(
@@ -137,6 +142,7 @@ def task_fetch(job_id: str, podcast_id: int, max_episodes: int | None = None):
 # Transcribe an episode
 # ------------------------------------------------------------------
 
+
 def task_transcribe(job_id: str, episode_id: int):
     """Transcribe a single episode."""
     db = get_db()
@@ -145,7 +151,9 @@ def task_transcribe(job_id: str, episode_id: int):
         title = episode["title"] if episode else f"episode {episode_id}"
 
         db.update_job(
-            job_id, status="running", message=f"Loading transcription model for: {title}"
+            job_id,
+            status="running",
+            message=f"Loading transcription model for: {title}",
         )
 
         transcriber = _make_transcriber(db, _get_settings())
@@ -159,9 +167,16 @@ def task_transcribe(job_id: str, episode_id: int):
         transcriber.unload_models()
 
         if success:
-            db.update_job(job_id, status="completed", progress=1.0, message=f"Transcribed: {title}")
+            db.update_job(
+                job_id,
+                status="completed",
+                progress=1.0,
+                message=f"Transcribed: {title}",
+            )
         else:
-            db.update_job(job_id, status="failed", error="Transcription returned no result")
+            db.update_job(
+                job_id, status="failed", error="Transcription returned no result"
+            )
     except Exception as e:
         logger.exception("Transcribe task failed")
         db.update_job(job_id, status="failed", error=str(e))
@@ -170,6 +185,7 @@ def task_transcribe(job_id: str, episode_id: int):
 # ------------------------------------------------------------------
 # Digest (summarize) an episode
 # ------------------------------------------------------------------
+
 
 def task_digest(job_id: str, episode_id: int):
     """Generate structured summary for an episode."""
@@ -183,9 +199,13 @@ def task_digest(job_id: str, episode_id: int):
         result = cleaner.generate_summary(episode_id)
 
         if result:
-            db.update_job(job_id, status="completed", progress=1.0, message="Summary complete")
+            db.update_job(
+                job_id, status="completed", progress=1.0, message="Summary complete"
+            )
         else:
-            db.update_job(job_id, status="failed", error="Summary generation returned no result")
+            db.update_job(
+                job_id, status="failed", error="Summary generation returned no result"
+            )
     except Exception as e:
         logger.exception("Digest task failed")
         db.update_job(job_id, status="failed", error=str(e))
@@ -194,6 +214,7 @@ def task_digest(job_id: str, episode_id: int):
 # ------------------------------------------------------------------
 # Export digest for a date
 # ------------------------------------------------------------------
+
 
 def task_export(job_id: str, target_date: str, formats: list[str] | None = None):
     """Generate export files for a date."""
@@ -207,7 +228,9 @@ def task_export(job_id: str, target_date: str, formats: list[str] | None = None)
         summaries = db.get_summaries_by_date(dt)
 
         if not summaries:
-            db.update_job(job_id, status="failed", error=f"No summaries for {target_date}")
+            db.update_job(
+                job_id, status="failed", error=f"No summaries for {target_date}"
+            )
             return
 
         exporter = DigestExporter(db)
@@ -242,8 +265,15 @@ def task_export(job_id: str, target_date: str, formats: list[str] | None = None)
 # Generate blog post
 # ------------------------------------------------------------------
 
-def task_write_blog(job_id: str, topic: str, target_date: str, target_grade: float = 91.0,
-                     provider: str = None, model: str = None):
+
+def task_write_blog(
+    job_id: str,
+    topic: str,
+    target_date: str,
+    target_grade: float = 91.0,
+    provider: str = None,
+    model: str = None,
+):
     """Generate a blog post from podcast summaries."""
     db = get_db()
     try:
@@ -253,7 +283,9 @@ def task_write_blog(job_id: str, topic: str, target_date: str, target_grade: flo
         summaries = db.get_summaries_by_date(dt)
 
         if not summaries:
-            db.update_job(job_id, status="failed", error=f"No summaries for {target_date}")
+            db.update_job(
+                job_id, status="failed", error=f"No summaries for {target_date}"
+            )
             return
 
         writer = _make_writer(
@@ -277,7 +309,9 @@ def task_write_blog(job_id: str, topic: str, target_date: str, target_grade: flo
         db.update_job(job_id, status="failed", error=str(e))
 
 
-def task_write_linkedin(job_id: str, episode_id: int, provider: str = None, model: str = None):
+def task_write_linkedin(
+    job_id: str, episode_id: int, provider: str = None, model: str = None
+):
     """Generate a LinkedIn post (English + Quebec French) from one episode."""
     db = get_db()
     try:
@@ -286,7 +320,9 @@ def task_write_linkedin(job_id: str, episode_id: int, provider: str = None, mode
         summary = db.get_summary_by_episode(episode_id)
 
         if not summary:
-            db.update_job(job_id, status="failed", error=f"No summary for episode {episode_id}")
+            db.update_job(
+                job_id, status="failed", error=f"No summary for episode {episode_id}"
+            )
             return
 
         writer = _make_writer(db, _get_settings(), provider, model)
@@ -308,7 +344,9 @@ def task_write_linkedin(job_id: str, episode_id: int, provider: str = None, mode
         db.update_job(job_id, status="failed", error=str(e))
 
 
-def task_generate_synopsis(job_id: str, episode_id: int, provider: str = None, model: str = None):
+def task_generate_synopsis(
+    job_id: str, episode_id: int, provider: str = None, model: str = None
+):
     """Generate the on-demand long-form synopsis for one episode."""
     db = get_db()
     try:
@@ -318,10 +356,14 @@ def task_generate_synopsis(job_id: str, episode_id: int, provider: str = None, m
 
         synopsis = cleaner.generate_synopsis(episode_id)
         if not synopsis:
-            db.update_job(job_id, status="failed", error="Synopsis generation returned no content")
+            db.update_job(
+                job_id, status="failed", error="Synopsis generation returned no content"
+            )
             return
 
-        db.update_job(job_id, status="completed", progress=1.0, message="Synopsis generated")
+        db.update_job(
+            job_id, status="completed", progress=1.0, message="Synopsis generated"
+        )
     except Exception as e:
         logger.exception("Synopsis generation task failed")
         db.update_job(job_id, status="failed", error=str(e))
@@ -330,6 +372,7 @@ def task_generate_synopsis(job_id: str, episode_id: int, provider: str = None, m
 # ------------------------------------------------------------------
 # Batch queueing and the full per-episode pipeline
 # ------------------------------------------------------------------
+
 
 def queue_step_jobs(db, episodes, step: str) -> list[str]:
     """Create one job per eligible episode for a pipeline step and hand it to
@@ -367,7 +410,9 @@ def task_full_pipeline(job_id: str, episode_id: int):
 
         episode = db.get_episode_by_id(episode_id)
         if not episode:
-            db.update_job(job_id, status="failed", error=f"Episode {episode_id} not found")
+            db.update_job(
+                job_id, status="failed", error=f"Episode {episode_id} not found"
+            )
             return
 
         settings = _get_settings()
@@ -389,10 +434,14 @@ def task_full_pipeline(job_id: str, episode_id: int):
             cleaner = _make_cleaner(db, settings)
             result = cleaner.generate_summary(episode_id)
             if not result:
-                db.update_job(job_id, status="failed", error="Summary generation failed")
+                db.update_job(
+                    job_id, status="failed", error="Summary generation failed"
+                )
                 return
 
-        db.update_job(job_id, status="completed", progress=1.0, message="Pipeline complete")
+        db.update_job(
+            job_id, status="completed", progress=1.0, message="Pipeline complete"
+        )
     except Exception as e:
         logger.exception("Full pipeline task failed")
         db.update_job(job_id, status="failed", error=str(e))

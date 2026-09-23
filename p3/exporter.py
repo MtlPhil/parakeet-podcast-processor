@@ -5,7 +5,7 @@ import logging
 from datetime import date, datetime
 from html import escape
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +13,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_EXPORT_DIR = Path("exports")
 
 
-def _segments_to_prose(segments: List[Dict[str, Any]], paragraph_gap_seconds: float = 3.0) -> str:
+def _segments_to_prose(
+    segments: List[Dict[str, Any]], paragraph_gap_seconds: float = 3.0
+) -> str:
     """Join transcript segments into flowing prose paragraphs.
 
     Segments are short utterances, so they are joined with spaces and a new
@@ -23,19 +25,23 @@ def _segments_to_prose(segments: List[Dict[str, Any]], paragraph_gap_seconds: fl
     current: List[str] = []
     prev_end = None
     for seg in segments:
-        text = (seg.get('text') or '').strip()
+        text = (seg.get("text") or "").strip()
         if not text:
             continue
-        start = seg.get('timestamp_start')
-        if current and prev_end is not None and start is not None \
-                and (start - prev_end) >= paragraph_gap_seconds:
-            paragraphs.append(' '.join(current))
+        start = seg.get("timestamp_start")
+        if (
+            current
+            and prev_end is not None
+            and start is not None
+            and (start - prev_end) >= paragraph_gap_seconds
+        ):
+            paragraphs.append(" ".join(current))
             current = []
         current.append(text)
-        prev_end = seg.get('timestamp_end', prev_end)
+        prev_end = seg.get("timestamp_end", prev_end)
     if current:
-        paragraphs.append(' '.join(current))
-    return '\n\n'.join(paragraphs)
+        paragraphs.append(" ".join(current))
+    return "\n\n".join(paragraphs)
 
 
 class DigestExporter:
@@ -48,19 +54,23 @@ class DigestExporter:
         """Return a path inside the export directory."""
         return self.export_dir / filename
 
-    def export_transcript_markdown(self, episode: Dict[str, Any], segments: List[Dict[str, Any]]) -> str:
+    def export_transcript_markdown(
+        self, episode: Dict[str, Any], segments: List[Dict[str, Any]]
+    ) -> str:
         """Format one episode's transcript as Markdown prose."""
         content = [f"# {episode['title']}\n"]
-        meta_bits = [episode.get('podcast_title')]
-        if episode.get('date'):
-            meta_bits.append(str(episode['date']))
-        meta = ' — '.join(b for b in meta_bits if b)
+        meta_bits = [episode.get("podcast_title")]
+        if episode.get("date"):
+            meta_bits.append(str(episode["date"]))
+        meta = " — ".join(b for b in meta_bits if b)
         if meta:
             content.append(f"*{meta}*\n")
         content.append(_segments_to_prose(segments))
         return "\n".join(content) + "\n"
 
-    def export_markdown(self, summaries: List[Dict[str, Any]], target_date: date) -> str:
+    def export_markdown(
+        self, summaries: List[Dict[str, Any]], target_date: date
+    ) -> str:
         """Export summaries as Markdown."""
         content = [f"# Podcast Digest - {target_date}\n"]
 
@@ -71,7 +81,7 @@ class DigestExporter:
         # Group by podcast
         by_podcast: Dict[str, List[Dict[str, Any]]] = {}
         for summary in summaries:
-            podcast = summary['podcast_title']
+            podcast = summary["podcast_title"]
             if podcast not in by_podcast:
                 by_podcast[podcast] = []
             by_podcast[podcast].append(summary)
@@ -82,30 +92,30 @@ class DigestExporter:
             for episode in episodes:
                 content.append(f"### {episode['episode_title']}\n")
 
-                if episode['full_summary']:
+                if episode["full_summary"]:
                     content.append(f"**Summary:** {episode['full_summary']}\n")
 
-                if episode['key_topics']:
+                if episode["key_topics"]:
                     content.append("**Key Topics:**")
-                    for topic in episode['key_topics']:
+                    for topic in episode["key_topics"]:
                         content.append(f"- {topic}")
                     content.append("")
 
-                if episode['themes']:
+                if episode["themes"]:
                     content.append("**Themes:**")
-                    for theme in episode['themes']:
+                    for theme in episode["themes"]:
                         content.append(f"- {theme}")
                     content.append("")
 
-                if episode['quotes']:
+                if episode["quotes"]:
                     content.append("**Notable Quotes:**")
-                    for quote in episode['quotes']:
+                    for quote in episode["quotes"]:
                         content.append(f"> {quote}")
                     content.append("")
 
-                if episode['startups']:
+                if episode["startups"]:
                     content.append("**Companies/Startups Mentioned:**")
-                    for startup in episode['startups']:
+                    for startup in episode["startups"]:
                         content.append(f"- {startup}")
                     content.append("")
 
@@ -120,17 +130,21 @@ class DigestExporter:
             """Convert non-serializable types explicitly."""
             if isinstance(obj, (datetime, date)):
                 return obj.isoformat()
-            raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+            raise TypeError(
+                f"Object of type {type(obj).__name__} is not JSON serializable"
+            )
 
         export_data = {
             "date": target_date.isoformat(),
             "total_episodes": len(summaries),
-            "summaries": summaries
+            "summaries": summaries,
         }
 
         return json.dumps(export_data, indent=2, default=_serialize)
 
-    def export_email_html(self, summaries: List[Dict[str, Any]], target_date: date) -> str:
+    def export_email_html(
+        self, summaries: List[Dict[str, Any]], target_date: date
+    ) -> str:
         """Export summaries as HTML for email. All user-supplied content is escaped."""
         html = f"""
         <html>
@@ -156,7 +170,7 @@ class DigestExporter:
         else:
             by_podcast: Dict[str, List[Dict[str, Any]]] = {}
             for summary in summaries:
-                podcast = summary['podcast_title']
+                podcast = summary["podcast_title"]
                 if podcast not in by_podcast:
                     by_podcast[podcast] = []
                 by_podcast[podcast].append(summary)
@@ -167,36 +181,36 @@ class DigestExporter:
                 for episode in episodes:
                     html += f'<div class="episode"><h3>{escape(episode["episode_title"])}</h3>'
 
-                    if episode['full_summary']:
+                    if episode["full_summary"]:
                         html += f'<div class="summary"><strong>Summary:</strong> {escape(episode["full_summary"])}</div>'
 
-                    if episode['key_topics']:
+                    if episode["key_topics"]:
                         html += '<div class="topics"><strong>Key Topics:</strong><ul>'
-                        for topic in episode['key_topics']:
-                            html += f'<li>{escape(str(topic))}</li>'
-                        html += '</ul></div>'
+                        for topic in episode["key_topics"]:
+                            html += f"<li>{escape(str(topic))}</li>"
+                        html += "</ul></div>"
 
-                    if episode['themes']:
+                    if episode["themes"]:
                         html += '<div class="themes"><strong>Themes:</strong><ul>'
-                        for theme in episode['themes']:
-                            html += f'<li>{escape(str(theme))}</li>'
-                        html += '</ul></div>'
+                        for theme in episode["themes"]:
+                            html += f"<li>{escape(str(theme))}</li>"
+                        html += "</ul></div>"
 
-                    if episode['quotes']:
-                        html += '<div><strong>Notable Quotes:</strong>'
-                        for quote in episode['quotes']:
+                    if episode["quotes"]:
+                        html += "<div><strong>Notable Quotes:</strong>"
+                        for quote in episode["quotes"]:
                             html += f'<div class="quote">{escape(str(quote))}</div>'
-                        html += '</div>'
+                        html += "</div>"
 
-                    if episode['startups']:
+                    if episode["startups"]:
                         html += '<div class="startups"><strong>Companies/Startups:</strong><ul>'
-                        for startup in episode['startups']:
-                            html += f'<li>{escape(str(startup))}</li>'
-                        html += '</ul></div>'
+                        for startup in episode["startups"]:
+                            html += f"<li>{escape(str(startup))}</li>"
+                        html += "</ul></div>"
 
-                    html += '</div>'  # episode
+                    html += "</div>"  # episode
 
-                html += '</div>'  # podcast
+                html += "</div>"  # podcast
 
         html += """
         </body>

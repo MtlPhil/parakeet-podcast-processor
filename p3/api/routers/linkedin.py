@@ -85,5 +85,7 @@ def create_linkedin_post(body: LinkedInCreate):
     job_id = db.create_job(
         "write_linkedin", episode_id=body.episode_id, podcast_id=episode["podcast_id"]
     )
-    job_runner.enqueue(task_write_linkedin, job_id, body.episode_id, body.provider, body.model)
+    job_runner.enqueue(
+        task_write_linkedin, job_id, body.episode_id, body.provider, body.model
+    )
     return {"job_id": job_id}

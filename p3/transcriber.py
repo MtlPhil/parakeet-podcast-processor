@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 try:
     from parakeet_mlx import from_pretrained as parakeet_from_pretrained
+
     PARAKEET_AVAILABLE = True
 except ImportError:
     PARAKEET_AVAILABLE = False
@@ -27,8 +28,13 @@ _CHUNK_SECONDS = 600
 
 
 class AudioTranscriber:
-    def __init__(self, db: P3Database, whisper_model: str = "base",
-                 use_parakeet: bool = False, parakeet_model: str = DEFAULT_PARAKEET_MODEL):
+    def __init__(
+        self,
+        db: P3Database,
+        whisper_model: str = "base",
+        use_parakeet: bool = False,
+        parakeet_model: str = DEFAULT_PARAKEET_MODEL,
+    ):
         self.db = db
         self.whisper_model = whisper_model
         self.use_parakeet = use_parakeet
@@ -54,6 +60,7 @@ class AudioTranscriber:
         self._parakeet = None
         if PARAKEET_AVAILABLE:
             import mlx.core as mx
+
             mx.clear_cache()
         logger.info("Unloaded transcription models")
 
@@ -63,30 +70,30 @@ class AudioTranscriber:
 
         try:
             result = self._whisper.transcribe(
-                audio_path,
-                word_timestamps=True,
-                verbose=False
+                audio_path, word_timestamps=True, verbose=False
             )
 
             segments = []
-            for segment in result.get('segments', []):
+            for segment in result.get("segments", []):
                 # no_speech_prob is probability of NO speech — invert for confidence
-                no_speech_prob = segment.get('no_speech_prob', 0.0)
+                no_speech_prob = segment.get("no_speech_prob", 0.0)
                 confidence = 1.0 - no_speech_prob
 
-                segments.append({
-                    'start': segment.get('start', 0),
-                    'end': segment.get('end', 0),
-                    'text': segment.get('text', '').strip(),
-                    'speaker': None,
-                    'confidence': confidence
-                })
+                segments.append(
+                    {
+                        "start": segment.get("start", 0),
+                        "end": segment.get("end", 0),
+                        "text": segment.get("text", "").strip(),
+                        "speaker": None,
+                        "confidence": confidence,
+                    }
+                )
 
             return {
-                'segments': segments,
-                'language': result.get('language'),
-                'text': result.get('text', ''),
-                'provider': 'whisper'
+                "segments": segments,
+                "language": result.get("language"),
+                "text": result.get("text", ""),
+                "provider": "whisper",
             }
 
         except Exception as e:
@@ -105,14 +112,24 @@ class AudioTranscriber:
         try:
             output_pattern = str(Path(temp_dir) / f"{Path(audio_path).stem}_%03d.wav")
             try:
-                subprocess.run([
-                    "ffmpeg", "-hide_banner", "-loglevel", "error",
-                    "-i", audio_path,
-                    "-f", "segment",
-                    "-segment_time", str(_CHUNK_SECONDS),
-                    "-c", "copy",
-                    output_pattern
-                ], check=True)
+                subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-hide_banner",
+                        "-loglevel",
+                        "error",
+                        "-i",
+                        audio_path,
+                        "-f",
+                        "segment",
+                        "-segment_time",
+                        str(_CHUNK_SECONDS),
+                        "-c",
+                        "copy",
+                        output_pattern,
+                    ],
+                    check=True,
+                )
             except subprocess.CalledProcessError as e:
                 logger.error("Audio splitting failed: %s", e)
                 return self.transcribe_with_whisper(audio_path)
@@ -131,26 +148,30 @@ class AudioTranscriber:
                 try:
                     result = self._parakeet.transcribe(str(chunk))
                     for sentence in result.sentences:
-                        segments.append({
-                            'start': offset + sentence.start,
-                            'end': offset + sentence.end,
-                            'text': sentence.text.strip(),
-                            'speaker': None,  # no speaker diarization
-                            'confidence': 1.0,  # Parakeet reports no confidence scores
-                        })
+                        segments.append(
+                            {
+                                "start": offset + sentence.start,
+                                "end": offset + sentence.end,
+                                "text": sentence.text.strip(),
+                                "speaker": None,  # no speaker diarization
+                                "confidence": 1.0,  # Parakeet reports no confidence scores
+                            }
+                        )
                     text_parts.append(result.text)
                 except Exception as e:
                     logger.warning("Transcription failed for chunk %d: %s", i + 1, e)
 
             return {
-                'segments': segments,
-                'language': 'en',  # parakeet-mlx does not report the detected language
-                'text': ' '.join(text_parts),
-                'provider': 'parakeet-mlx'
+                "segments": segments,
+                "language": "en",  # parakeet-mlx does not report the detected language
+                "text": " ".join(text_parts),
+                "provider": "parakeet-mlx",
             }
 
         except Exception as e:
-            logger.error("Parakeet transcription failed, falling back to Whisper: %s", e)
+            logger.error(
+                "Parakeet transcription failed, falling back to Whisper: %s", e
+            )
             return self.transcribe_with_whisper(audio_path)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -163,42 +184,45 @@ class AudioTranscriber:
             logger.warning("Episode %d not found", episode_id)
             return False
 
-        if episode['status'] != 'downloaded':
-            logger.warning("Episode %d has status '%s', expected 'downloaded'",
-                           episode_id, episode['status'])
+        if episode["status"] != "downloaded":
+            logger.warning(
+                "Episode %d has status '%s', expected 'downloaded'",
+                episode_id,
+                episode["status"],
+            )
             return False
 
-        if not episode['file_path'] or not Path(episode['file_path']).exists():
-            logger.error("Audio file not found: %s", episode.get('file_path'))
+        if not episode["file_path"] or not Path(episode["file_path"]).exists():
+            logger.error("Audio file not found: %s", episode.get("file_path"))
             return False
 
-        logger.info("Transcribing: %s", episode['title'])
+        logger.info("Transcribing: %s", episode["title"])
 
         # Choose transcription method
         if self.use_parakeet:
-            result = self.transcribe_with_parakeet(episode['file_path'])
+            result = self.transcribe_with_parakeet(episode["file_path"])
         else:
-            result = self.transcribe_with_whisper(episode['file_path'])
+            result = self.transcribe_with_whisper(episode["file_path"])
 
         if not result:
             return False
 
         # Store transcript segments in database
-        self.db.add_transcript_segments(episode_id, result['segments'])
+        self.db.add_transcript_segments(episode_id, result["segments"])
 
         # Update episode status
-        self.db.update_episode_status(episode_id, 'transcribed')
+        self.db.update_episode_status(episode_id, "transcribed")
 
-        logger.info("Transcribed: %s", episode['title'])
+        logger.info("Transcribed: %s", episode["title"])
         return True
 
     def transcribe_all_pending(self) -> int:
         """Transcribe all episodes with 'downloaded' status."""
-        episodes = self.db.get_episodes_by_status('downloaded')
+        episodes = self.db.get_episodes_by_status("downloaded")
         transcribed_count = 0
 
         for episode in episodes:
-            if self.transcribe_episode(episode['id']):
+            if self.transcribe_episode(episode["id"]):
                 transcribed_count += 1
 
         return transcribed_count
@@ -206,21 +230,23 @@ class AudioTranscriber:
     def get_full_transcript(self, episode_id: int) -> str:
         """Get the full transcript text for an episode."""
         segments = self.db.get_transcripts_for_episode(episode_id)
-        return "\n".join(segment['text'] for segment in segments)
+        return "\n".join(segment["text"] for segment in segments)
 
     def export_transcript(self, episode_id: int, format: str = "txt") -> str:
         """Export transcript in various formats."""
         segments = self.db.get_transcripts_for_episode(episode_id)
 
         if format == "txt":
-            return "\n".join(segment['text'] for segment in segments)
+            return "\n".join(segment["text"] for segment in segments)
 
         elif format == "srt":
             srt_content = []
             for i, segment in enumerate(segments, 1):
-                start_time = self._seconds_to_srt_time(segment['timestamp_start'] or 0)
-                end_time = self._seconds_to_srt_time(segment['timestamp_end'] or 0)
-                srt_content.append(f"{i}\n{start_time} --> {end_time}\n{segment['text']}\n")
+                start_time = self._seconds_to_srt_time(segment["timestamp_start"] or 0)
+                end_time = self._seconds_to_srt_time(segment["timestamp_end"] or 0)
+                srt_content.append(
+                    f"{i}\n{start_time} --> {end_time}\n{segment['text']}\n"
+                )
             return "\n".join(srt_content)
 
         elif format == "json":
@@ -236,4 +262,3 @@ class AudioTranscriber:
         secs = int(seconds % 60)
         millisecs = int((seconds % 1) * 1000)
         return f"{hours:02d}:{minutes:02d}:{secs:02d},{millisecs:03d}"
-

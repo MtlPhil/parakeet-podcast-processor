@@ -8,7 +8,7 @@ from fastapi.responses import Response
 
 from p3.api.deps import get_db
 from p3.api.job_queue import job_runner
-from p3.api.models import PodcastCreate, PodcastOut, PodcastUpdate, FetchAction
+from p3.api.models import FetchAction, PodcastCreate, PodcastOut, PodcastUpdate
 from p3.api.tasks import queue_step_jobs, task_fetch
 
 router = APIRouter(prefix="/api/podcasts", tags=["podcasts"])
@@ -43,6 +43,7 @@ def add_podcast(body: PodcastCreate):
 
     # Resolve non-RSS URLs (e.g. Apple Podcasts) to an RSS feed
     from p3.url_resolver import resolve_podcast_url
+
     try:
         rss_url, resolved_name = resolve_podcast_url(body.url)
     except ValueError as e:
@@ -114,7 +115,9 @@ def export_podcast_transcripts(podcast_id: int):
             if not segments:
                 continue
             content = exporter.export_transcript_markdown(episode, segments)
-            zf.writestr(f"{episode['id']}_{_safe_filename(episode['title'])}.md", content)
+            zf.writestr(
+                f"{episode['id']}_{_safe_filename(episode['title'])}.md", content
+            )
             count += 1
 
     if count == 0:

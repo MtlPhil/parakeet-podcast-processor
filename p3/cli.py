@@ -55,11 +55,13 @@ def load_config(config_path: str = "config/feeds.yaml"):
 
     if not config_file.exists():
         console.print(f"[red]Config file not found: {config_path}[/red]")
-        console.print("Copy config/feeds.yaml.example to config/feeds.yaml and configure your feeds")
+        console.print(
+            "Copy config/feeds.yaml.example to config/feeds.yaml and configure your feeds"
+        )
         sys.exit(1)
 
     try:
-        with open(config_file, 'r') as f:
+        with open(config_file, "r") as f:
             return yaml.safe_load(f)
     except Exception as e:
         console.print(f"[red]Error loading config: {e}[/red]")
@@ -76,10 +78,12 @@ def _check_prerequisite(name: str, cmd: list) -> bool:
 
 
 @click.group()
-@click.option('--config', default="config/feeds.yaml", help='Configuration file path')
-@click.option('--db', default="data/p3.duckdb", help='Database file path')
-@click.option('-v', '--verbose', count=True, help='Enable debug logging')
-@click.option('-q', '--quiet', is_flag=True, help='Suppress all output except warnings/errors')
+@click.option("--config", default="config/feeds.yaml", help="Configuration file path")
+@click.option("--db", default="data/p3.duckdb", help="Database file path")
+@click.option("-v", "--verbose", count=True, help="Enable debug logging")
+@click.option(
+    "-q", "--quiet", is_flag=True, help="Suppress all output except warnings/errors"
+)
 @click.pass_context
 def main(ctx, config, db, verbose, quiet):
     """Parakeet Podcast Processor (P³) - Automated podcast processing."""
@@ -93,49 +97,53 @@ def main(ctx, config, db, verbose, quiet):
 
     _setup_logging(verbosity)
 
-    ctx.obj['config_path'] = config
-    ctx.obj['db_path'] = db
-    ctx.obj['db'] = P3Database(db)
+    ctx.obj["config_path"] = config
+    ctx.obj["db_path"] = db
+    ctx.obj["db"] = P3Database(db)
 
 
 @main.command()
-@click.option('--max-episodes', default=None, type=int, help='Max episodes per feed')
-@click.option('--dry-run', is_flag=True, help='Show what would be downloaded without downloading')
+@click.option("--max-episodes", default=None, type=int, help="Max episodes per feed")
+@click.option(
+    "--dry-run", is_flag=True, help="Show what would be downloaded without downloading"
+)
 @click.pass_context
 def fetch(ctx, max_episodes, dry_run):
     """Download new podcast episodes from configured RSS feeds."""
-    config = load_config(ctx.obj['config_path'])
-    db = ctx.obj['db']
+    config = load_config(ctx.obj["config_path"])
+    db = ctx.obj["db"]
 
-    settings = config.get('settings', {})
-    max_eps = max_episodes or settings.get('max_episodes_per_feed', 10)
+    settings = config.get("settings", {})
+    max_eps = max_episodes or settings.get("max_episodes_per_feed", 10)
 
-    feeds = config.get('feeds', [])
+    feeds = config.get("feeds", [])
     if not feeds:
         console.print("[yellow]No feeds configured[/yellow]")
         return
 
     downloader = PodcastDownloader(
-        db=db,
-        max_episodes=max_eps,
-        audio_format=settings.get('audio_format', 'wav')
+        db=db, max_episodes=max_eps, audio_format=settings.get("audio_format", "wav")
     )
 
     if dry_run:
-        console.print("[blue]Dry run — listing episodes that would be downloaded:[/blue]")
+        console.print(
+            "[blue]Dry run — listing episodes that would be downloaded:[/blue]"
+        )
         table = Table(title="Episodes to Download")
         table.add_column("Podcast", style="cyan")
         table.add_column("Episode", style="white")
         table.add_column("Date", style="green")
 
         for feed_config in feeds:
-            name = feed_config['name']
-            url = feed_config['url']
+            name = feed_config["name"]
+            url = feed_config["url"]
             episodes = downloader.fetch_episodes(url, limit=max_eps)
             for ep in episodes:
-                if not db.episode_exists(ep['url']):
-                    date_str = ep['date'].strftime('%Y-%m-%d') if ep['date'] else 'unknown'
-                    table.add_row(name, ep['title'], date_str)
+                if not db.episode_exists(ep["url"]):
+                    date_str = (
+                        ep["date"].strftime("%Y-%m-%d") if ep["date"] else "unknown"
+                    )
+                    table.add_row(name, ep["title"], date_str)
 
         console.print(table)
         return
@@ -158,23 +166,23 @@ def fetch(ctx, max_episodes, dry_run):
 
 
 @main.command()
-@click.option('--model', default=None, help='Whisper model to use')
-@click.option('--episode-id', type=int, help='Transcribe specific episode')
+@click.option("--model", default=None, help="Whisper model to use")
+@click.option("--episode-id", type=int, help="Transcribe specific episode")
 @click.pass_context
 def transcribe(ctx, model, episode_id):
     """Transcribe downloaded audio files."""
-    config = load_config(ctx.obj['config_path'])
-    db = ctx.obj['db']
+    config = load_config(ctx.obj["config_path"])
+    db = ctx.obj["db"]
 
-    settings = config.get('settings', {})
-    whisper_model = model or settings.get('whisper_model', 'base')
-    use_parakeet = settings.get('parakeet_enabled', False)
+    settings = config.get("settings", {})
+    whisper_model = model or settings.get("whisper_model", "base")
+    use_parakeet = settings.get("parakeet_enabled", False)
 
     transcriber = AudioTranscriber(
         db=db,
         whisper_model=whisper_model,
         use_parakeet=use_parakeet,
-        parakeet_model=settings.get('parakeet_model', DEFAULT_PARAKEET_MODEL)
+        parakeet_model=settings.get("parakeet_model", DEFAULT_PARAKEET_MODEL),
     )
 
     if episode_id:
@@ -186,7 +194,7 @@ def transcribe(ctx, model, episode_id):
             console.print(f"[red]Failed to transcribe episode {episode_id}[/red]")
     else:
         console.print("[blue]Transcribing all pending episodes...[/blue]")
-        episodes = db.get_episodes_by_status('downloaded')
+        episodes = db.get_episodes_by_status("downloaded")
 
         if not episodes:
             console.print("[yellow]No episodes to transcribe[/yellow]")
@@ -194,7 +202,7 @@ def transcribe(ctx, model, episode_id):
 
         transcribed = 0
         for episode in track(episodes, description="Transcribing..."):
-            if transcriber.transcribe_episode(episode['id']):
+            if transcriber.transcribe_episode(episode["id"]):
                 transcribed += 1
 
         console.print(f"[green]Transcribed {transcribed} episodes[/green]")
@@ -203,24 +211,28 @@ def transcribe(ctx, model, episode_id):
 
 
 @main.command()
-@click.option('--provider', default=None, type=click.Choice(SUPPORTED_PROVIDERS),
-              help='LLM provider (overrides config)')
-@click.option('--model', default=None, help='LLM model to use (overrides config)')
-@click.option('--episode-id', type=int, help='Process specific episode')
+@click.option(
+    "--provider",
+    default=None,
+    type=click.Choice(SUPPORTED_PROVIDERS),
+    help="LLM provider (overrides config)",
+)
+@click.option("--model", default=None, help="LLM model to use (overrides config)")
+@click.option("--episode-id", type=int, help="Process specific episode")
 @click.pass_context
 def digest(ctx, provider, model, episode_id):
     """Generate structured summaries from transcripts."""
-    config = load_config(ctx.obj['config_path'])
-    db = ctx.obj['db']
+    config = load_config(ctx.obj["config_path"])
+    db = ctx.obj["db"]
 
-    settings = config.get('settings', {})
+    settings = config.get("settings", {})
     llm_provider, llm_model = resolve_provider_and_model(settings, provider, model)
 
     cleaner = TranscriptCleaner(
         db=db,
         llm_provider=llm_provider,
         llm_model=llm_model,
-        ollama_base_url=settings.get('ollama_base_url', DEFAULT_OLLAMA_URL)
+        ollama_base_url=settings.get("ollama_base_url", DEFAULT_OLLAMA_URL),
     )
 
     if episode_id:
@@ -237,25 +249,29 @@ def digest(ctx, provider, model, episode_id):
 
 
 @main.command()
-@click.option('--date', help='Export date (YYYY-MM-DD)')
-@click.option('--format', multiple=True, help='Export format (markdown, json, html)')
-@click.option('--output', help='Output file path')
+@click.option("--date", help="Export date (YYYY-MM-DD)")
+@click.option("--format", multiple=True, help="Export format (markdown, json, html)")
+@click.option("--output", help="Output file path")
 @click.pass_context
 def export(ctx, date, format, output):
     """Export daily digest summaries."""
-    config = load_config(ctx.obj['config_path'])
-    db = ctx.obj['db']
+    config = load_config(ctx.obj["config_path"])
+    db = ctx.obj["db"]
 
     if date:
         try:
-            target_date = datetime.strptime(date, '%Y-%m-%d')
+            target_date = datetime.strptime(date, "%Y-%m-%d")
         except ValueError:
             console.print("[red]Invalid date format. Use YYYY-MM-DD[/red]")
             return
     else:
         target_date = datetime.now()
 
-    formats = list(format) if format else config.get('settings', {}).get('export_format', ['markdown'])
+    formats = (
+        list(format)
+        if format
+        else config.get("settings", {}).get("export_format", ["markdown"])
+    )
 
     exporter = DigestExporter(db)
 
@@ -265,39 +281,47 @@ def export(ctx, date, format, output):
         console.print(f"[yellow]No summaries found for {target_date.date()}[/yellow]")
         return
 
-    console.print(f"[blue]Exporting {len(summaries)} summaries for {target_date.date()}[/blue]")
+    console.print(
+        f"[blue]Exporting {len(summaries)} summaries for {target_date.date()}[/blue]"
+    )
 
     for fmt in formats:
-        if fmt == 'markdown':
+        if fmt == "markdown":
             content = exporter.export_markdown(summaries, target_date.date())
-            filename = output or str(exporter.get_export_path(
-                f"digest_{target_date.strftime('%Y-%m-%d')}.md"
-            ))
-        elif fmt == 'json':
+            filename = output or str(
+                exporter.get_export_path(
+                    f"digest_{target_date.strftime('%Y-%m-%d')}.md"
+                )
+            )
+        elif fmt == "json":
             content = exporter.export_json(summaries, target_date.date())
-            filename = output or str(exporter.get_export_path(
-                f"digest_{target_date.strftime('%Y-%m-%d')}.json"
-            ))
-        elif fmt == 'html':
+            filename = output or str(
+                exporter.get_export_path(
+                    f"digest_{target_date.strftime('%Y-%m-%d')}.json"
+                )
+            )
+        elif fmt == "html":
             content = exporter.export_email_html(summaries, target_date.date())
-            filename = output or str(exporter.get_export_path(
-                f"digest_{target_date.strftime('%Y-%m-%d')}.html"
-            ))
+            filename = output or str(
+                exporter.get_export_path(
+                    f"digest_{target_date.strftime('%Y-%m-%d')}.html"
+                )
+            )
         else:
             console.print(f"[red]Unsupported format: {fmt}[/red]")
             continue
 
-        with open(filename, 'w') as f:
+        with open(filename, "w") as f:
             f.write(content)
 
         console.print(f"[green]Exported {fmt}: {filename}[/green]")
 
 
-
-def _write_transcript_file(episode_id: int, transcript: str, fmt: str,
-                           output_dir: str) -> Path:
+def _write_transcript_file(
+    episode_id: int, transcript: str, fmt: str, output_dir: str
+) -> Path:
     """Write one transcript to output_dir in the given format."""
-    if fmt == 'markdown':
+    if fmt == "markdown":
         content = f"# Transcript for Episode {episode_id}\n\n{transcript}"
         filename = f"transcript_{episode_id}.md"
     else:
@@ -310,18 +334,29 @@ def _write_transcript_file(episode_id: int, transcript: str, fmt: str,
 
 
 @main.command()
-@click.option('--date', required=False, help='Export all transcripts for a given date (YYYY-MM-DD)')
-@click.option('--format', 'fmt', default='txt', type=click.Choice(['txt', 'markdown']),
-              help='Export format')
-@click.option('--output-dir', default='exports', help='Output directory for transcripts')
+@click.option(
+    "--date",
+    required=False,
+    help="Export all transcripts for a given date (YYYY-MM-DD)",
+)
+@click.option(
+    "--format",
+    "fmt",
+    default="txt",
+    type=click.Choice(["txt", "markdown"]),
+    help="Export format",
+)
+@click.option(
+    "--output-dir", default="exports", help="Output directory for transcripts"
+)
 @click.pass_context
 def export_transcript(ctx, date, fmt, output_dir):
     """Export transcript(s) for one episode, or for every episode on a date."""
-    db = ctx.obj['db']
+    db = ctx.obj["db"]
 
     if date:
         try:
-            target_date = datetime.strptime(date, '%Y-%m-%d').date()
+            target_date = datetime.strptime(date, "%Y-%m-%d").date()
         except ValueError:
             console.print("[red]Invalid date format. Use YYYY-MM-DD[/red]")
             return
@@ -333,14 +368,16 @@ def export_transcript(ctx, date, fmt, output_dir):
 
         exported = 0
         for episode in episodes:
-            transcript = db.get_transcript_by_episode_id(episode['id'])
+            transcript = db.get_transcript_by_episode_id(episode["id"])
             if transcript:
-                _write_transcript_file(episode['id'], transcript, fmt, output_dir)
+                _write_transcript_file(episode["id"], transcript, fmt, output_dir)
                 exported += 1
-        console.print(f"[green]✓ Exported {exported} transcripts to {output_dir}[/green]")
+        console.print(
+            f"[green]✓ Exported {exported} transcripts to {output_dir}[/green]"
+        )
         return
 
-    episode_id = click.prompt('Episode ID to export', type=int)
+    episode_id = click.prompt("Episode ID to export", type=int)
     transcript = db.get_transcript_by_episode_id(episode_id)
     if not transcript:
         console.print(f"[red]No transcript found for episode {episode_id}[/red]")
@@ -354,9 +391,9 @@ def export_transcript(ctx, date, fmt, output_dir):
 @click.pass_context
 def status(ctx):
     """Show processing status of episodes."""
-    db = ctx.obj['db']
+    db = ctx.obj["db"]
 
-    statuses = ['downloaded', 'transcribed', 'processed']
+    statuses = ["downloaded", "transcribed", "processed"]
     counts = {}
 
     for s in statuses:
@@ -374,10 +411,16 @@ def status(ctx):
 
 
 @main.command()
-@click.option('--topic', required=True, help='Blog post topic/angle')
-@click.option('--date', help='Date to use for digest (YYYY-MM-DD), defaults to today')
-@click.option('--target-grade', default=91.0, help='Target grade for AP English teacher (default: 91.0)')
-@click.option('--dry-run', is_flag=True, help='Show available summaries without generating')
+@click.option("--topic", required=True, help="Blog post topic/angle")
+@click.option("--date", help="Date to use for digest (YYYY-MM-DD), defaults to today")
+@click.option(
+    "--target-grade",
+    default=91.0,
+    help="Target grade for AP English teacher (default: 91.0)",
+)
+@click.option(
+    "--dry-run", is_flag=True, help="Show available summaries without generating"
+)
 @click.pass_context
 def write(ctx, topic, date, target_grade, dry_run):
     """Generate a blog post from a day's digest with an iterative grading loop.
@@ -386,15 +429,15 @@ def write(ctx, topic, date, target_grade, dry_run):
     draft is scored by a strict evaluator persona and revised until it
     reaches the target grade or the iteration limit.
     """
-    config = load_config(ctx.obj['config_path'])
-    db = ctx.obj['db']
+    config = load_config(ctx.obj["config_path"])
+    db = ctx.obj["db"]
 
-    settings = config.get('settings', {})
+    settings = config.get("settings", {})
     llm_provider, llm_model = resolve_provider_and_model(settings)
 
     if date:
         try:
-            target_date = datetime.strptime(date, '%Y-%m-%d')
+            target_date = datetime.strptime(date, "%Y-%m-%d")
         except ValueError:
             console.print("[red]Invalid date format. Use YYYY-MM-DD[/red]")
             return
@@ -409,16 +452,18 @@ def write(ctx, topic, date, target_grade, dry_run):
         return
 
     if dry_run:
-        console.print(f"[blue]Dry run — {len(summaries)} summaries available for {target_date.date()}:[/blue]")
+        console.print(
+            f"[blue]Dry run — {len(summaries)} summaries available for {target_date.date()}:[/blue]"
+        )
         table = Table(title="Available Summaries")
         table.add_column("Podcast", style="cyan")
         table.add_column("Episode", style="white")
         table.add_column("Topics", style="green")
         for s in summaries:
             table.add_row(
-                s['podcast_title'],
-                s['episode_title'],
-                ', '.join(s.get('key_topics', [])[:3])
+                s["podcast_title"],
+                s["episode_title"],
+                ", ".join(s.get("key_topics", [])[:3]),
             )
         console.print(table)
         return
@@ -428,7 +473,7 @@ def write(ctx, topic, date, target_grade, dry_run):
         llm_provider=llm_provider,
         llm_model=llm_model,
         target_grade=target_grade,
-        ollama_base_url=settings.get('ollama_base_url', DEFAULT_OLLAMA_URL),
+        ollama_base_url=settings.get("ollama_base_url", DEFAULT_OLLAMA_URL),
     )
 
     console.print(f"[blue]Generating blog post: '{topic}'[/blue]")
@@ -439,7 +484,9 @@ def write(ctx, topic, date, target_grade, dry_run):
         blog_result = writer.generate_blog_post_from_digest(topic, summaries)
 
     console.print("\n[green]Blog post generated![/green]")
-    console.print(f"Final Grade: {blog_result['final_grade']} ({blog_result['final_score']}/100)")
+    console.print(
+        f"Final Grade: {blog_result['final_grade']} ({blog_result['final_score']}/100)"
+    )
     console.print(f"Iterations: {len(blog_result['iterations'])}")
 
     file_path = writer.save_blog_post(blog_result)
@@ -448,19 +495,19 @@ def write(ctx, topic, date, target_grade, dry_run):
     console.print("\n[blue]Generating social media posts...[/blue]")
     social_posts = writer.generate_social_posts(blog_result)
 
-    if social_posts['twitter']:
+    if social_posts["twitter"]:
         console.print("\n[cyan]Twitter Posts:[/cyan]")
-        for i, post in enumerate(social_posts['twitter'], 1):
+        for i, post in enumerate(social_posts["twitter"], 1):
             console.print(f"{i}. {post}")
 
-    if social_posts['linkedin']:
+    if social_posts["linkedin"]:
         console.print("\n[cyan]LinkedIn Posts:[/cyan]")
-        for i, post in enumerate(social_posts['linkedin'], 1):
+        for i, post in enumerate(social_posts["linkedin"], 1):
             console.print(f"{i}. {post[:100]}...")
 
     console.print("\n[cyan]Blog Post Preview:[/cyan]")
     console.print("-" * 50)
-    preview = blog_result['final_post'][:500]
+    preview = blog_result["final_post"][:500]
     console.print(f"{preview}...")
     console.print("-" * 50)
     console.print(f"[green]Complete post saved to: {file_path}[/green]")
@@ -487,7 +534,9 @@ def init(ctx):
             console.print(f"[yellow]  {name} not found[/yellow]")
 
     if missing:
-        console.print(f"\n[yellow]Warning: missing prerequisites: {', '.join(missing)}[/yellow]")
+        console.print(
+            f"\n[yellow]Warning: missing prerequisites: {', '.join(missing)}[/yellow]"
+        )
         console.print("Some pipeline stages may not work without them.")
         if "ffmpeg" in missing:
             console.print("  Install ffmpeg: brew install ffmpeg")
@@ -496,13 +545,13 @@ def init(ctx):
         console.print()
 
     # Create directories
-    dirs = ['data', 'config', 'data/audio', 'exports', 'blog_posts', 'linkedin_posts']
+    dirs = ["data", "config", "data/audio", "exports", "blog_posts", "linkedin_posts"]
     for dir_name in dirs:
         Path(dir_name).mkdir(parents=True, exist_ok=True)
         console.print(f"  Created directory: {dir_name}")
 
     # Copy example config if it doesn't exist
-    config_path = Path(ctx.obj['config_path'])
+    config_path = Path(ctx.obj["config_path"])
     example_path = Path("config/feeds.yaml.example")
 
     if not config_path.exists() and example_path.exists():
@@ -522,5 +571,5 @@ def init(ctx):
     console.print("5. Run 'p3 write --topic \"Your Topic\"' to generate blog posts")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

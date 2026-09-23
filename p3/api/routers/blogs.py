@@ -85,7 +85,12 @@ def create_blog(body: BlogCreate):
 
     job_id = db.create_job("write")
     job_runner.enqueue(
-        task_write_blog, job_id, body.topic, target_date, body.target_grade,
-        body.provider, body.model,
+        task_write_blog,
+        job_id,
+        body.topic,
+        target_date,
+        body.target_grade,
+        body.provider,
+        body.model,
     )
     return {"job_id": job_id}

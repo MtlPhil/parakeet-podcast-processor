@@ -1,7 +1,8 @@
 """Episode listing, detail, and pipeline trigger routes."""
 
-from fastapi import APIRouter, HTTPException, Query
 from typing import Optional
+
+from fastapi import APIRouter, HTTPException, Query
 
 from p3.api.deps import get_db
 from p3.api.job_queue import job_runner
@@ -64,7 +65,9 @@ def transcribe_episode(episode_id: int):
     if not episode:
         raise HTTPException(404, "Episode not found")
     if episode["status"] != "downloaded":
-        raise HTTPException(400, f"Episode status is '{episode['status']}', expected 'downloaded'")
+        raise HTTPException(
+            400, f"Episode status is '{episode['status']}', expected 'downloaded'"
+        )
 
     job_id = db.create_job(
         "transcribe", episode_id=episode_id, podcast_id=episode["podcast_id"]
@@ -80,7 +83,10 @@ def digest_episode(episode_id: int):
     if not episode:
         raise HTTPException(404, "Episode not found")
     if episode["status"] not in ("transcribed", "processed"):
-        raise HTTPException(400, f"Episode status is '{episode['status']}', expected 'transcribed' or 'processed'")
+        raise HTTPException(
+            400,
+            f"Episode status is '{episode['status']}', expected 'transcribed' or 'processed'",
+        )
 
     job_id = db.create_job(
         "digest", episode_id=episode_id, podcast_id=episode["podcast_id"]
@@ -104,7 +110,9 @@ def generate_synopsis(episode_id: int, body: Optional[SynopsisCreate] = None):
         "synopsis", episode_id=episode_id, podcast_id=episode["podcast_id"]
     )
     body = body or SynopsisCreate()
-    job_runner.enqueue(task_generate_synopsis, job_id, episode_id, body.provider, body.model)
+    job_runner.enqueue(
+        task_generate_synopsis, job_id, episode_id, body.provider, body.model
+    )
     return {"job_id": job_id}
 
 

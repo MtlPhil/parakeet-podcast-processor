@@ -40,9 +40,9 @@ class TestPodcasts:
         db.add_podcast("My Podcast", "http://example.com/rss", "tech")
         result = db.get_podcast_by_url("http://example.com/rss")
         assert result is not None
-        assert result['title'] == "My Podcast"
-        assert result['rss_url'] == "http://example.com/rss"
-        assert result['category'] == "tech"
+        assert result["title"] == "My Podcast"
+        assert result["rss_url"] == "http://example.com/rss"
+        assert result["category"] == "tech"
 
     def test_get_podcast_by_url_not_found(self, db):
         result = db.get_podcast_by_url("http://nonexistent.com/rss")
@@ -57,30 +57,30 @@ class TestPodcasts:
         pid = db.add_podcast("Old", "http://example.com/rss", "tech")
         db.update_podcast(pid, title="New", category="business")
         result = db.get_podcast_by_id(pid)
-        assert result['title'] == "New"
-        assert result['rss_url'] == "http://example.com/rss"
-        assert result['category'] == "business"
+        assert result["title"] == "New"
+        assert result["rss_url"] == "http://example.com/rss"
+        assert result["category"] == "business"
 
     def test_update_podcast_partial(self, db):
         pid = db.add_podcast("Keep", "http://example.com/rss", "tech")
         db.update_podcast(pid, category="news")
         result = db.get_podcast_by_id(pid)
-        assert result['title'] == "Keep"
-        assert result['category'] == "news"
+        assert result["title"] == "Keep"
+        assert result["category"] == "news"
 
     def test_update_podcast_with_episodes(self, db):
         pid = db.add_podcast("Has eps", "http://example.com/rss", "tech")
         db.add_episode(pid, "Ep 1", datetime.now(), "http://example.com/ep1.mp3")
         db.update_podcast(pid, title="Renamed", category="news")
         result = db.get_podcast_by_id(pid)
-        assert result['title'] == "Renamed"
-        assert result['category'] == "news"
+        assert result["title"] == "Renamed"
+        assert result["category"] == "news"
 
     def test_update_podcast_noop(self, db):
         pid = db.add_podcast("Same", "http://example.com/rss", "tech")
         db.update_podcast(pid)
         result = db.get_podcast_by_id(pid)
-        assert result['title'] == "Same"
+        assert result["title"] == "Same"
 
     def test_delete_podcast_removes_its_jobs(self, db):
         pid = db.add_podcast("Gone", "http://example.com/rss")
@@ -101,20 +101,27 @@ class TestPodcasts:
 class TestEpisodes:
     def test_add_and_check_episode(self, db):
         pid = db.add_podcast("Pod", "http://example.com/rss")
-        eid = db.add_episode(pid, "Episode 1", datetime.now(), "http://example.com/ep1.mp3")
+        eid = db.add_episode(
+            pid, "Episode 1", datetime.now(), "http://example.com/ep1.mp3"
+        )
         assert eid >= 1
         assert db.episode_exists("http://example.com/ep1.mp3")
         assert not db.episode_exists("http://example.com/nonexistent.mp3")
 
     def test_get_episode_by_id(self, db):
         pid = db.add_podcast("Pod", "http://example.com/rss")
-        eid = db.add_episode(pid, "Episode 1", datetime.now(), "http://example.com/ep1.mp3",
-                             file_path="/tmp/audio.wav")
+        eid = db.add_episode(
+            pid,
+            "Episode 1",
+            datetime.now(),
+            "http://example.com/ep1.mp3",
+            file_path="/tmp/audio.wav",
+        )
         result = db.get_episode_by_id(eid)
         assert result is not None
-        assert result['title'] == "Episode 1"
-        assert result['podcast_title'] == "Pod"
-        assert result['file_path'] == "/tmp/audio.wav"
+        assert result["title"] == "Episode 1"
+        assert result["podcast_title"] == "Pod"
+        assert result["file_path"] == "/tmp/audio.wav"
 
     def test_get_episode_by_id_not_found(self, db):
         result = db.get_episode_by_id(9999)
@@ -125,24 +132,24 @@ class TestEpisodes:
         db.add_episode(pid, "Ep 1", datetime.now(), "http://example.com/ep1.mp3")
         db.add_episode(pid, "Ep 2", datetime.now(), "http://example.com/ep2.mp3")
 
-        downloaded = db.get_episodes_by_status('downloaded')
+        downloaded = db.get_episodes_by_status("downloaded")
         assert len(downloaded) == 2
 
-        transcribed = db.get_episodes_by_status('transcribed')
+        transcribed = db.get_episodes_by_status("transcribed")
         assert len(transcribed) == 0
 
     def test_update_episode_status(self, db):
         pid = db.add_podcast("Pod", "http://example.com/rss")
         eid = db.add_episode(pid, "Ep 1", datetime.now(), "http://example.com/ep1.mp3")
 
-        db.update_episode_status(eid, 'transcribed')
+        db.update_episode_status(eid, "transcribed")
 
-        downloaded = db.get_episodes_by_status('downloaded')
+        downloaded = db.get_episodes_by_status("downloaded")
         assert len(downloaded) == 0
 
-        transcribed = db.get_episodes_by_status('transcribed')
+        transcribed = db.get_episodes_by_status("transcribed")
         assert len(transcribed) == 1
-        assert transcribed[0]['title'] == "Ep 1"
+        assert transcribed[0]["title"] == "Ep 1"
 
 
 class TestTranscripts:
@@ -151,17 +158,29 @@ class TestTranscripts:
         eid = db.add_episode(pid, "Ep 1", datetime.now(), "http://example.com/ep1.mp3")
 
         segments = [
-            {"start": 0.0, "end": 5.0, "text": "Hello world", "speaker": None, "confidence": 0.95},
-            {"start": 5.0, "end": 10.0, "text": "Testing", "speaker": "Speaker1", "confidence": 0.88},
+            {
+                "start": 0.0,
+                "end": 5.0,
+                "text": "Hello world",
+                "speaker": None,
+                "confidence": 0.95,
+            },
+            {
+                "start": 5.0,
+                "end": 10.0,
+                "text": "Testing",
+                "speaker": "Speaker1",
+                "confidence": 0.88,
+            },
         ]
         db.add_transcript_segments(eid, segments)
 
         result = db.get_transcripts_for_episode(eid)
         assert len(result) == 2
-        assert result[0]['text'] == "Hello world"
-        assert result[1]['speaker'] == "Speaker1"
+        assert result[0]["text"] == "Hello world"
+        assert result[1]["speaker"] == "Speaker1"
         # Check ordering by timestamp
-        assert result[0]['timestamp_start'] <= result[1]['timestamp_start']
+        assert result[0]["timestamp_start"] <= result[1]["timestamp_start"]
 
     def test_add_transcript_segments_replaces_not_appends(self, db):
         """Regression test: a retried transcription (e.g. after an
@@ -169,7 +188,15 @@ class TestTranscripts:
         pid = db.add_podcast("Pod", "http://example.com/rss")
         eid = db.add_episode(pid, "Ep 1", datetime.now(), "http://example.com/ep1.mp3")
 
-        segments = [{"start": 0.0, "end": 5.0, "text": "Hello", "speaker": None, "confidence": 0.9}]
+        segments = [
+            {
+                "start": 0.0,
+                "end": 5.0,
+                "text": "Hello",
+                "speaker": None,
+                "confidence": 0.9,
+            }
+        ]
         db.add_transcript_segments(eid, segments)
         db.add_transcript_segments(eid, segments)  # simulate a retranscription
 
@@ -182,7 +209,13 @@ class TestTranscripts:
         e2 = db.add_episode(pid, "Ep 2", datetime.now(), "http://example.com/2.mp3")
 
         # e1 has a duplicated segment inserted directly, e2 is untouched
-        seg = {"start": 0.0, "end": 5.0, "text": "Hello", "speaker": None, "confidence": 0.9}
+        seg = {
+            "start": 0.0,
+            "end": 5.0,
+            "text": "Hello",
+            "speaker": None,
+            "confidence": 0.9,
+        }
         db.conn.execute(
             "INSERT INTO transcripts (episode_id, speaker, timestamp_start, timestamp_end, text, confidence) "
             "VALUES (?, ?, ?, ?, ?, ?)",
@@ -208,16 +241,32 @@ class TestTranscripts:
         pid = db.add_podcast("Pod", "http://example.com/rss")
         eid = db.add_episode(pid, "Ep 1", datetime.now(), "http://example.com/ep1.mp3")
 
-        db.add_transcript_segments(eid, [
-            {"start": 0.0, "end": 1.0, "text": "hi", "speaker": None, "confidence": 0.9}
-        ])
-        db.update_episode_status(eid, 'transcribed')
-        assert db.get_episode_by_id(eid)['status'] == 'transcribed'
+        db.add_transcript_segments(
+            eid,
+            [
+                {
+                    "start": 0.0,
+                    "end": 1.0,
+                    "text": "hi",
+                    "speaker": None,
+                    "confidence": 0.9,
+                }
+            ],
+        )
+        db.update_episode_status(eid, "transcribed")
+        assert db.get_episode_by_id(eid)["status"] == "transcribed"
 
-        db.add_summary(eid, key_topics=[], themes=[], quotes=[], startups=[],
-                       full_summary="summary", digest_date=datetime.now())
-        db.update_episode_status(eid, 'processed')
-        assert db.get_episode_by_id(eid)['status'] == 'processed'
+        db.add_summary(
+            eid,
+            key_topics=[],
+            themes=[],
+            quotes=[],
+            startups=[],
+            full_summary="summary",
+            digest_date=datetime.now(),
+        )
+        db.update_episode_status(eid, "processed")
+        assert db.get_episode_by_id(eid)["status"] == "processed"
 
 
 class TestSummaries:
@@ -233,20 +282,20 @@ class TestSummaries:
             quotes=["Great quote here"],
             startups=["StartupCo"],
             full_summary="A great episode about AI.",
-            digest_date=now
+            digest_date=now,
         )
 
         summaries = db.get_summaries_by_date(now)
         assert len(summaries) == 1
         s = summaries[0]
-        assert s['key_topics'] == ["AI", "ML"]
-        assert s['themes'] == ["technology"]
-        assert s['quotes'] == ["Great quote here"]
-        assert s['startups'] == ["StartupCo"]
-        assert s['full_summary'] == "A great episode about AI."
-        assert s['episode_title'] == "Ep 1"
-        assert s['podcast_title'] == "Pod"
-        assert s['long_summary'] is None  # not provided above
+        assert s["key_topics"] == ["AI", "ML"]
+        assert s["themes"] == ["technology"]
+        assert s["quotes"] == ["Great quote here"]
+        assert s["startups"] == ["StartupCo"]
+        assert s["full_summary"] == "A great episode about AI."
+        assert s["episode_title"] == "Ep 1"
+        assert s["podcast_title"] == "Pod"
+        assert s["long_summary"] is None  # not provided above
 
     def test_summary_stores_long_summary(self, db):
         pid = db.add_podcast("Pod", "http://example.com/rss")
@@ -255,15 +304,18 @@ class TestSummaries:
 
         db.add_summary(
             episode_id=eid,
-            key_topics=[], themes=[], quotes=[], startups=[],
+            key_topics=[],
+            themes=[],
+            quotes=[],
+            startups=[],
             full_summary="Short version.",
             long_summary="Much longer section-by-section notes.",
-            digest_date=now
+            digest_date=now,
         )
 
         s = db.get_summaries_by_date(now)[0]
-        assert s['full_summary'] == "Short version."
-        assert s['long_summary'] == "Much longer section-by-section notes."
+        assert s["full_summary"] == "Short version."
+        assert s["long_summary"] == "Much longer section-by-section notes."
 
     def test_add_summary_replaces_not_duplicates(self, db):
         """Re-digesting an episode must replace its summary, not add a
@@ -272,16 +324,30 @@ class TestSummaries:
         now = datetime.now()
         eid = db.add_episode(pid, "Ep 1", now, "http://example.com/ep1.mp3")
 
-        db.add_summary(episode_id=eid, key_topics=[], themes=[], quotes=[],
-                       startups=[], full_summary="First pass.", digest_date=now)
-        db.add_summary(episode_id=eid, key_topics=[], themes=[], quotes=[],
-                       startups=[], full_summary="Second pass.",
-                       long_summary="Now with notes.", digest_date=now)
+        db.add_summary(
+            episode_id=eid,
+            key_topics=[],
+            themes=[],
+            quotes=[],
+            startups=[],
+            full_summary="First pass.",
+            digest_date=now,
+        )
+        db.add_summary(
+            episode_id=eid,
+            key_topics=[],
+            themes=[],
+            quotes=[],
+            startups=[],
+            full_summary="Second pass.",
+            long_summary="Now with notes.",
+            digest_date=now,
+        )
 
         summaries = db.get_summaries_by_date(now)
         assert len(summaries) == 1
-        assert summaries[0]['full_summary'] == "Second pass."
-        assert summaries[0]['long_summary'] == "Now with notes."
+        assert summaries[0]["full_summary"] == "Second pass."
+        assert summaries[0]["long_summary"] == "Now with notes."
 
     def test_no_summaries_for_date(self, db):
         result = db.get_summaries_by_date(datetime(2020, 1, 1))
@@ -291,16 +357,23 @@ class TestSummaries:
         pid = db.add_podcast("Pod", "http://example.com/rss")
         now = datetime.now()
         eid = db.add_episode(pid, "Ep 1", now, "http://example.com/ep1.mp3")
-        db.add_summary(episode_id=eid, key_topics=["a"], themes=["b"], quotes=["c"],
-                       startups=["d"], full_summary="Short version.", digest_date=now)
+        db.add_summary(
+            episode_id=eid,
+            key_topics=["a"],
+            themes=["b"],
+            quotes=["c"],
+            startups=["d"],
+            full_summary="Short version.",
+            digest_date=now,
+        )
 
         db.update_summary_long_summary(eid, "A synopsis generated later, on demand.")
 
         s = db.get_summary_by_episode(eid)
-        assert s['long_summary'] == "A synopsis generated later, on demand."
-        assert s['full_summary'] == "Short version."
-        assert s['key_topics'] == ["a"]
-        assert s['themes'] == ["b"]
+        assert s["long_summary"] == "A synopsis generated later, on demand."
+        assert s["full_summary"] == "Short version."
+        assert s["key_topics"] == ["a"]
+        assert s["themes"] == ["b"]
 
 
 class TestJobs:
@@ -445,9 +518,10 @@ class TestSequenceResync:
         db2._resync_sequences()
 
         ddl_calls = [
-            call.args[0] for call in spy.execute.call_args_list
-            if call.args and call.args[0].strip().upper().split()[0]
-            in ("ALTER", "DROP", "CREATE")
+            call.args[0]
+            for call in spy.execute.call_args_list
+            if call.args
+            and call.args[0].strip().upper().split()[0] in ("ALTER", "DROP", "CREATE")
         ]
         assert ddl_calls == []
         db2.close()
@@ -459,7 +533,7 @@ class TestRowMapping:
     def test_dict_keys_match_columns(self, db):
         pid = db.add_podcast("Pod", "http://example.com/rss", "tech")
         result = db.get_podcast_by_url("http://example.com/rss")
-        expected_keys = {'id', 'title', 'rss_url', 'category', 'created_at'}
+        expected_keys = {"id", "title", "rss_url", "category", "created_at"}
         assert set(result.keys()) == expected_keys
 
 
@@ -474,6 +548,6 @@ class TestStats:
         db.update_job(done, status="completed")
 
         stats = db.get_stats()
-        assert stats['queued_jobs'] == 2
-        assert stats['running_jobs'] == 1
-        assert stats['active_jobs'] == 3
+        assert stats["queued_jobs"] == 2
+        assert stats["running_jobs"] == 1
+        assert stats["active_jobs"] == 3

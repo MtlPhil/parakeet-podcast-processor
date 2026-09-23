@@ -3,7 +3,6 @@
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
-
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request
@@ -12,10 +11,20 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from p3.api.deps import get_db, close_db
+from p3.api.deps import close_db, get_db
 from p3.api.job_queue import job_runner
 from p3.api.models import StatsOut
-from p3.api.routers import podcasts, episodes, jobs, transcripts, summaries, exports, blogs, linkedin, settings
+from p3.api.routers import (
+    blogs,
+    episodes,
+    exports,
+    jobs,
+    linkedin,
+    podcasts,
+    settings,
+    summaries,
+    transcripts,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,8 +82,11 @@ async def reject_cross_site_writes(request: Request, call_next):
     if request.method not in _SAFE_METHODS and origin:
         same_host = urlsplit(origin).netloc == request.headers.get("host")
         if not same_host and origin not in DEV_ORIGINS:
-            return JSONResponse({"detail": "Cross-origin request refused"}, status_code=403)
+            return JSONResponse(
+                {"detail": "Cross-origin request refused"}, status_code=403
+            )
     return await call_next(request)
+
 
 # Routers
 app.include_router(podcasts.router)
@@ -117,4 +129,6 @@ class SPAStaticFiles(StaticFiles):
 # Serve the React frontend build (production)
 FRONTEND_BUILD = Path("frontend/dist")
 if FRONTEND_BUILD.exists():
-    app.mount("/", SPAStaticFiles(directory=str(FRONTEND_BUILD), html=True), name="frontend")
+    app.mount(
+        "/", SPAStaticFiles(directory=str(FRONTEND_BUILD), html=True), name="frontend"
+    )

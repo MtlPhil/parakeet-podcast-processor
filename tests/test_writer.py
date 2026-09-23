@@ -1,6 +1,5 @@
 """Tests for writer utilities (non-LLM paths)."""
 
-
 from p3.writer import BlogWriter
 
 
@@ -9,29 +8,29 @@ class TestParseGrade:
         response = "GRADE: A-\nSCORE: 91\nFEEDBACK: Great work overall."
         writer = BlogWriter(db=None)
         result = writer._parse_grade(response)
-        assert result['grade'] == 'A-'
-        assert result['score'] == 91.0
-        assert 'Great work overall' in result['feedback']
+        assert result["grade"] == "A-"
+        assert result["score"] == 91.0
+        assert "Great work overall" in result["feedback"]
 
     def test_case_insensitive(self):
         response = "grade: B+\nscore: 85\nfeedback: Decent effort."
         writer = BlogWriter(db=None)
         result = writer._parse_grade(response)
-        assert result['grade'] == 'B+'
-        assert result['score'] == 85.0
+        assert result["grade"] == "B+"
+        assert result["score"] == 85.0
 
     def test_unparseable_defaults_to_zero(self):
         response = "This blog post is mediocre. I'd give it a B."
         writer = BlogWriter(db=None)
         result = writer._parse_grade(response)
-        assert result['score'] == 0.0
-        assert result['grade'] == '?'
+        assert result["score"] == 0.0
+        assert result["grade"] == "?"
 
     def test_decimal_score(self):
         response = "GRADE: A\nSCORE: 92.5\nFEEDBACK: Almost perfect."
         writer = BlogWriter(db=None)
         result = writer._parse_grade(response)
-        assert result['score'] == 92.5
+        assert result["score"] == 92.5
 
 
 class TestParseNumberedList:
@@ -59,7 +58,10 @@ class TestParseNumberedList:
 
 class TestGenerateSlug:
     def test_basic_slug(self):
-        assert BlogWriter._generate_slug("AI's Impact on Software") == "ais-impact-on-software"
+        assert (
+            BlogWriter._generate_slug("AI's Impact on Software")
+            == "ais-impact-on-software"
+        )
 
     def test_special_characters(self):
         assert BlogWriter._generate_slug("Hello, World! #1") == "hello-world-1"
@@ -76,59 +78,61 @@ class TestGenerateSlug:
 class TestBuildContext:
     def test_single_summary(self):
         writer = BlogWriter(db=None)
-        summaries = [{
-            'episode_title': 'Episode 1',
-            'podcast_title': 'Podcast A',
-            'full_summary': 'Summary text',
-            'key_topics': ['AI'],
-            'themes': ['tech'],
-            'quotes': ['quote1'],
-            'startups': ['StartupX'],
-        }]
+        summaries = [
+            {
+                "episode_title": "Episode 1",
+                "podcast_title": "Podcast A",
+                "full_summary": "Summary text",
+                "key_topics": ["AI"],
+                "themes": ["tech"],
+                "quotes": ["quote1"],
+                "startups": ["StartupX"],
+            }
+        ]
         context = writer._build_context(summaries)
-        assert 'Episode 1' in context
-        assert 'Podcast A' in context
-        assert 'AI' in context
+        assert "Episode 1" in context
+        assert "Podcast A" in context
+        assert "AI" in context
 
     def test_multiple_summaries(self):
         writer = BlogWriter(db=None)
         summaries = [
             {
-                'episode_title': f'Ep {i}',
-                'podcast_title': f'Pod {i}',
-                'full_summary': f'Summary {i}',
-                'key_topics': [f'topic{i}'],
-                'themes': [],
-                'quotes': [],
-                'startups': [],
+                "episode_title": f"Ep {i}",
+                "podcast_title": f"Pod {i}",
+                "full_summary": f"Summary {i}",
+                "key_topics": [f"topic{i}"],
+                "themes": [],
+                "quotes": [],
+                "startups": [],
             }
             for i in range(3)
         ]
         context = writer._build_context(summaries)
-        assert 'Source 1' in context
-        assert 'Source 2' in context
-        assert 'Source 3' in context
+        assert "Source 1" in context
+        assert "Source 2" in context
+        assert "Source 3" in context
 
 
 class TestSaveLinkedInPost:
     def test_saves_both_languages_to_file(self, tmp_path):
         writer = BlogWriter(db=None)
         result = {
-            'english': 'This is the English post.',
-            'french_quebec': "Voici le billet en français québécois.",
-            'slug': 'pod-a-episode-1',
-            'metadata': {
-                'episode_title': 'Episode 1',
-                'podcast_title': 'Podcast A',
-                'generated_at': '2026-09-12T12:00:00',
-                'model_used': 'llama3.2:latest',
+            "english": "This is the English post.",
+            "french_quebec": "Voici le billet en français québécois.",
+            "slug": "pod-a-episode-1",
+            "metadata": {
+                "episode_title": "Episode 1",
+                "podcast_title": "Podcast A",
+                "generated_at": "2026-09-12T12:00:00",
+                "model_used": "llama3.2:latest",
             },
         }
         file_path = writer.save_linkedin_post(result, output_dir=str(tmp_path))
         content = open(file_path).read()
-        assert 'This is the English post.' in content
-        assert 'Voici le billet en français québécois.' in content
-        assert '## English' in content
-        assert 'Français (Québec)' in content
-        assert 'Episode 1' in content
-        assert 'Podcast A' in content
+        assert "This is the English post." in content
+        assert "Voici le billet en français québécois." in content
+        assert "## English" in content
+        assert "Français (Québec)" in content
+        assert "Episode 1" in content
+        assert "Podcast A" in content
