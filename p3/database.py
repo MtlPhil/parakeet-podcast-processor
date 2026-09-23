@@ -74,6 +74,14 @@ class P3Database:
             )
         """)
 
+        # Migration: what kind of source this row is -- 'rss' (podcast feed),
+        # 'youtube_channel' or 'youtube_video'. rss_url holds the source's
+        # canonical URL whatever its type.
+        self.conn.execute(
+            "ALTER TABLE podcasts ADD COLUMN IF NOT EXISTS "
+            "source_type VARCHAR DEFAULT 'rss'"
+        )
+
         self.conn.execute("""
             CREATE SEQUENCE IF NOT EXISTS episode_id_seq START 1
         """)
@@ -216,13 +224,18 @@ class P3Database:
             )
 
     def add_podcast(
-        self, title: str, rss_url: str, category: Optional[str] = None
+        self,
+        title: str,
+        rss_url: str,
+        category: Optional[str] = None,
+        source_type: str = "rss",
     ) -> int:
-        """Add new podcast feed."""
+        """Add a new source: a podcast feed, YouTube channel or YouTube video."""
         next_id = self.conn.execute("SELECT nextval('podcast_id_seq')").fetchone()[0]
         self.conn.execute(
-            "INSERT INTO podcasts (id, title, rss_url, category) VALUES (?, ?, ?, ?)",
-            (next_id, title, rss_url, category),
+            "INSERT INTO podcasts (id, title, rss_url, category, source_type) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (next_id, title, rss_url, category, source_type),
         )
         return next_id
 
@@ -237,7 +250,7 @@ class P3Database:
         self,
         podcast_id: int,
         title: str,
-        date: datetime,
+        date: Optional[datetime],
         url: str,
         file_path: Optional[str] = None,
     ) -> int:

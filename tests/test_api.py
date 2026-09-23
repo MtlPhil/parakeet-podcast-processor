@@ -637,3 +637,145 @@ class TestCrossOriginGuard:
     def test_dev_server_origin_write_is_allowed(self):
         resp = client.delete("/api/jobs", headers={"Origin": "http://localhost:5173"})
         assert resp.status_code == 200
+
+
+# ------------------------------------------------------------------
+# YouTube sources
+# ------------------------------------------------------------------
+
+
+class TestYouTubeSources:
+    VID = "aaaaaaaaaaa"
+
+    @pytest.fixture(autouse=True)
+    def _no_jobs(self, monkeypatch):
+        from p3.api import job_queue
+
+        self.enqueued = []
+        monkeypatch.setattr(
+            job_queue.job_runner,
+            "enqueue",
+            lambda fn, *args: self.enqueued.append((fn.__name__, args)),
+        )
+
+    def _video_info(self, **extra):
+        return {
+            "id": self.VID,
+            "title": "A talk",
+            "live_status": "not_live",
+            "media_type": "video",
+            **extra,
+        }
+
+    def test_add_video(self, monkeypatch):
+        from p3 import youtube
+
+        monkeypatch.setattr(youtube, "get_video_info", lambda u: self._video_info())
+        resp = client.post(
+            "/api/podcasts", json={"url": f"https://youtu.be/{self.VID}"}
+        )
+        assert resp.status_code == 200
+        podcast = client.get(f"/api/podcasts/{resp.json()['podcast_id']}").json()
+        assert podcast["source_type"] == "youtube_video"
+        assert podcast["title"] == "A talk"
+        assert podcast["rss_url"] == f"https://www.youtube.com/watch?v={self.VID}"
+        assert self.enqueued[0][0] == "task_fetch"
+
+        dup = client.post(
+            "/api/podcasts",
+            json={"url": f"https://www.youtube.com/watch?v={self.VID}"},
+        )
+        assert dup.status_code == 409
+
+    def test_video_already_in_a_channel_is_409(self, monkeypatch):
+        from p3 import youtube
+
+        monkeypatch.setattr(youtube, "get_video_info", lambda u: self._video_info())
+        db = deps.get_db()
+        pid = db.add_podcast("Chan", "https://www.youtube.com/channel/UC" + "a" * 22)
+        db.add_episode(
+            pid, "A talk", None, f"https://www.youtube.com/watch?v={self.VID}"
+        )
+        resp = client.post(
+            "/api/podcasts", json={"url": f"https://youtu.be/{self.VID}"}
+        )
+        assert resp.status_code == 409
+
+    def test_livestream_video_is_400(self, monkeypatch):
+        from p3 import youtube
+
+        monkeypatch.setattr(
+            youtube,
+            "get_video_info",
+            lambda u: self._video_info(live_status="is_upcoming"),
+        )
+        resp = client.post(
+            "/api/podcasts", json={"url": f"https://youtu.be/{self.VID}"}
+        )
+        assert resp.status_code == 400
+        assert "livestream" in resp.json()["detail"]
+        assert client.get("/api/podcasts").json() == []
+
+    def test_shorts_url_is_400(self):
+        resp = client.post(
+            "/api/podcasts",
+            json={"url": f"https://www.youtube.com/shorts/{self.VID}"},
+        )
+        assert resp.status_code == 400
+
+    def test_lookup_failure_is_502(self, monkeypatch):
+        from p3 import youtube
+
+        def boom(u):
+            raise youtube.YouTubeError("Sign in to confirm you're not a bot")
+
+        monkeypatch.setattr(youtube, "resolve_channel", boom)
+        resp = client.post("/api/podcasts", json={"url": "https://www.youtube.com/@x"})
+        assert resp.status_code == 502
+        assert "not a bot" in resp.json()["detail"]
+
+    def test_add_channel(self, monkeypatch):
+        from p3 import youtube
+
+        canonical = "https://www.youtube.com/channel/UC" + "b" * 22
+        monkeypatch.setattr(youtube, "resolve_channel", lambda u: (canonical, "Chan"))
+        resp = client.post(
+            "/api/podcasts",
+            json={"url": "https://www.youtube.com/@chan", "category": "ai"},
+        )
+        assert resp.status_code == 200
+        [podcast] = client.get("/api/podcasts").json()
+        assert podcast["source_type"] == "youtube_channel"
+        assert podcast["rss_url"] == canonical
+        assert podcast["category"] == "ai"
+
+    def test_playlist_queues_import_job(self):
+        resp = client.post(
+            "/api/podcasts",
+            json={
+                "url": "https://www.youtube.com/playlist?list=PLx&si=abc",
+                "category": "talks",
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["podcast_id"] is None
+        job = client.get(f"/api/jobs/{data['job_id']}").json()
+        assert job["job_type"] == "import_playlist"
+        assert self.enqueued == [
+            (
+                "task_import_playlist",
+                (
+                    data["job_id"],
+                    "https://www.youtube.com/playlist?list=PLx",
+                    "talks",
+                ),
+            )
+        ]
+        # No source is created up front.
+        assert client.get("/api/podcasts").json() == []
+
+    def test_rss_sources_report_rss_type(self):
+        client.post("/api/podcasts", json={"url": "http://example.com/feed.xml"})
+        [podcast] = client.get("/api/podcasts").json()
+        assert podcast["source_type"] == "rss"

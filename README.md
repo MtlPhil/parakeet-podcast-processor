@@ -1,7 +1,7 @@
 # Parakeet Podcast Processor (P³)
 
 P³ turns podcast feeds into searchable transcripts, structured summaries and
-ready-to-edit written content. It downloads episodes from RSS, transcribes them
+ready-to-edit written content. It downloads episodes from RSS feeds and YouTube, transcribes them
 locally with [Parakeet MLX](https://github.com/senstella/parakeet-mlx) (or
 Whisper), cleans the transcript, extracts topics, themes, quotes and companies
 with an LLM, and exports daily digests, blog posts and LinkedIn posts.
@@ -36,6 +36,13 @@ P³ ships as both a command-line tool (`p3`) and a web app (FastAPI + React).
 - **Feed ingestion.** Add podcasts by RSS URL or Apple Podcasts link. New
   episodes are downloaded with retry and backoff and normalized to 16 kHz mono
   audio with `ffmpeg`.
+- **YouTube sources.** Add a YouTube channel (new uploads are fetched like a
+  feed) or a single video. A playlist URL adds each of its videos as its own
+  standalone source. Audio is downloaded with
+  [yt-dlp](https://github.com/yt-dlp/yt-dlp) and transcribed locally like any
+  other episode; YouTube captions are not used. Shorts and livestreams (live,
+  upcoming and archived streams) are skipped. Premieres are kept once they
+  have aired.
 - **Local transcription.** Parakeet MLX on Apple Silicon, with automatic fallback
   to OpenAI Whisper. Long episodes are transcribed in 10-minute chunks to keep
   memory use bounded.
@@ -64,13 +71,13 @@ P³ ships as both a command-line tool (`p3`) and a web app (FastAPI + React).
 ## How it works
 
 ```
- RSS / Apple link
+ RSS / Apple / YouTube
         │
         ▼
  ┌─────────────┐   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
  │  Download   │──▶│  Transcribe  │──▶│    Digest    │──▶│    Export    │
- │ feedparser  │   │ Parakeet MLX │   │ clean + LLM  │   │ MD/JSON/HTML │
- │  + ffmpeg   │   │  / Whisper   │   │  summarize   │   │ blog/LinkedIn│
+ │ feedparser, │   │ Parakeet MLX │   │ clean + LLM  │   │ MD/JSON/HTML │
+ │yt-dlp+ffmpeg│   │  / Whisper   │   │  summarize   │   │ blog/LinkedIn│
  └─────────────┘   └──────────────┘   └──────────────┘   └──────────────┘
         │                 │                  │                  │
         └─────────────────┴──── DuckDB ──────┴──────────────────┘
@@ -96,10 +103,14 @@ was already generated.
 | Python 3.10+ | |
 | [ffmpeg](https://ffmpeg.org) | Audio normalization and chunking: `brew install ffmpeg` |
 | [Ollama](https://ollama.com) | Default local LLM backend. Optional if you use OpenAI or Gemini. |
+| [Deno](https://deno.com) | Only for YouTube sources: yt-dlp's default JavaScript runtime for YouTube's player challenges. `brew install deno` |
 | Node.js 20.19+ and npm | Only needed to build or develop the web frontend |
 
 Whisper and Parakeet models are downloaded automatically on first use (a few
 hundred MB each). Plan for several GB of free memory while a model is loaded.
+
+YouTube changes often break older yt-dlp releases. If YouTube downloads start
+failing, upgrade it first: `pip install -U "yt-dlp[default]"`.
 
 ## Installation
 
@@ -144,9 +155,14 @@ feeds:
   - name: "Lenny's Podcast"
     url: "https://api.substack.com/feed/podcast/10845.rss"
     category: "product"
+  # YouTube: a channel (any URL form: @handle, /channel/UC..., /c/, /user/),
+  # a single video, or a playlist (each video becomes its own source).
+  - name: "Some Channel"
+    url: "https://www.youtube.com/@somechannel"
+    category: "ai"
 
 settings:
-  max_episodes_per_feed: 3
+  max_episodes_per_feed: 3          # also caps each YouTube channel fetch
   audio_format: wav                 # wav or mp3
 
   parakeet_enabled: true            # false → Whisper
@@ -183,7 +199,7 @@ Global options: `--config PATH`, `--db PATH`, `-v` (debug logging), `-q`
 | Command | Description |
 |---|---|
 | `p3 init` | Create directories, config and database; check prerequisites |
-| `p3 fetch [--max-episodes N] [--dry-run]` | Download new episodes from every configured feed |
+| `p3 fetch [--max-episodes N] [--dry-run]` | Download new episodes from every configured feed (RSS or YouTube) |
 | `p3 transcribe [--episode-id ID] [--model NAME]` | Transcribe all `downloaded` episodes, or one |
 | `p3 digest [--episode-id ID] [--provider P] [--model M]` | Clean and summarize all `transcribed` episodes, or one |
 | `p3 export [--date YYYY-MM-DD] [--format markdown\|json\|html] [--output PATH]` | Export the digest for a date (default: today) to `exports/` |
@@ -215,7 +231,8 @@ The app's pages:
 - **Dashboard**: pipeline counts, one-click "transcribe / digest / run
   everything" for the whole library, and a paginated job history. Failed
   fetch, transcribe, digest and pipeline jobs can be retried.
-- **Podcasts**: add a feed (RSS or Apple Podcasts link), fetch new episodes,
+- **Podcasts**: add a feed (RSS, Apple Podcasts link, or YouTube channel,
+  video or playlist), fetch new episodes,
   run steps for every episode of a podcast, and download all transcripts as a
   zip.
 - **Episode**: run each step, read the transcript and summary, generate the
@@ -312,8 +329,9 @@ Without the web app, the pipeline can run on a schedule with cron or launchd:
 ```
 p3/
 ├── cli.py            Click command group (`p3 …`)
-├── downloader.py     RSS parsing, download with retry, ffmpeg normalization
-├── url_resolver.py   Apple Podcasts link → RSS feed via the iTunes Lookup API
+├── downloader.py     RSS and YouTube fetching, download with retry, ffmpeg normalization
+├── youtube.py        YouTube URL parsing, listing and audio download via yt-dlp
+├── url_resolver.py   Source URL resolution: RSS, Apple Podcasts (iTunes Lookup API), YouTube
 ├── transcriber.py    Parakeet MLX (chunked) with Whisper fallback
 ├── cleaner.py        Transcript cleaning, digests, long-form synopsis
 ├── writer.py         Graded blog posts, LinkedIn posts, social snippets
@@ -336,8 +354,10 @@ tests/                pytest suite (no external services required)
 
 DuckDB file at `data/p3.duckdb`:
 
-- `podcasts`: feed title, RSS URL (unique), category
-- `episodes`: title, publish date, audio URL (unique), local file path, status
+- `podcasts`: sources. Title, canonical URL in `rss_url` (unique), category,
+  and `source_type`: `rss`, `youtube_channel` or `youtube_video`
+- `episodes`: title, publish date, audio or YouTube watch URL (unique), local
+  file path, status
 - `transcripts`: one row per segment with start/end timestamps and text
 - `summaries`: short summary, long-form synopsis, and JSON lists of topics,
   themes, quotes and companies, keyed by episode and digest date

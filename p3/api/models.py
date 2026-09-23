@@ -16,7 +16,13 @@ _MODEL_HELP = "LLM model override. Defaults to the configured model for the prov
 
 
 class PodcastCreate(BaseModel):
-    url: str = Field(..., description="RSS feed URL or Apple Podcasts link")
+    url: str = Field(
+        ...,
+        description=(
+            "RSS feed URL, Apple Podcasts link, or YouTube channel, video or "
+            "playlist URL (a playlist adds one source per video)"
+        ),
+    )
     name: Optional[str] = Field(
         None, description="Display name (auto-detected from feed if omitted)"
     )
@@ -33,6 +39,7 @@ class PodcastOut(BaseModel):
     title: str
     rss_url: str
     category: Optional[str] = None
+    source_type: str = "rss"
     created_at: Optional[Any] = None
     episode_count: Optional[int] = None
 

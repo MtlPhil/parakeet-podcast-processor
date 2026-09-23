@@ -102,7 +102,8 @@ def _start_heartbeat(db, job_id: str, label: str, interval: float = 15.0):
 
 
 def task_fetch(job_id: str, podcast_id: int, max_episodes: int | None = None):
-    """Download new episodes from a podcast's RSS feed."""
+    """Download new episodes from a source (RSS feed, YouTube channel or
+    YouTube video)."""
     db = get_db()
     try:
         db.update_job(job_id, status="running", message="Starting fetch...")
@@ -144,6 +145,49 @@ def task_fetch(job_id: str, podcast_id: int, max_episodes: int | None = None):
         )
     except Exception as e:
         logger.exception("Fetch task failed")
+        db.update_job(job_id, status="failed", error=str(e))
+
+
+# ------------------------------------------------------------------
+# Import a YouTube playlist as one source per video
+# ------------------------------------------------------------------
+
+
+def task_import_playlist(job_id: str, playlist_url: str, category: str | None = None):
+    """Create a standalone source for each video of a YouTube playlist and
+    download it. Shorts and livestreams are skipped."""
+    db = get_db()
+    try:
+        db.update_job(job_id, status="running", message="Reading playlist...")
+
+        from p3.downloader import PodcastDownloader
+
+        settings = _get_settings()
+
+        def on_progress(done: int, total: int, message: str):
+            frac = done / total if total else 0
+            db.update_job(job_id, progress=0.05 + frac * 0.9, message=message)
+
+        downloader = PodcastDownloader(
+            db=db,
+            audio_format=settings.get("audio_format", "wav"),
+            progress_callback=on_progress,
+        )
+        stats = downloader.import_youtube_playlist(playlist_url, category)
+
+        db.update_job(
+            job_id,
+            status="completed",
+            progress=1.0,
+            message=(
+                f"Imported {stats['downloaded']} new videos"
+                f" ({stats['existing']} already in library,"
+                f" {stats['skipped']} Shorts/livestreams skipped,"
+                f" {stats['failed']} failed)"
+            ),
+        )
+    except Exception as e:
+        logger.exception("Playlist import failed")
         db.update_job(job_id, status="failed", error=str(e))
 
 

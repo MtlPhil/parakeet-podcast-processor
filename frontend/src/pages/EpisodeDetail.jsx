@@ -13,6 +13,7 @@ import {
 } from '../api/client';
 import { useJobPoller } from '../hooks/useJobPoller';
 import StatusBadge from '../components/StatusBadge';
+import ExternalLink from '../components/ExternalLink';
 import JobProgress from '../components/JobProgress';
 import ProviderSelect from '../components/ProviderSelect';
 
@@ -92,6 +93,7 @@ export default function EpisodeDetail() {
 
   if (error) return <p className="text-red-600">Error: {error}</p>;
   if (!episode) return <p className="text-gray-500">Loading...</p>;
+  const isYouTube = /^https:\/\/www\.youtube\.com\/watch\?v=/.test(episode.url);
 
   const steps = [
     { label: 'Downloaded', done: true },
@@ -180,8 +182,8 @@ export default function EpisodeDetail() {
         <div className="space-y-2 text-sm text-gray-700">
           <p><span className="font-medium">Status:</span> <StatusBadge status={episode.status} /></p>
           <p><span className="font-medium">Podcast:</span> {episode.podcast_title}</p>
-          <p><span className="font-medium">Audio URL:</span>{' '}
-            <span className="text-gray-500 break-all">{episode.url}</span>
+          <p><span className="font-medium">{isYouTube ? 'Video:' : 'Audio URL:'}</span>{' '}
+            <ExternalLink href={episode.url} className="text-gray-500 break-all" />
           </p>
           {episode.file_path && (
             <p><span className="font-medium">Local file:</span>{' '}

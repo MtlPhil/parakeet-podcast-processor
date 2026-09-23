@@ -10,7 +10,7 @@ from fastapi.responses import Response
 from p3.api.deps import get_db
 from p3.api.job_queue import job_runner
 from p3.api.models import FetchAction, PodcastCreate, PodcastOut, PodcastUpdate
-from p3.api.tasks import queue_step_jobs, task_fetch
+from p3.api.tasks import queue_step_jobs, task_fetch, task_import_playlist
 
 router = APIRouter(prefix="/api/podcasts", tags=["podcasts"])
 
@@ -39,25 +39,41 @@ def get_podcast(podcast_id: int):
 
 @router.post("", response_model=dict)
 def add_podcast(body: PodcastCreate):
-    """Add a podcast by RSS feed URL or Apple Podcasts link and start fetching episodes."""
+    """Add a source and start fetching it.
+
+    Accepts an RSS feed, an Apple Podcasts link, or a YouTube channel or
+    video. A YouTube playlist is not stored as a source: it queues one import
+    job that adds each video as its own source, and the response carries
+    that job's id without a ``podcast_id``.
+    """
     db = get_db()
 
-    # Resolve non-RSS URLs (e.g. Apple Podcasts) to an RSS feed
-    from p3.url_resolver import resolve_podcast_url
+    from p3 import youtube
+    from p3.url_resolver import is_youtube_playlist, resolve_source
+
+    if is_youtube_playlist(body.url):
+        playlist_url = youtube.parse_youtube_url(body.url).url
+        job_id = db.create_job("import_playlist")
+        job_runner.enqueue(task_import_playlist, job_id, playlist_url, body.category)
+        return {"podcast_id": None, "job_id": job_id}
 
     try:
-        rss_url, resolved_name = resolve_podcast_url(body.url)
+        source = resolve_source(body.url)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    except youtube.YouTubeError as e:
+        raise HTTPException(502, f"YouTube lookup failed: {e}")
 
     # Check if already exists
-    existing = db.get_podcast_by_url(rss_url)
-    if existing:
+    if db.get_podcast_by_url(source.url):
         raise HTTPException(409, "Podcast with this URL already exists")
+    # A video already fetched as an episode of a channel stays there.
+    if source.source_type == youtube.SOURCE_VIDEO and db.episode_exists(source.url):
+        raise HTTPException(409, "This video is already in the library")
 
     # Use provided name, resolved name from lookup, or derive from URL
-    name = body.name or resolved_name or rss_url.split("/")[-1] or "Untitled Podcast"
-    podcast_id = db.add_podcast(name, rss_url, body.category)
+    name = body.name or source.name or source.url.split("/")[-1] or "Untitled Podcast"
+    podcast_id = db.add_podcast(name, source.url, body.category, source.source_type)
 
     # Queue the initial fetch
     job_id = db.create_job("fetch", podcast_id=podcast_id)

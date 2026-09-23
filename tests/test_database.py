@@ -533,7 +533,14 @@ class TestRowMapping:
     def test_dict_keys_match_columns(self, db):
         pid = db.add_podcast("Pod", "http://example.com/rss", "tech")
         result = db.get_podcast_by_url("http://example.com/rss")
-        expected_keys = {"id", "title", "rss_url", "category", "created_at"}
+        expected_keys = {
+            "id",
+            "title",
+            "rss_url",
+            "category",
+            "source_type",
+            "created_at",
+        }
         assert set(result.keys()) == expected_keys
 
 

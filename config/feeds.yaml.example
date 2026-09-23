@@ -5,10 +5,16 @@ feeds:
   - name: "Lenny's Podcast"
     url: "https://api.substack.com/feed/podcast/10845.rss"
     category: "product"
+  # YouTube works too: a channel (@handle, /channel/UC..., /c/, /user/), a
+  # single video, or a playlist (each video becomes its own source). Shorts
+  # and livestreams are skipped. Needs deno on PATH: brew install deno
+  # - name: "Some Channel"
+  #   url: "https://www.youtube.com/@somechannel"
+  #   category: "ai"
 
 settings:
   # Downloads
-  max_episodes_per_feed: 3
+  max_episodes_per_feed: 3     # also caps each YouTube channel fetch
   audio_format: wav            # wav or mp3
 
   # Transcription: Parakeet MLX on Apple Silicon, Whisper otherwise

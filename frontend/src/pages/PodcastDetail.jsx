@@ -11,6 +11,8 @@ import {
   digestEpisode,
   exportPodcastTranscripts,
 } from '../api/client';
+import SourceBadge from '../components/SourceBadge';
+import ExternalLink from '../components/ExternalLink';
 import { useJobPoller } from '../hooks/useJobPoller';
 import StatusBadge from '../components/StatusBadge';
 import JobProgress from '../components/JobProgress';
@@ -198,12 +200,15 @@ export default function PodcastDetail() {
         ) : (
           <>
             <h1 className="text-2xl font-bold text-gray-900 mt-2">{podcast.title}</h1>
-            <p className="text-sm text-gray-500 break-all">{podcast.rss_url}</p>
-            {podcast.category && (
-              <span className="inline-block mt-1 text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded">
-                {podcast.category}
-              </span>
-            )}
+            <ExternalLink href={podcast.rss_url} className="text-sm text-gray-500 break-all" />
+            <div className="flex gap-2 mt-1">
+              <SourceBadge type={podcast.source_type} />
+              {podcast.category && (
+                <span className="inline-block text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded">
+                  {podcast.category}
+                </span>
+              )}
+            </div>
           </>
         )}
       </div>

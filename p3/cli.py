@@ -21,6 +21,7 @@ from .exporter import DigestExporter
 from .llm import DEFAULT_OLLAMA_URL, SUPPORTED_PROVIDERS, resolve_provider_and_model
 from .transcriber import DEFAULT_PARAKEET_MODEL, AudioTranscriber
 from .writer import BlogWriter
+from .youtube import YouTubeError
 
 console = Console()
 
@@ -109,7 +110,10 @@ def main(ctx, config, db, verbose, quiet):
 )
 @click.pass_context
 def fetch(ctx, max_episodes, dry_run):
-    """Download new podcast episodes from configured RSS feeds."""
+    """Download new episodes from configured feeds.
+
+    Feeds can be RSS URLs or YouTube channel, video or playlist URLs.
+    """
     config = load_config(ctx.obj["config_path"])
     db = ctx.obj["db"]
 
@@ -137,7 +141,11 @@ def fetch(ctx, max_episodes, dry_run):
         for feed_config in feeds:
             name = feed_config["name"]
             url = feed_config["url"]
-            episodes = downloader.fetch_episodes(url, limit=max_eps)
+            try:
+                episodes = downloader.fetch_episodes(url, limit=max_eps)
+            except (YouTubeError, ValueError) as e:
+                console.print(f"[red]{name}: {e}[/red]")
+                continue
             for ep in episodes:
                 if not db.episode_exists(ep["url"]):
                     date_str = (
@@ -523,6 +531,8 @@ def init(ctx):
     prereqs = [
         ("ffmpeg", ["ffmpeg", "-version"]),
         ("ollama", ["ollama", "--version"]),
+        # yt-dlp's default JavaScript runtime, needed for YouTube sources.
+        ("deno", ["deno", "--version"]),
     ]
 
     missing = []
@@ -542,6 +552,8 @@ def init(ctx):
             console.print("  Install ffmpeg: brew install ffmpeg")
         if "ollama" in missing:
             console.print("  Install Ollama: https://ollama.com")
+        if "deno" in missing:
+            console.print("  Install Deno (YouTube sources only): brew install deno")
         console.print()
 
     # Create directories
