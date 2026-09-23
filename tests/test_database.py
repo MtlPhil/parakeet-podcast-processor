@@ -1,8 +1,6 @@
 """Tests for P3Database."""
 
-import tempfile
 from datetime import datetime
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -183,7 +181,7 @@ class TestTranscripts:
         e1 = db.add_episode(pid, "Ep 1", datetime.now(), "http://example.com/1.mp3")
         e2 = db.add_episode(pid, "Ep 2", datetime.now(), "http://example.com/2.mp3")
 
-        # e1 has a duplicated set (simulating the old bug), e2 is untouched
+        # e1 has a duplicated segment inserted directly, e2 is untouched
         seg = {"start": 0.0, "end": 5.0, "text": "Hello", "speaker": None, "confidence": 0.9}
         db.conn.execute(
             "INSERT INTO transcripts (episode_id, speaker, timestamp_start, timestamp_end, text, confidence) "
@@ -203,24 +201,22 @@ class TestTranscripts:
         assert len(db.get_transcripts_for_episode(e2)) == 1
 
     def test_status_updates_after_transcript_and_summary_written(self, db):
-        """Regression test: episodes.status must stay updatable after a
-        transcript/summary references the row. DuckDB implements an UPDATE of
-        an indexed column as delete+reinsert, which used to fail here with a
-        foreign key ConstraintException the moment a child row existed —
-        every real transcribe/digest job hit this. There must be no index on
-        episodes(status) (see _initialize_schema)."""
+        """episodes.status must stay updatable after a transcript/summary
+        references the row. DuckDB executes an UPDATE of an indexed column as
+        delete+reinsert, which would violate the foreign keys, so there must
+        be no index on episodes(status) (see _initialize_schema)."""
         pid = db.add_podcast("Pod", "http://example.com/rss")
         eid = db.add_episode(pid, "Ep 1", datetime.now(), "http://example.com/ep1.mp3")
 
         db.add_transcript_segments(eid, [
             {"start": 0.0, "end": 1.0, "text": "hi", "speaker": None, "confidence": 0.9}
         ])
-        db.update_episode_status(eid, 'transcribed')  # this used to raise
+        db.update_episode_status(eid, 'transcribed')
         assert db.get_episode_by_id(eid)['status'] == 'transcribed'
 
         db.add_summary(eid, key_topics=[], themes=[], quotes=[], startups=[],
                        full_summary="summary", digest_date=datetime.now())
-        db.update_episode_status(eid, 'processed')  # and so did this
+        db.update_episode_status(eid, 'processed')
         assert db.get_episode_by_id(eid)['status'] == 'processed'
 
 
@@ -270,9 +266,8 @@ class TestSummaries:
         assert s['long_summary'] == "Much longer section-by-section notes."
 
     def test_add_summary_replaces_not_duplicates(self, db):
-        """Regression test: redigesting an episode (e.g. backfilling
-        long_summary onto one processed before that field existed) must
-        replace its summary, not add a second row."""
+        """Re-digesting an episode must replace its summary, not add a
+        second row."""
         pid = db.add_podcast("Pod", "http://example.com/rss")
         now = datetime.now()
         eid = db.add_episode(pid, "Ep 1", now, "http://example.com/ep1.mp3")
@@ -291,6 +286,21 @@ class TestSummaries:
     def test_no_summaries_for_date(self, db):
         result = db.get_summaries_by_date(datetime(2020, 1, 1))
         assert result == []
+
+    def test_update_summary_long_summary_leaves_other_fields_alone(self, db):
+        pid = db.add_podcast("Pod", "http://example.com/rss")
+        now = datetime.now()
+        eid = db.add_episode(pid, "Ep 1", now, "http://example.com/ep1.mp3")
+        db.add_summary(episode_id=eid, key_topics=["a"], themes=["b"], quotes=["c"],
+                       startups=["d"], full_summary="Short version.", digest_date=now)
+
+        db.update_summary_long_summary(eid, "A synopsis generated later, on demand.")
+
+        s = db.get_summary_by_episode(eid)
+        assert s['long_summary'] == "A synopsis generated later, on demand."
+        assert s['full_summary'] == "Short version."
+        assert s['key_topics'] == ["a"]
+        assert s['themes'] == ["b"]
 
 
 class TestJobs:

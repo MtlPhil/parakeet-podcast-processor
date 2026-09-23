@@ -1,11 +1,30 @@
+# Copy to config/feeds.yaml (or run `p3 init`) and edit to taste.
+# The web UI's Settings page reads and writes the same file.
+
 feeds:
   - name: "Lenny's Podcast"
-    url: "https://feeds.simplecast.com/UZ12E8Qw"
+    url: "https://api.substack.com/feed/podcast/10845.rss"
     category: "product"
 
 settings:
+  # Downloads
   max_episodes_per_feed: 3
+  audio_format: wav            # wav or mp3
+
+  # Transcription: Parakeet MLX on Apple Silicon, Whisper otherwise
   parakeet_enabled: true
   parakeet_model: "mlx-community/parakeet-tdt-0.6b-v2"
-  llm_provider: "ollama"
+  whisper_model: base          # tiny, base, small, medium, large
+
+  # LLM used for cleaning, summaries and writing: ollama, openai or gemini
+  llm_provider: ollama
   llm_model: "llama3.2:latest"
+  ollama_base_url: "http://localhost:11434"
+  # Model used when the provider is gemini (key: GEMINI_API_KEY or
+  # config/gemini_api_key.txt). OpenAI reads OPENAI_API_KEY.
+  gemini_model: "gemini-flash-3.6"
+
+  # Default formats for `p3 export`: markdown, json, html
+  export_format:
+    - markdown
+    - json

@@ -1,29 +1,34 @@
-"""Audio transcription using Whisper and Parakeet."""
+"""Audio transcription using Parakeet MLX (Apple Silicon) or Whisper."""
 
-import os
 import json
 import logging
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, Optional
+
 import whisper
 
 from .database import P3Database
 
 logger = logging.getLogger(__name__)
 
-# Optional Parakeet MLX support
 try:
     from parakeet_mlx import from_pretrained as parakeet_from_pretrained
     PARAKEET_AVAILABLE = True
 except ImportError:
     PARAKEET_AVAILABLE = False
 
+DEFAULT_PARAKEET_MODEL = "mlx-community/parakeet-tdt-0.6b-v2"
+
+# Long episodes are transcribed in fixed-length chunks to bound memory use.
+_CHUNK_SECONDS = 600
+
 
 class AudioTranscriber:
     def __init__(self, db: P3Database, whisper_model: str = "base",
-                 use_parakeet: bool = False, parakeet_model: str = "mlx-community/parakeet-tdt-0.6b-v2"):
+                 use_parakeet: bool = False, parakeet_model: str = DEFAULT_PARAKEET_MODEL):
         self.db = db
         self.whisper_model = whisper_model
         self.use_parakeet = use_parakeet
@@ -47,6 +52,9 @@ class AudioTranscriber:
         """Release loaded models to free memory."""
         self._whisper = None
         self._parakeet = None
+        if PARAKEET_AVAILABLE:
+            import mlx.core as mx
+            mx.clear_cache()
         logger.info("Unloaded transcription models")
 
     def transcribe_with_whisper(self, audio_path: str) -> Optional[Dict[str, Any]]:
@@ -93,20 +101,15 @@ class AudioTranscriber:
 
         self._load_parakeet()
 
+        temp_dir = tempfile.mkdtemp(prefix="p3_chunks_")
         try:
-            # Split long audio into 10-minute segments so Parakeet MLX can
-            # process hour-long episodes without exhausting memory.
-            temp_dir = tempfile.mkdtemp(prefix="p3_chunks_")
-            base_name = Path(audio_path).stem
-            output_pattern = os.path.join(temp_dir, f"{base_name}_%03d.wav")
-
-            logger.info("Splitting audio into 10-minute segments")
+            output_pattern = str(Path(temp_dir) / f"{Path(audio_path).stem}_%03d.wav")
             try:
                 subprocess.run([
                     "ffmpeg", "-hide_banner", "-loglevel", "error",
                     "-i", audio_path,
                     "-f", "segment",
-                    "-segment_time", "600",
+                    "-segment_time", str(_CHUNK_SECONDS),
                     "-c", "copy",
                     output_pattern
                 ], check=True)
@@ -115,17 +118,16 @@ class AudioTranscriber:
                 return self.transcribe_with_whisper(audio_path)
 
             chunks = sorted(Path(temp_dir).glob("*.wav"))
-            logger.info("Created %d chunks", len(chunks))
-
+            logger.info("Split audio into %d chunk(s)", len(chunks))
             if not chunks:
                 logger.warning("No chunks created for %s", audio_path)
                 return None
 
             segments = []
             text_parts = []
-            for i, chunk in enumerate(chunks, start=1):
-                logger.info("Transcribing chunk %d/%d", i, len(chunks))
-                offset = 600 * (i - 1)
+            for i, chunk in enumerate(chunks):
+                logger.info("Transcribing chunk %d/%d", i + 1, len(chunks))
+                offset = _CHUNK_SECONDS * i
                 try:
                     result = self._parakeet.transcribe(str(chunk))
                     for sentence in result.sentences:
@@ -133,36 +135,26 @@ class AudioTranscriber:
                             'start': offset + sentence.start,
                             'end': offset + sentence.end,
                             'text': sentence.text.strip(),
-                            'speaker': None,  # Parakeet doesn't do speaker identification
-                            'confidence': 1.0,  # Parakeet doesn't provide confidence scores
+                            'speaker': None,  # no speaker diarization
+                            'confidence': 1.0,  # Parakeet reports no confidence scores
                         })
                     text_parts.append(result.text)
                 except Exception as e:
-                    logger.warning("Transcription failed for chunk %d: %s", i, e)
-
-            # Clean up temporary chunk files
-            for chunk in chunks:
-                try:
-                    os.remove(chunk)
-                except OSError:
-                    pass
-            try:
-                os.rmdir(temp_dir)
-            except OSError:
-                pass
+                    logger.warning("Transcription failed for chunk %d: %s", i + 1, e)
 
             return {
                 'segments': segments,
-                'language': 'en',  # Parakeet is English-only
+                'language': 'en',  # parakeet-mlx does not report the detected language
                 'text': ' '.join(text_parts),
                 'provider': 'parakeet-mlx'
             }
 
         except Exception as e:
-            logger.error("Parakeet transcription failed: %s", e)
-            logger.info("Falling back to Whisper")
+            logger.error("Parakeet transcription failed, falling back to Whisper: %s", e)
             return self.transcribe_with_whisper(audio_path)
-      
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def transcribe_episode(self, episode_id: int) -> bool:
         """Transcribe a single episode and store results."""
         episode = self.db.get_episode_by_id(episode_id)

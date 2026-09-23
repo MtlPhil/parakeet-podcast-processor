@@ -1,7 +1,6 @@
 """Shared dependencies for the API."""
 
 from pathlib import Path
-from typing import Generator
 
 import yaml
 
@@ -10,7 +9,7 @@ from p3.database import P3Database
 _DB_PATH = "data/p3.duckdb"
 _CONFIG_PATH = "config/feeds.yaml"
 
-# Singleton database instance (DuckDB supports concurrent reads from one connection)
+# Process-wide database instance; P3Database hands each thread its own cursor.
 _db: P3Database | None = None
 
 

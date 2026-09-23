@@ -9,6 +9,7 @@ import {
   processPodcast,
   transcribeEpisode,
   digestEpisode,
+  exportPodcastTranscripts,
 } from '../api/client';
 import { useJobPoller } from '../hooks/useJobPoller';
 import StatusBadge from '../components/StatusBadge';
@@ -96,6 +97,20 @@ export default function PodcastDetail() {
     transcribe: episodes.filter((e) => e.status === 'downloaded').length,
     digest: episodes.filter((e) => e.status === 'transcribed').length,
     pipeline: episodes.filter((e) => e.status !== 'processed').length,
+    transcripts: episodes.filter((e) => ['transcribed', 'processed'].includes(e.status)).length,
+  };
+
+  const handleExportTranscripts = async () => {
+    setBusy(true);
+    setNotice(null);
+    setError(null);
+    try {
+      await exportPodcastTranscripts(id);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const runBulk = async (step) => {
@@ -239,6 +254,13 @@ export default function PodcastDetail() {
               className="px-4 py-2 border text-sm rounded-lg hover:bg-gray-50 disabled:opacity-50"
             >
               Run full pipeline ({eligible.pipeline})
+            </button>
+            <button
+              onClick={handleExportTranscripts}
+              disabled={busy || eligible.transcripts === 0}
+              className="px-4 py-2 border text-sm rounded-lg hover:bg-gray-50 disabled:opacity-50"
+            >
+              Export all transcripts ({eligible.transcripts})
             </button>
           </div>
         </>

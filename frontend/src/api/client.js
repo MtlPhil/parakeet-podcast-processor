@@ -1,5 +1,12 @@
 const BASE = '/api';
 
+// Reads the server-chosen filename from a Content-Disposition header. Blob
+// URLs ignore that header, so it is applied via the <a download> attribute.
+function filenameFromResponse(res, fallback) {
+  const match = /filename="?([^";]+)"?/.exec(res.headers.get('Content-Disposition') || '');
+  return match ? match[1] : fallback;
+}
+
 async function request(path, options = {}) {
   const res = await fetch(`${BASE}${path}`, {
     headers: { 'Content-Type': 'application/json', ...options.headers },
@@ -41,6 +48,8 @@ export const digestEpisode = (id) =>
   request(`/episodes/${id}/digest`, { method: 'POST' });
 export const runPipeline = (id) =>
   request(`/episodes/${id}/pipeline`, { method: 'POST' });
+export const generateSynopsis = (id, { provider, model } = {}) =>
+  request(`/episodes/${id}/synopsis`, { method: 'POST', body: JSON.stringify({ provider, model }) });
 
 // Batch pipeline triggers — one job is queued per eligible episode; the
 // backend job runner executes them one at a time.
@@ -52,6 +61,39 @@ export const processLibrary = (step) =>
 // Transcripts
 export const getTranscript = (episodeId) =>
   request(`/episodes/${episodeId}/transcript`);
+
+// Downloads an episode transcript as Markdown. Uses fetch directly because
+// the response is a file, not JSON.
+export const downloadTranscript = async (episodeId) => {
+  const res = await fetch(`${BASE}/episodes/${episodeId}/transcript/export`);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail || `API error ${res.status}`);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filenameFromResponse(res, `transcript_${episodeId}.md`);
+  a.click();
+  URL.revokeObjectURL(url);
+};
+
+// Downloads a zip with one Markdown transcript per episode of a podcast.
+export const exportPodcastTranscripts = async (podcastId) => {
+  const res = await fetch(`${BASE}/podcasts/${podcastId}/transcripts/export`, { method: 'POST' });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail || `API error ${res.status}`);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filenameFromResponse(res, `podcast_${podcastId}_transcripts.zip`);
+  a.click();
+  URL.revokeObjectURL(url);
+};
 
 // Summaries
 export const getSummary = (episodeId) =>

@@ -1,6 +1,7 @@
 """Tests for cleaner utilities (non-LLM paths)."""
 
 import json
+from datetime import datetime
 
 import pytest
 
@@ -8,9 +9,18 @@ from p3.cleaner import (
     TranscriptCleaner,
     _coerce_str_list,
     _extract_json,
+    _split_into_chunks,
     _split_into_sections,
+    _split_segments_by_gaps,
+    _strip_llm_meta_lines,
+    _truncate_chunks,
     _truncate_transcript,
 )
+from p3.database import P3Database
+
+
+def _seg(text, start, end):
+    return {"text": text, "timestamp_start": start, "timestamp_end": end}
 
 
 class TestTruncateTranscript:
@@ -81,9 +91,14 @@ class TestBasicExtraction:
 
 
 class TestCleanTranscript:
+    @pytest.fixture(autouse=True)
+    def _no_llm(self, monkeypatch):
+        # An OpenAI provider without a key has no usable LLM, so only the
+        # regex cleaning runs and no network calls are made.
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
     def test_removes_filler_words(self):
-        cleaner = TranscriptCleaner(db=None, llm_provider="ollama")
-        # Without LLM (ollama not available in tests), just regex cleaning
+        cleaner = TranscriptCleaner(db=None, llm_provider="openai")
         text = "So um we uh talked about er the technology hmm today"
         result = cleaner.clean_transcript(text)
         assert "um" not in result.split()
@@ -93,7 +108,7 @@ class TestCleanTranscript:
 
     def test_preserves_meaningful_words(self):
         """Words like 'actually', 'basically' should be preserved."""
-        cleaner = TranscriptCleaner(db=None, llm_provider="ollama")
+        cleaner = TranscriptCleaner(db=None, llm_provider="openai")
         text = "This actually works and is basically correct"
         result = cleaner.clean_transcript(text)
         assert "actually" in result
@@ -151,3 +166,141 @@ class TestCoerceStrList:
 
     def test_non_string_non_dict_items_stringified(self):
         assert _coerce_str_list([1, 2.5]) == ["1", "2.5"]
+
+
+class TestSplitIntoChunks:
+    def test_never_splits_mid_sentence(self):
+        text = "First sentence here. Second sentence here. Third sentence here."
+        chunks = _split_into_chunks(text, max_chars=30)
+        for chunk in chunks:
+            assert chunk.strip().endswith((".", "!", "?"))
+
+    def test_packs_sentences_up_to_max_chars(self):
+        text = "One. Two. Three. Four. Five."
+        chunks = _split_into_chunks(text, max_chars=1000)
+        assert chunks == ["One. Two. Three. Four. Five."]
+
+    def test_reconstructs_full_content(self):
+        text = "Alpha bravo charlie. Delta echo foxtrot. Golf hotel india. Juliet kilo lima."
+        chunks = _split_into_chunks(text, max_chars=25)
+        rejoined = " ".join(chunks)
+        for word in text.replace(".", "").split():
+            assert word in rejoined
+
+    def test_single_sentence_longer_than_max_chars_kept_whole(self):
+        sentence = "This is one very long sentence with no other punctuation in it at all"
+        chunks = _split_into_chunks(sentence, max_chars=10)
+        assert chunks == [sentence]
+
+    def test_empty_text_returns_empty_list(self):
+        assert _split_into_chunks("") == []
+        assert _split_into_chunks("   ") == []
+
+
+class TestStripLlmMetaLines:
+    def test_strips_here_is_preamble(self):
+        text = "Here is the cleaned transcript:\n\nActual content here."
+        assert _strip_llm_meta_lines(text) == "Actual content here."
+
+    def test_strips_heres_the_cleaned_podcast_transcript(self):
+        text = "Here's the cleaned podcast transcript:\nSome content."
+        assert _strip_llm_meta_lines(text) == "Some content."
+
+    def test_strips_rephrasing_note(self):
+        text = "Some content.\nNote: some minor rephrasing was done for clarity."
+        assert _strip_llm_meta_lines(text) == "Some content."
+
+    def test_leaves_normal_content_untouched(self):
+        text = "This is just normal transcript content, nothing to strip."
+        assert _strip_llm_meta_lines(text) == text
+
+
+class TestSplitSegmentsByGaps:
+    def test_splits_on_large_gap(self):
+        segments = [
+            _seg("Talking about topic one here.", 0.0, 2.0),
+            _seg("Still on topic one.", 2.1, 4.0),
+            _seg("Now an ad break starts.", 10.0, 12.0),
+            _seg("End of the ad break.", 12.1, 14.0),
+        ]
+        chunks = _split_segments_by_gaps(segments, min_gap=0.5, min_chars=0)
+        assert len(chunks) == 2
+        assert "topic one" in chunks[0]
+        assert "ad break" in chunks[1]
+
+    def test_no_gaps_produces_single_chunk(self):
+        segments = [
+            _seg("First part.", 0.0, 2.0),
+            _seg("Second part.", 2.05, 4.0),
+            _seg("Third part.", 4.05, 6.0),
+        ]
+        chunks = _split_segments_by_gaps(segments, min_gap=0.5, min_chars=0)
+        assert len(chunks) == 1
+        assert "First part" in chunks[0]
+        assert "Third part" in chunks[0]
+
+    def test_small_fragments_merged_into_neighbor(self):
+        segments = [
+            _seg("A fairly long opening segment about the main topic being discussed.", 0.0, 2.0),
+            _seg("Hi.", 10.0, 10.5),
+            _seg("Another fairly long segment continuing the conversation afterward.", 20.0, 22.0),
+        ]
+        chunks = _split_segments_by_gaps(segments, min_gap=0.5, min_chars=20)
+        assert len(chunks) == 2
+        assert "Hi." in chunks[0] or "Hi." in chunks[1]
+
+    def test_long_gap_free_run_still_splits_on_max_chars(self):
+        long_text = "Sentence number one. " * 500
+        segments = [_seg(long_text, 0.0, 100.0)]
+        chunks = _split_segments_by_gaps(segments, max_chars=1000, min_chars=0)
+        assert len(chunks) > 1
+        assert all(len(c) <= 1000 or ' ' not in c for c in chunks)
+
+    def test_empty_segments_returns_empty_list(self):
+        assert _split_segments_by_gaps([]) == []
+
+
+class TestTruncateChunks:
+    def test_short_total_unchanged(self):
+        chunks = ["one", "two", "three"]
+        assert _truncate_chunks(chunks, max_chars=1000) == chunks
+
+    def test_long_total_keeps_head_and_tail(self):
+        chunks = ["a" * 100, "b" * 100, "c" * 100, "d" * 100, "e" * 100]
+        result = _truncate_chunks(chunks, max_chars=250)
+        assert result[0] == "a" * 100
+        assert result[-1] == "e" * 100
+        assert "[... transcript truncated for length ...]" in result
+
+
+class TestGenerateSummaryPreservesSynopsis:
+    def test_redigest_does_not_wipe_existing_long_summary(self, tmp_path, monkeypatch):
+        """generate_summary is the automatic pipeline step and no longer
+        touches long_summary — a redigest (e.g. to fix a themes bug) must
+        not silently delete a synopsis generated separately, on demand."""
+        db_path = str(tmp_path / "test.duckdb")
+        db = P3Database(db_path)
+        try:
+            pid = db.add_podcast("Pod", "http://example.com/rss")
+            now = datetime.now()
+            eid = db.add_episode(pid, "Ep 1", now, "http://example.com/ep1.mp3")
+            db.add_transcript_segments(eid, [
+                {"text": "Some transcript content.", "start": 0.0, "end": 2.0,
+                 "speaker": None, "confidence": 1.0},
+            ])
+            db.add_summary(
+                episode_id=eid, key_topics=["a"], themes=["b"], quotes=[],
+                startups=[], full_summary="old summary",
+                long_summary="a hand-generated synopsis", digest_date=now,
+            )
+
+            # llm_provider="openai" with no api_key falls back to
+            # _basic_extraction — deterministic, no network/LLM calls.
+            monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+            cleaner = TranscriptCleaner(db=db, llm_provider="openai")
+            cleaner.generate_summary(eid)
+
+            summary = db.get_summary_by_episode(eid)
+            assert summary['long_summary'] == "a hand-generated synopsis"
+        finally:
+            db.close()

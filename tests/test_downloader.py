@@ -74,7 +74,7 @@ class TestProcessFeedResume:
         monkeypatch.setattr(dl, "fetch_episodes", lambda url: [ep])
 
         # Pre-create the deterministic output file, as if a prior run
-        # finished the download+normalize but crashed before it got recorded.
+        # finished the download+normalize but was interrupted before recording it.
         url_hash = hashlib.sha1(ep["url"].encode()).hexdigest()[:10]
         expected_path = tmp_path / "audio" / f"1_Ep 1_{url_hash}.wav"
         expected_path.parent.mkdir(parents=True, exist_ok=True)

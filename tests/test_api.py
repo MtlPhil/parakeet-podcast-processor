@@ -210,6 +210,18 @@ class TestEpisodes:
         resp = client.post(f"/api/episodes/{eid}/digest")
         assert resp.status_code == 400
 
+    def test_synopsis_requires_existing_summary(self):
+        db = deps.get_db()
+        pid = db.add_podcast("Pod", "http://example.com/syn.rss")
+        eid = db.add_episode(pid, "Ep", datetime.now(), "http://example.com/syn.mp3")
+        with patch("p3.api.routers.episodes.job_runner"):
+            resp = client.post(f"/api/episodes/{eid}/synopsis")
+        assert resp.status_code == 400
+
+    def test_synopsis_unknown_episode(self):
+        resp = client.post("/api/episodes/999999/synopsis")
+        assert resp.status_code == 404
+
 
 # ------------------------------------------------------------------
 # Batch pipeline triggers
@@ -545,3 +557,21 @@ class TestSettings:
         # Verify persistence
         resp2 = client.get("/api/settings")
         assert resp2.json()["settings"]["llm_provider"] == "openai"
+
+
+class TestCrossOriginGuard:
+    def test_foreign_origin_write_is_refused(self):
+        resp = client.post("/api/jobs/retry-failed", headers={"Origin": "https://evil.example"})
+        assert resp.status_code == 403
+
+    def test_foreign_origin_read_is_allowed(self):
+        resp = client.get("/api/stats", headers={"Origin": "https://evil.example"})
+        assert resp.status_code == 200
+
+    def test_same_host_origin_write_is_allowed(self):
+        resp = client.delete("/api/jobs", headers={"Origin": "http://testserver"})
+        assert resp.status_code == 200
+
+    def test_dev_server_origin_write_is_allowed(self):
+        resp = client.delete("/api/jobs", headers={"Origin": "http://localhost:5173"})
+        assert resp.status_code == 200

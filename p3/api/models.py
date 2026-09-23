@@ -1,8 +1,11 @@
 """Pydantic models for API request/response schemas."""
 
-from datetime import datetime, date
-from typing import List, Optional, Any
+from typing import Any, List, Optional
+
 from pydantic import BaseModel, Field
+
+_PROVIDER_HELP = "LLM provider override (ollama, openai, gemini). Defaults to configured settings."
+_MODEL_HELP = "LLM model override. Defaults to the configured model for the provider."
 
 
 # ------------------------------------------------------------------
@@ -107,6 +110,8 @@ class BlogCreate(BaseModel):
     topic: str
     date: Optional[str] = Field(None, description="YYYY-MM-DD, defaults to today")
     target_grade: float = 91.0
+    provider: Optional[str] = Field(None, description=_PROVIDER_HELP)
+    model: Optional[str] = Field(None, description=_MODEL_HELP)
 
 
 class BlogOut(BaseModel):
@@ -121,6 +126,13 @@ class BlogOut(BaseModel):
 
 class LinkedInCreate(BaseModel):
     episode_id: int
+    provider: Optional[str] = Field(None, description=_PROVIDER_HELP)
+    model: Optional[str] = Field(None, description=_MODEL_HELP)
+
+
+class SynopsisCreate(BaseModel):
+    provider: Optional[str] = Field(None, description=_PROVIDER_HELP)
+    model: Optional[str] = Field(None, description=_MODEL_HELP)
 
 
 class LinkedInOut(BaseModel):
@@ -136,11 +148,6 @@ class LinkedInOut(BaseModel):
 # ------------------------------------------------------------------
 # Pipeline actions
 # ------------------------------------------------------------------
-
-class PipelineAction(BaseModel):
-    """Trigger a pipeline step for an episode."""
-    pass  # no body needed — episode_id comes from path
-
 
 class FetchAction(BaseModel):
     """Trigger a fetch for a podcast."""

@@ -5,11 +5,12 @@ from typing import Optional
 
 from p3.api.deps import get_db
 from p3.api.job_queue import job_runner
-from p3.api.models import EpisodeOut
+from p3.api.models import EpisodeOut, SynopsisCreate
 from p3.api.tasks import (
     queue_step_jobs,
     task_digest,
     task_full_pipeline,
+    task_generate_synopsis,
     task_transcribe,
 )
 
@@ -85,6 +86,25 @@ def digest_episode(episode_id: int):
         "digest", episode_id=episode_id, podcast_id=episode["podcast_id"]
     )
     job_runner.enqueue(task_digest, job_id, episode_id)
+    return {"job_id": job_id}
+
+
+@router.post("/{episode_id}/synopsis", response_model=dict)
+def generate_synopsis(episode_id: int, body: Optional[SynopsisCreate] = None):
+    """Generate the long-form study-notes synopsis for one episode. This is
+    an on-demand action; the digest step only produces the short summary."""
+    db = get_db()
+    episode = db.get_episode_by_id(episode_id)
+    if not episode:
+        raise HTTPException(404, "Episode not found")
+    if not db.get_summary_by_episode(episode_id):
+        raise HTTPException(400, "Episode has no summary yet; run digest first")
+
+    job_id = db.create_job(
+        "synopsis", episode_id=episode_id, podcast_id=episode["podcast_id"]
+    )
+    body = body or SynopsisCreate()
+    job_runner.enqueue(task_generate_synopsis, job_id, episode_id, body.provider, body.model)
     return {"job_id": job_id}
 
 

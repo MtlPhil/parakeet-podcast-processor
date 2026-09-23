@@ -4,8 +4,11 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from urllib.parse import urlsplit
+
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from p3.api.deps import get_db, close_db
@@ -43,14 +46,34 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS — allow the Vite dev server
+# CORS: allow the Vite dev server during development.
+DEV_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=DEV_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+@app.middleware("http")
+async def reject_cross_site_writes(request: Request, call_next):
+    """Refuse state-changing requests sent by other websites.
+
+    CORS does not stop "simple" cross-origin POSTs from being executed, so a
+    page open in the user's browser could otherwise start jobs or delete data
+    on this unauthenticated local API. Browsers always send Origin on such
+    requests; it must match this server's own host or the dev server.
+    """
+    origin = request.headers.get("origin")
+    if request.method not in _SAFE_METHODS and origin:
+        same_host = urlsplit(origin).netloc == request.headers.get("host")
+        if not same_host and origin not in DEV_ORIGINS:
+            return JSONResponse({"detail": "Cross-origin request refused"}, status_code=403)
+    return await call_next(request)
 
 # Routers
 app.include_router(podcasts.router)

@@ -54,6 +54,7 @@ export default function Settings() {
           >
             <option value="ollama">Ollama (local)</option>
             <option value="openai">OpenAI</option>
+            <option value="gemini">Gemini</option>
           </select>
         </div>
 
@@ -64,6 +65,17 @@ export default function Settings() {
             value={s.llm_model || ''}
             onChange={(e) => handleChange('llm_model', e.target.value)}
             placeholder="e.g. llama3.2:latest"
+            className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Gemini Model</label>
+          <input
+            type="text"
+            value={s.gemini_model || ''}
+            onChange={(e) => handleChange('gemini_model', e.target.value)}
+            placeholder="Used when the provider is Gemini"
             className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
         </div>

@@ -1,36 +1,41 @@
-"""Blog post generation with AP English teacher grading system.
+"""Long- and short-form content generation from podcast summaries.
 
-Inspired by Tomasz Tunguz's innovative approach to AI-assisted writing
-with iterative grading and improvement loops.
+Blog posts go through an iterative write/grade/revise loop in which a
+separate "strict AP English teacher" persona scores each draft, an approach
+popularized by Tomasz Tunguz. LinkedIn posts are a lighter single-pass path.
 """
 
-import json
 import logging
 import re
 from datetime import datetime
-from typing import Dict, List, Optional, Any
 from pathlib import Path
+from typing import Any, Dict, List
 
 from .database import P3Database
+from .llm import DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_URL, LLMClient
 
 logger = logging.getLogger(__name__)
 
-# Optional Ollama support for blog generation
-try:
-    import ollama
-    OLLAMA_AVAILABLE = True
-except ImportError:
-    OLLAMA_AVAILABLE = False
+# Keeps generated filenames well under filesystem limits.
+_MAX_SLUG_LENGTH = 80
 
 
 class BlogWriter:
     def __init__(self, db: P3Database, llm_provider: str = "ollama",
-                 llm_model: str = "llama3.2:latest", target_grade: float = 91.0):
+                 llm_model: str = DEFAULT_OLLAMA_MODEL, target_grade: float = 91.0,
+                 ollama_base_url: str = DEFAULT_OLLAMA_URL):
         self.db = db
-        self.llm_provider = llm_provider.lower()
         self.llm_model = llm_model
         self.target_grade = target_grade
         self.max_iterations = 3
+        # Writing jobs are infrequent, so the model is unloaded immediately
+        # after each call instead of being kept warm.
+        self.llm = LLMClient(
+            provider=llm_provider,
+            model=llm_model,
+            ollama_base_url=ollama_base_url,
+            keep_alive=0,
+        )
 
     # ------------------------------------------------------------------
     # Core blog generation
@@ -58,7 +63,6 @@ class BlogWriter:
 
         iterations = []
 
-        # Iterative grading and improvement (inspired by Tunguz's approach)
         for iteration in range(self.max_iterations):
             grade_result = self._grade_blog_post(current_post)
             iterations.append({
@@ -134,10 +138,10 @@ class BlogWriter:
 
     def _build_writing_prompt(self, topic: str, context: str,
                               context_posts: List[str] = None) -> str:
-        """Build the initial writing prompt based on Tunguz's style guidelines."""
+        """Build the initial writing prompt."""
 
         style_guidelines = """
-Style Guidelines (inspired by Tomasz Tunguz's approach):
+Style Guidelines:
 - 500 words or less (49 seconds with reader)
 - No section headers (headers hurt dwell time)
 - Flowing paragraphs that transition smoothly
@@ -188,11 +192,8 @@ Style Guidelines (inspired by Tomasz Tunguz's approach):
     # ------------------------------------------------------------------
 
     def _grade_blog_post(self, blog_post: str) -> Dict[str, Any]:
-        """Grade blog post like an AP English teacher (Tunguz's innovation).
-
-        Uses a strict evaluator persona distinct from the writer persona
-        to reduce self-grading bias.
-        """
+        """Grade a draft with a strict evaluator persona, distinct from the
+        writer persona to reduce self-grading bias."""
 
         grading_prompt = (
             "Evaluate this blog post and provide:\n"
@@ -235,9 +236,9 @@ Style Guidelines (inspired by Tomasz Tunguz's approach):
         score = float(score_match.group(1)) if score_match else None
         feedback = feedback_match.group(1).strip() if feedback_match else response
 
-        # If parsing failed, don't pretend we got a low grade — signal unknown
+        # An unparseable score counts as 0 so the revision loop keeps going.
         if score is None:
-            logger.warning("Could not parse score from grader response, defaulting to 0 (will retry)")
+            logger.warning("Could not parse score from grader response, defaulting to 0")
             score = 0.0
         if grade is None:
             logger.warning("Could not parse letter grade from grader response")
@@ -255,20 +256,11 @@ Style Guidelines (inspired by Tomasz Tunguz's approach):
     # ------------------------------------------------------------------
 
     def _generate_with_llm(self, prompt: str,
-                           system: str = "You are an expert blog writer and writing instructor.") -> str:
-        """Generate text using configured LLM. Raises on failure."""
-        if not OLLAMA_AVAILABLE:
-            raise RuntimeError("Ollama is not installed — cannot generate blog content")
-
+                           system: str = "You are an expert blog writer and writing instructor.",
+                           max_tokens: int = 4000) -> str:
+        """Generate text with the configured LLM. Raises RuntimeError on failure."""
         try:
-            response = ollama.chat(
-                model=self.llm_model,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": prompt}
-                ]
-            )
-            return response['message']['content'].strip()
+            return self.llm.chat(system, prompt, max_tokens=max_tokens)
         except Exception as e:
             raise RuntimeError(f"LLM generation failed: {e}") from e
 
@@ -301,7 +293,6 @@ source_count: {source_count}
 final_grade: {blog_result['final_grade']}
 final_score: {blog_result['final_score']}
 model: {blog_result['metadata']['model_used']}
-inspired_by: "Tomasz Tunguz's AP English grading system"
 ---
 
 # {blog_result['topic']}
@@ -340,11 +331,9 @@ inspired_by: "Tomasz Tunguz's AP English grading system"
         """Generate a LinkedIn post from one episode's summary, in English
         and Quebec French.
 
-        This is the default, lightweight content path: one direct
-        generation per language, no AP-grading iterations — appropriate for
-        a short-form post tied to a specific episode rather than a themed
-        essay. The French version is translated from the English draft
-        (rather than generated independently) so the two stay consistent.
+        A single generation per language with no grading loop. The French
+        version is adapted from the English draft rather than written
+        independently, so the two stay consistent.
         """
         context = self._build_context([summary])
         episode_title = summary.get('episode_title', '')
@@ -434,7 +423,7 @@ model: {meta['model_used']}
     # ------------------------------------------------------------------
 
     def generate_social_posts(self, blog_result: Dict[str, Any]) -> Dict[str, List[str]]:
-        """Generate social media posts from blog content (Tunguz's feature)."""
+        """Generate Twitter and LinkedIn posts from a finished blog post."""
 
         blog_post = blog_result['final_post']
         topic = blog_result['topic']
@@ -505,5 +494,5 @@ model: {meta['model_used']}
     def _generate_slug(topic: str) -> str:
         """Generate URL-friendly slug from topic."""
         slug = re.sub(r'[^\w\s-]', '', topic.lower())
-        slug = re.sub(r'[-\s]+', '-', slug)
-        return slug.strip('-')
+        slug = re.sub(r'[-\s]+', '-', slug).strip('-')
+        return slug[:_MAX_SLUG_LENGTH].rstrip('-')

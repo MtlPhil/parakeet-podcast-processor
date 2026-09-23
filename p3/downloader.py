@@ -10,7 +10,6 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
-from urllib.parse import urlparse
 
 import feedparser
 import requests
@@ -125,10 +124,9 @@ class PodcastDownloader:
                     tmp_file.write(chunk)
                 tmp_path = tmp_file.name
 
-            # Convert and normalize with ffmpeg. Write to a staging path and
-            # rename only on success, so a killed/interrupted ffmpeg never
-            # leaves a truncated file at the final path — callers use the
-            # final path's existence to detect already-completed work.
+            # Convert and normalize with ffmpeg into a staging file, renamed
+            # only on success, so an interrupted run never leaves a truncated
+            # file at the final path (whose existence marks completed work).
             output_path = self.audio_dir / f"{filename}.{self.audio_format}"
             staging_path = output_path.parent / f"{output_path.name}.partial"
 
@@ -139,6 +137,7 @@ class PodcastDownloader:
                 '-ac', '1',       # mono
                 '-c:a', 'pcm_s16le' if self.audio_format == 'wav' else 'libmp3lame',
                 '-af', 'loudnorm',  # normalize audio levels
+                '-f', self.audio_format,  # explicit muxer: the .partial suffix hides it
                 str(staging_path)
             ]
 
@@ -166,6 +165,7 @@ class PodcastDownloader:
             cmd = [
                 'ffmpeg', '-y', '-i', input_path,
                 '-ar', '16000', '-ac', '1',
+                '-f', output_path.suffix.lstrip('.'),  # explicit muxer: the .partial suffix hides it
                 str(staging_path)
             ]
             result = subprocess.run(cmd, capture_output=True, text=True)
@@ -203,11 +203,9 @@ class PodcastDownloader:
             if self.db.episode_exists(ep_data['url']):
                 continue
 
-            # Stable filename per episode (not time-stamped), so a completed
-            # download+normalize survives an interrupted process: if the file
-            # is already there from a prior run that died before it could be
-            # recorded, reuse it instead of redoing the download and the slow
-            # ffmpeg normalize.
+            # Deterministic filename per episode, so audio already downloaded
+            # and normalized by an interrupted earlier run is reused rather
+            # than fetched and converted again.
             safe_title = _safe_filename(ep_data['title'])
             url_hash = hashlib.sha1(ep_data['url'].encode()).hexdigest()[:10]
             filename = f"{podcast['id']}_{safe_title}_{url_hash}"

@@ -1,8 +1,12 @@
 """Podcast CRUD routes."""
 
-from fastapi import APIRouter, HTTPException
+import io
+import zipfile
 
-from p3.api.deps import get_db, load_config
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import Response
+
+from p3.api.deps import get_db
 from p3.api.job_queue import job_runner
 from p3.api.models import PodcastCreate, PodcastOut, PodcastUpdate, FetchAction
 from p3.api.tasks import queue_step_jobs, task_fetch
@@ -87,6 +91,41 @@ def process_podcast_episodes(podcast_id: int, step: str):
     except ValueError as e:
         raise HTTPException(400, str(e))
     return {"queued": len(job_ids), "job_ids": job_ids}
+
+
+@router.post("/{podcast_id}/transcripts/export")
+def export_podcast_transcripts(podcast_id: int):
+    """Download every transcribed episode's transcript as a separate
+    markdown file, bundled into one zip archive."""
+    db = get_db()
+    podcast = db.get_podcast_by_id(podcast_id)
+    if not podcast:
+        raise HTTPException(404, "Podcast not found")
+
+    from p3.downloader import _safe_filename
+    from p3.exporter import DigestExporter
+
+    exporter = DigestExporter(db)
+    buffer = io.BytesIO()
+    count = 0
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for episode in db.get_episodes_by_podcast(podcast_id):
+            segments = db.get_transcripts_for_episode(episode["id"])
+            if not segments:
+                continue
+            content = exporter.export_transcript_markdown(episode, segments)
+            zf.writestr(f"{episode['id']}_{_safe_filename(episode['title'])}.md", content)
+            count += 1
+
+    if count == 0:
+        raise HTTPException(404, "No transcripts available for this podcast")
+
+    filename = f"{_safe_filename(podcast['title'])}.zip"
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.patch("/{podcast_id}", response_model=PodcastOut)

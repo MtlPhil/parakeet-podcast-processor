@@ -3,24 +3,18 @@
 import json
 import logging
 import re
-from datetime import datetime, date
-from typing import Dict, List, Optional, Any
-import httpx
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 from .database import P3Database
+from .llm import DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_URL, LLMClient
 
 logger = logging.getLogger(__name__)
 
-# Optional Ollama support
-try:
-    import ollama
-    OLLAMA_AVAILABLE = True
-except ImportError:
-    OLLAMA_AVAILABLE = False
-
-# Approximate token-to-character ratio for truncation.
-# Most LLMs average ~4 chars per token; we leave headroom for the prompt.
-_MAX_TRANSCRIPT_CHARS = 100_000  # ~25k tokens, safe for most model context windows
+# Upper bound on transcript text sent in a single request. At roughly four
+# characters per token this is ~25k tokens, which fits most context windows
+# with room left for the prompt.
+_MAX_TRANSCRIPT_CHARS = 100_000
 
 _CLEAN_PROMPT = """Clean this podcast transcript by:
 1. Removing filler words (um, uh, like, you know)
@@ -57,24 +51,18 @@ Guidelines:
 Transcript:
 """
 
-# The short summary — a real overview in ~300 words, not a synopsis. Kept
-# alongside the much longer section-by-section notes (_SECTION_NOTES_PROMPT)
-# rather than replaced by them, since the two serve different purposes: this
-# one for a quick read, the notes for depth.
+# Short (~300 word) overview for a quick read. The long-form study notes
+# (_SECTION_NOTES_PROMPT) complement it rather than replace it.
 _SHORT_SUMMARY_PROMPT = """Write a summary of this podcast episode in about 300 words. This is not a marketing blurb or episode synopsis (the kind of thing you'd find on the podcast's website); skip scene-setting like "In this episode, X sits down with Y to discuss...". Go straight into substance: what the episode covers, the main arguments or claims made, and the concrete takeaways. Return only the summary text, no headings or commentary.
 
 Transcript:
 """
 
 # Study notes for one section of a transcript (see _generate_long_summary).
-# A single call asking for a 500-800 word summary of the WHOLE episode got
-# ignored by this small local model — it wrote 2-3 sentences regardless of
-# the instruction, then ~300 words with much stronger prompting, still well
-# short. A model that can compress the whole episode down to one paragraph
-# will keep doing that no matter how it's worded. Asking for notes on one
-# section at a time removes that option — it can only write about what's in
-# front of it — which is also a more genuinely "Coles Notes" shape: real
-# coverage of every part of the episode, not one narrative overview.
+# Small local models compress a whole-episode request into a paragraph or
+# two no matter how the length is specified. Asking for notes on one section
+# at a time keeps the output proportional to the source and gives even
+# coverage of every part of the episode.
 _SECTION_NOTES_PROMPT = """This is one part of a longer podcast transcript (not the whole episode). Write detailed study notes covering what happens in THIS PART — not a brief overview, and don't write as if summarizing a whole episode. For every distinct point or argument raised here, explain: what was claimed, the reasoning or evidence behind it, and any specific examples, numbers, or names mentioned. Write in full paragraphs, at least 150 words. Skip small talk and filler, but do not skip substantive content. Do not add framing like "This section discusses..." or "In this part..." — start directly with the content itself, as if continuing an ongoing set of notes.
 
 Transcript part:
@@ -116,6 +104,154 @@ def _split_into_sections(text: str, num_sections: int) -> List[str]:
     return [s.strip() for s in sections if s.strip()]
 
 
+_SENTENCE_BOUNDARY = re.compile(r'(?<=[.!?])\s+')
+
+# Target chunk size for LLM-based transcript cleaning (see clean_transcript).
+_CLEAN_CHUNK_CHARS = 6000
+
+# Preamble/epilogue lines some models add around a cleaned chunk despite
+# being told to return only the text (e.g. "Here's the cleaned transcript:").
+_LLM_META_LINE_RE = re.compile(
+    r"^(here('s| is) the cleaned( podcast)? transcript:?|note: .*rephrasing.*)$",
+    re.IGNORECASE,
+)
+
+
+def _split_into_chunks(text: str, max_chars: int = _CLEAN_CHUNK_CHARS) -> List[str]:
+    """Split text into chunks of at most ~max_chars, breaking only at
+    sentence boundaries.
+
+    A chunk that starts or ends mid-sentence invites the LLM to "repair"
+    the fragment by dropping it or inventing a transition, so whole
+    sentences are packed into each chunk instead. A single sentence longer
+    than max_chars is kept whole rather than cut.
+    """
+    text = text.strip()
+    if not text:
+        return []
+
+    sentences = _SENTENCE_BOUNDARY.split(text)
+
+    chunks = []
+    current = ""
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        candidate = f"{current} {sentence}".strip() if current else sentence
+        if len(candidate) > max_chars and current:
+            chunks.append(current)
+            current = sentence
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+# Heuristic: a silence at least this long between consecutive segments is
+# treated as a likely editing seam (an ad insertion, a music sting, a segment
+# change) rather than a pause within continuous speech.
+_TOPIC_GAP_SECONDS = 0.5
+
+# Gap-delimited chunks shorter than this are merged into a neighbor so a
+# one-line aside does not become its own LLM request.
+_MIN_CHUNK_CHARS = 500
+
+
+def _split_segments_by_gaps(
+    segments: List[Dict[str, Any]],
+    min_gap: float = _TOPIC_GAP_SECONDS,
+    max_chars: int = _CLEAN_CHUNK_CHARS,
+    min_chars: int = _MIN_CHUNK_CHARS,
+) -> List[str]:
+    """Split transcript segments into chunks at natural conversation
+    breaks, using the gap between one segment's end and the next's start.
+
+    Ads and segment transitions are spliced in at discrete edit points,
+    which show up as pauses outside normal conversational rhythm. Splitting
+    there tends to keep each chunk to roughly one topic, so an ad block
+    usually reaches the LLM as a self-contained unit it can drop entirely.
+
+    Any chunk still over max_chars (a long uninterrupted stretch with no
+    qualifying gap) is further split on sentence boundaries; any chunk
+    under min_chars is merged into a neighbor so a one-line aside doesn't
+    become its own LLM call.
+    """
+    if not segments:
+        return []
+
+    raw_chunks = []
+    current: List[str] = []
+    prev_end = segments[0]['timestamp_end']
+    for seg in segments:
+        gap = seg['timestamp_start'] - prev_end
+        if gap >= min_gap and current:
+            raw_chunks.append(' '.join(current))
+            current = []
+        if seg['text']:
+            current.append(seg['text'])
+        prev_end = seg['timestamp_end']
+    if current:
+        raw_chunks.append(' '.join(current))
+
+    merged: List[str] = []
+    for chunk in raw_chunks:
+        if merged and len(merged[-1]) < min_chars:
+            merged[-1] = f"{merged[-1]} {chunk}"
+        else:
+            merged.append(chunk)
+    if len(merged) > 1 and len(merged[0]) < min_chars:
+        merged[1] = f"{merged[0]} {merged[1]}"
+        merged = merged[1:]
+
+    final_chunks = []
+    for chunk in merged:
+        if len(chunk) > max_chars:
+            final_chunks.extend(_split_into_chunks(chunk, max_chars))
+        else:
+            final_chunks.append(chunk)
+    return final_chunks
+
+
+def _truncate_chunks(chunks: List[str], max_chars: int = _MAX_TRANSCRIPT_CHARS) -> List[str]:
+    """Cap total chunk length by keeping chunks from the start and end and
+    dropping the middle. Like _truncate_transcript, but cuts on chunk (topic)
+    boundaries instead of an arbitrary character offset."""
+    total = sum(len(c) for c in chunks)
+    if total <= max_chars:
+        return chunks
+
+    half = max_chars // 2
+    head, head_chars = [], 0
+    for chunk in chunks:
+        if head_chars and head_chars + len(chunk) > half:
+            break
+        head.append(chunk)
+        head_chars += len(chunk)
+
+    tail, tail_chars = [], 0
+    for chunk in reversed(chunks):
+        if tail_chars and tail_chars + len(chunk) > half:
+            break
+        tail.append(chunk)
+        tail_chars += len(chunk)
+    tail.reverse()
+
+    logger.warning(
+        "Transcript too long (%d chars across %d chunks), truncating to head+tail",
+        total, len(chunks),
+    )
+    return head + ["[... transcript truncated for length ...]"] + tail
+
+
+def _strip_llm_meta_lines(text: str) -> str:
+    """Remove lines the LLM prepends/appends about its own output rather
+    than the requested content (see _LLM_META_LINE_RE)."""
+    lines = [ln for ln in text.split('\n') if not _LLM_META_LINE_RE.match(ln.strip())]
+    return '\n'.join(lines).strip()
+
+
 def _extract_json(text: str) -> Optional[Dict[str, Any]]:
     """Robustly extract a JSON object from LLM output.
 
@@ -149,13 +285,10 @@ def _extract_json(text: str) -> Optional[Dict[str, Any]]:
 def _coerce_str_list(items: Any) -> List[str]:
     """Coerce a JSON value into a list of plain strings.
 
-    The summary LLM is asked for lists of strings (key_topics, themes,
-    quotes, startups) but sometimes returns objects instead, e.g.
-    {"theme_name": "...", "description": "..."} in place of a theme string.
-    That shape mismatch was reaching the database uncaught and crashing the
-    summary read endpoint later (Pydantic's List[str] rejects the dicts).
-    Coerce each item to a string here so a malformed shape degrades
-    gracefully instead of corrupting stored data.
+    The LLM is asked for lists of strings but sometimes returns objects,
+    e.g. {"theme_name": "...", "description": "..."}. Each item is reduced
+    to its most name-like string field so stored summaries always match the
+    List[str] schema.
     """
     if not isinstance(items, list):
         return []
@@ -178,118 +311,84 @@ def _coerce_str_list(items: Any) -> List[str]:
 
 
 class TranscriptCleaner:
-    def __init__(self, db: P3Database, llm_provider: str = "openai",
-                 llm_model: str = "gpt-3.5-turbo", api_key: str = None,
-                 ollama_base_url: str = "http://localhost:11434"):
+    """Cleans transcripts and produces per-episode summaries with an LLM."""
+
+    def __init__(self, db: P3Database, llm_provider: str = "ollama",
+                 llm_model: str = DEFAULT_OLLAMA_MODEL, api_key: Optional[str] = None,
+                 ollama_base_url: str = DEFAULT_OLLAMA_URL):
         self.db = db
-        self.llm_provider = llm_provider.lower()
-        self.llm_model = llm_model
-        self.api_key = api_key
-        self.ollama_base_url = ollama_base_url
-
-        # Load API key from environment if not provided
-        if not self.api_key and self.llm_provider not in ("ollama",):
-            import os
-            if self.llm_provider == "openai":
-                self.api_key = os.getenv("OPENAI_API_KEY")
-            elif self.llm_provider == "anthropic":
-                self.api_key = os.getenv("ANTHROPIC_API_KEY")
-
-    def _chat_openai(self, system: str, user: str, max_tokens: int = 2000) -> str:
-        """Send a chat completion request to OpenAI."""
-        with httpx.Client(timeout=120.0) as client:
-            response = client.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": self.llm_model,
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user}
-                    ],
-                    "temperature": 0.2,
-                    "max_tokens": max_tokens
-                }
-            )
-        if response.status_code != 200:
-            raise RuntimeError(f"OpenAI API error: {response.status_code} - {response.text}")
-        return response.json()["choices"][0]["message"]["content"].strip()
-
-    def _chat_ollama(self, system: str, user: str, max_tokens: int = 2000) -> str:
-        """Send a chat completion request to Ollama."""
-        if not OLLAMA_AVAILABLE:
-            raise RuntimeError("Ollama Python package is not installed")
-        response = ollama.chat(
-            model=self.llm_model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user}
-            ],
-            # Unload the model right after this response instead of leaving
-            # it (multiple GB) resident in Ollama's own process — that's
-            # twice now caused an out-of-memory crash sitting idle after a
-            # digest batch finished.
-            keep_alive=0,
-            options={
-                # Hard cap on generated tokens: without this a small model
-                # that slips into a repetition loop just keeps generating
-                # until it exhausts the context window (observed: 74k+
-                # tokens and 51 minutes for what should be a short response,
-                # pinning the CPU and ~4GB of RAM the whole time). OpenAI's
-                # path already had this via max_tokens; Ollama's didn't.
-                "num_predict": max_tokens,
-                # Slightly stronger than Ollama's 1.1 default, to make that
-                # kind of repetition loop less likely to start in the first
-                # place.
-                "repeat_penalty": 1.3,
-            },
+        self.llm = LLMClient(
+            provider=llm_provider,
+            model=llm_model,
+            api_key=api_key,
+            ollama_base_url=ollama_base_url,
         )
-        return response['message']['content'].strip()
 
     def _chat(self, system: str, user: str, max_tokens: int = 2000) -> str:
-        """Route a chat request to the configured LLM provider."""
-        if self.llm_provider == "openai":
-            return self._chat_openai(system, user, max_tokens=max_tokens)
-        elif self.llm_provider == "ollama":
-            return self._chat_ollama(system, user, max_tokens=max_tokens)
-        elif self.llm_provider == "anthropic":
-            raise NotImplementedError(
-                "Anthropic backend is not yet implemented. "
-                "Use 'ollama' or 'openai' as llm_provider."
-            )
-        else:
-            raise ValueError(f"Unsupported LLM provider: {self.llm_provider}")
+        """Send one request to the configured LLM provider."""
+        return self.llm.chat(system, user, max_tokens=max_tokens)
 
-    def clean_transcript(self, raw_text: str) -> str:
-        """Clean transcript by removing filler words and improving readability."""
-        text = raw_text
-
-        # Remove unambiguous verbal filler words only
+    @staticmethod
+    def _basic_clean_text(text: str) -> str:
+        """Strip unambiguous filler words and collapse whitespace."""
         fillers = r'\b(um|uh|ah|er|hmm)\b'
         text = re.sub(fillers, '', text, flags=re.IGNORECASE)
+        return re.sub(r'\s+', ' ', text).strip()
 
-        # Clean up extra whitespace
-        text = re.sub(r'\s+', ' ', text).strip()
+    def clean_transcript(self, raw_text: str, segments: Optional[List[Dict[str, Any]]] = None) -> str:
+        """Remove filler words, ads and disfluencies from a transcript.
 
-        # Use LLM for advanced cleaning if available
-        if self.api_key or self.llm_provider == "ollama":
+        Filler words are always stripped with a regex. When an LLM is
+        configured, the text is then polished chunk by chunk: a single
+        request over a whole transcript tends to come back heavily
+        truncated. With timestamped segments, chunks follow natural
+        conversation breaks (see _split_segments_by_gaps); otherwise they
+        follow sentence boundaries. A chunk that fails keeps its
+        regex-cleaned text so one bad response never loses the transcript.
+        """
+        text = self._basic_clean_text(raw_text)
+
+        if self.llm.is_configured:
             try:
-                truncated = _truncate_transcript(text)
-                text = self._chat(
-                    "You are an expert transcript editor.",
-                    _CLEAN_PROMPT + truncated,
-                    max_tokens=16_000,
-                )
+                if segments:
+                    cleaned_segments = [
+                        {**seg, 'text': self._basic_clean_text(seg['text'])}
+                        for seg in segments
+                    ]
+                    chunks = _truncate_chunks(_split_segments_by_gaps(cleaned_segments))
+                else:
+                    chunks = _split_into_chunks(_truncate_transcript(text))
+
+                cleaned_chunks = []
+                for i, chunk in enumerate(chunks, 1):
+                    try:
+                        cleaned = self._chat(
+                            "You are an expert transcript editor.",
+                            _CLEAN_PROMPT + chunk,
+                            max_tokens=3000,
+                        ).strip()
+                        cleaned = _strip_llm_meta_lines(cleaned)
+                        cleaned_chunks.append(cleaned if cleaned else chunk)
+                    except Exception as e:
+                        logger.warning(
+                            "Chunk %d/%d cleaning failed, keeping original text for that chunk: %s",
+                            i, len(chunks), e,
+                        )
+                        cleaned_chunks.append(chunk)
+                if cleaned_chunks:
+                    text = "\n\n".join(cleaned_chunks)
             except Exception as e:
                 logger.warning("LLM cleaning failed, using basic cleaning: %s", e)
 
         return text
 
     def generate_summary(self, episode_id: int) -> Optional[Dict[str, Any]]:
-        """Generate structured summary of an episode."""
+        """Generate and store the digest for one episode.
+
+        Produces the short summary plus structured topics, themes, quotes
+        and companies. The long-form synopsis is generated separately on
+        demand (see generate_synopsis) to keep the pipeline step fast.
+        """
         segments = self.db.get_transcripts_for_episode(episode_id)
         full_text = "\n".join(segment['text'] for segment in segments)
 
@@ -297,24 +396,22 @@ class TranscriptCleaner:
             return None
 
         # Clean the transcript first
-        cleaned_text = self.clean_transcript(full_text)
+        cleaned_text = self.clean_transcript(full_text, segments=segments)
 
         # Generate structured summary using LLM
         summary_data = self._generate_structured_summary(cleaned_text)
 
-        # The short (~300 word) and long (section-by-section "Coles Notes")
-        # summaries are each their own dedicated call — only attempt them
-        # when an LLM is actually configured, same condition
-        # _generate_structured_summary uses before falling back to
-        # _basic_extraction.
-        long_summary = None
-        if summary_data and (self.api_key or self.llm_provider == "ollama"):
+        if summary_data and self.llm.is_configured:
             short_summary = self._generate_short_summary(cleaned_text)
             if short_summary:
                 summary_data['summary'] = short_summary
-            long_summary = self._generate_long_summary(cleaned_text)
 
         if summary_data:
+            # add_summary replaces the whole row; carry over any synopsis
+            # generated earlier so a re-digest does not discard it.
+            existing = self.db.get_summary_by_episode(episode_id)
+            existing_long_summary = existing.get('long_summary') if existing else None
+
             self.db.add_summary(
                 episode_id=episode_id,
                 key_topics=summary_data.get('key_topics', []),
@@ -322,12 +419,27 @@ class TranscriptCleaner:
                 quotes=summary_data.get('quotes', []),
                 startups=summary_data.get('startups', []),
                 full_summary=summary_data.get('summary', ''),
-                long_summary=long_summary,
+                long_summary=existing_long_summary,
                 digest_date=datetime.now()
             )
             self.db.update_episode_status(episode_id, 'processed')
 
         return summary_data
+
+    def generate_synopsis(self, episode_id: int) -> Optional[str]:
+        """Generate and store the long-form study-notes synopsis for one
+        episode. Requested on demand; not part of the digest pipeline."""
+        segments = self.db.get_transcripts_for_episode(episode_id)
+        full_text = "\n".join(segment['text'] for segment in segments)
+
+        if not full_text.strip():
+            return None
+
+        cleaned_text = self.clean_transcript(full_text, segments=segments)
+        synopsis = self._generate_long_summary(cleaned_text)
+        if synopsis:
+            self.db.update_summary_long_summary(episode_id, synopsis)
+        return synopsis
 
     def _generate_short_summary(self, text: str) -> Optional[str]:
         """Generate the short (~300 word) summary as its own call — see
@@ -345,7 +457,7 @@ class TranscriptCleaner:
 
     def _generate_structured_summary(self, text: str) -> Optional[Dict[str, Any]]:
         """Generate structured summary using LLM."""
-        if not self.api_key and self.llm_provider != "ollama":
+        if not self.llm.is_configured:
             return self._basic_extraction(text)
 
         truncated = _truncate_transcript(text)
@@ -369,14 +481,10 @@ class TranscriptCleaner:
             return self._basic_extraction(text)
 
     def _generate_long_summary(self, text: str) -> Optional[str]:
-        """Generate Coles-Notes-style study notes, section by section.
+        """Generate long-form study notes, one transcript section at a time.
 
-        A single call asking for the whole episode in 500-800 words gets
-        compressed down to a couple of paragraphs regardless of how the
-        instruction is worded — a model that can summarize the whole thing
-        in one paragraph will. Splitting the transcript into sections and
-        asking for real notes on each one removes that option, and scales
-        naturally: a longer episode gets more sections and longer notes.
+        Per-section requests keep the notes proportional to the episode: a
+        longer episode gets more sections and therefore longer notes.
         """
         truncated = _truncate_transcript(text)
         num_sections = max(3, min(6, len(truncated) // 8000))

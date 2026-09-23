@@ -6,6 +6,7 @@ import {
 } from '../api/client';
 import { useJobPoller } from '../hooks/useJobPoller';
 import JobProgress from '../components/JobProgress';
+import ProviderSelect from '../components/ProviderSelect';
 
 export default function BlogPosts() {
   const [mode, setMode] = useState('linkedin'); // 'linkedin' (default) or 'blog'
@@ -16,12 +17,14 @@ export default function BlogPosts() {
   const [episodes, setEpisodes] = useState([]);
   const [podcastId, setPodcastId] = useState('');
   const [episodeId, setEpisodeId] = useState('');
+  const [linkedinProvider, setLinkedinProvider] = useState('');
 
   // Blog (theme-based) state
   const [blogs, setBlogs] = useState([]);
   const [selectedBlog, setSelectedBlog] = useState(null);
   const [topic, setTopic] = useState('');
   const [date, setDate] = useState('');
+  const [blogProvider, setBlogProvider] = useState('');
 
   const [showForm, setShowForm] = useState(false);
   const [error, setError] = useState(null);
@@ -93,7 +96,10 @@ export default function BlogPosts() {
   const handleCreateLinkedin = async (e) => {
     e.preventDefault();
     try {
-      const result = await createLinkedInPost({ episode_id: Number(episodeId) });
+      const result = await createLinkedInPost({
+        episode_id: Number(episodeId),
+        provider: linkedinProvider || undefined,
+      });
       startPolling(result.job_id);
       setShowForm(false);
     } catch (e) {
@@ -108,6 +114,7 @@ export default function BlogPosts() {
         topic,
         date: date || undefined,
         target_grade: 91.0,
+        provider: blogProvider || undefined,
       });
       startPolling(result.job_id);
       setShowForm(false);
@@ -234,6 +241,10 @@ export default function BlogPosts() {
               Generates one post in English and one in Quebec French, based on this episode's summary.
             </p>
           </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Model</label>
+            <ProviderSelect value={linkedinProvider} onChange={setLinkedinProvider} className="w-full" />
+          </div>
           <button
             type="submit"
             disabled={isPolling || !episodeId}
@@ -267,6 +278,10 @@ export default function BlogPosts() {
               onChange={(e) => setDate(e.target.value)}
               className="w-full max-w-[200px] border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 box-border"
             />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Model</label>
+            <ProviderSelect value={blogProvider} onChange={setBlogProvider} className="w-full" />
           </div>
           <button
             type="submit"

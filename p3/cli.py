@@ -1,25 +1,25 @@
 """Command-line interface for P³."""
 
 import logging
-import os
 import shutil
 import subprocess
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 import click
 import yaml
 from rich.console import Console
-from rich.table import Table
-from rich.progress import track
 from rich.logging import RichHandler
+from rich.progress import track
+from rich.table import Table
 
+from .cleaner import TranscriptCleaner
 from .database import P3Database
 from .downloader import PodcastDownloader
-from .transcriber import AudioTranscriber
-from .cleaner import TranscriptCleaner
 from .exporter import DigestExporter
+from .llm import DEFAULT_OLLAMA_URL, SUPPORTED_PROVIDERS, resolve_provider_and_model
+from .transcriber import DEFAULT_PARAKEET_MODEL, AudioTranscriber
 from .writer import BlogWriter
 
 console = Console()
@@ -78,7 +78,7 @@ def _check_prerequisite(name: str, cmd: list) -> bool:
 @click.group()
 @click.option('--config', default="config/feeds.yaml", help='Configuration file path')
 @click.option('--db', default="data/p3.duckdb", help='Database file path')
-@click.option('-v', '--verbose', count=True, help='Increase verbosity (-v info, -vv debug)')
+@click.option('-v', '--verbose', count=True, help='Enable debug logging')
 @click.option('-q', '--quiet', is_flag=True, help='Suppress all output except warnings/errors')
 @click.pass_context
 def main(ctx, config, db, verbose, quiet):
@@ -174,7 +174,7 @@ def transcribe(ctx, model, episode_id):
         db=db,
         whisper_model=whisper_model,
         use_parakeet=use_parakeet,
-        parakeet_model=settings.get('parakeet_model', 'mlx-community/parakeet-tdt-0.6b-v2')
+        parakeet_model=settings.get('parakeet_model', DEFAULT_PARAKEET_MODEL)
     )
 
     if episode_id:
@@ -203,8 +203,9 @@ def transcribe(ctx, model, episode_id):
 
 
 @main.command()
-@click.option('--provider', default=None, help='LLM provider (openai, ollama)')
-@click.option('--model', default=None, help='LLM model to use')
+@click.option('--provider', default=None, type=click.Choice(SUPPORTED_PROVIDERS),
+              help='LLM provider (overrides config)')
+@click.option('--model', default=None, help='LLM model to use (overrides config)')
 @click.option('--episode-id', type=int, help='Process specific episode')
 @click.pass_context
 def digest(ctx, provider, model, episode_id):
@@ -213,14 +214,13 @@ def digest(ctx, provider, model, episode_id):
     db = ctx.obj['db']
 
     settings = config.get('settings', {})
-    llm_provider = provider or settings.get('llm_provider', 'ollama')
-    llm_model = model or settings.get('llm_model', 'llama3.2:latest')
+    llm_provider, llm_model = resolve_provider_and_model(settings, provider, model)
 
     cleaner = TranscriptCleaner(
         db=db,
         llm_provider=llm_provider,
         llm_model=llm_model,
-        ollama_base_url=settings.get('ollama_base_url', 'http://localhost:11434')
+        ollama_base_url=settings.get('ollama_base_url', DEFAULT_OLLAMA_URL)
     )
 
     if episode_id:
@@ -294,16 +294,31 @@ def export(ctx, date, format, output):
 
 
 
+def _write_transcript_file(episode_id: int, transcript: str, fmt: str,
+                           output_dir: str) -> Path:
+    """Write one transcript to output_dir in the given format."""
+    if fmt == 'markdown':
+        content = f"# Transcript for Episode {episode_id}\n\n{transcript}"
+        filename = f"transcript_{episode_id}.md"
+    else:
+        content = transcript
+        filename = f"transcript_{episode_id}.txt"
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    file_path = Path(output_dir) / filename
+    file_path.write_text(content)
+    return file_path
+
+
 @main.command()
 @click.option('--date', required=False, help='Export all transcripts for a given date (YYYY-MM-DD)')
-@click.option('--format', default='txt', help='Export format (markdown, txt)')
+@click.option('--format', 'fmt', default='txt', type=click.Choice(['txt', 'markdown']),
+              help='Export format')
 @click.option('--output-dir', default='exports', help='Output directory for transcripts')
 @click.pass_context
-def export_transcript(ctx, date, format, output_dir):
-    """Export transcript(s) for a specific episode or all episodes for a date."""
+def export_transcript(ctx, date, fmt, output_dir):
+    """Export transcript(s) for one episode, or for every episode on a date."""
     db = ctx.obj['db']
 
-    # If date is provided, export all transcripts for that date
     if date:
         try:
             target_date = datetime.strptime(date, '%Y-%m-%d').date()
@@ -316,51 +331,23 @@ def export_transcript(ctx, date, format, output_dir):
             console.print(f"[yellow]No episodes found for {target_date}[/yellow]")
             return
 
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
         exported = 0
         for episode in episodes:
             transcript = db.get_transcript_by_episode_id(episode['id'])
-            if not transcript:
-                continue
-            if format == 'markdown':
-                content = f"# Transcript for Episode {episode['id']}\n\n{transcript}"
-                filename = f"transcript_{episode['id']}.md"
-            elif format == 'txt':
-                content = transcript
-                filename = f"transcript_{episode['id']}.txt"
-            else:
-                console.print(f"[red]Unsupported format: {format}[/red]")
-                continue
-            file_path = Path(output_dir) / filename
-            with open(file_path, 'w') as f:
-                f.write(content)
-            exported += 1
+            if transcript:
+                _write_transcript_file(episode['id'], transcript, fmt, output_dir)
+                exported += 1
         console.print(f"[green]✓ Exported {exported} transcripts to {output_dir}[/green]")
         return
 
-    # If no date, fallback to single episode export (original behavior)
     episode_id = click.prompt('Episode ID to export', type=int)
     transcript = db.get_transcript_by_episode_id(episode_id)
     if not transcript:
         console.print(f"[red]No transcript found for episode {episode_id}[/red]")
         return
 
-    if format == 'markdown':
-        content = f"# Transcript for Episode {episode_id}\n\n{transcript}"
-        filename = f"transcript_{episode_id}.md"
-    elif format == 'txt':
-        content = transcript
-        filename = f"transcript_{episode_id}.txt"
-    else:
-        console.print(f"[red]Unsupported format: {format}[/red]")
-        return
-
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-    file_path = Path(output_dir) / filename
-    with open(file_path, 'w') as f:
-        f.write(content)
+    file_path = _write_transcript_file(episode_id, transcript, fmt, output_dir)
     console.print(f"[green]✓ Transcript exported: {file_path}[/green]")
-
 
 
 @main.command()
@@ -393,17 +380,17 @@ def status(ctx):
 @click.option('--dry-run', is_flag=True, help='Show available summaries without generating')
 @click.pass_context
 def write(ctx, topic, date, target_grade, dry_run):
-    """Generate blog post from podcast digest using AP English grading system.
+    """Generate a blog post from a day's digest with an iterative grading loop.
 
-    Inspired by Tomasz Tunguz's innovative iterative writing approach.
-    Uses ALL summaries from the target date as source material.
+    All summaries from the target date are used as source material. Each
+    draft is scored by a strict evaluator persona and revised until it
+    reaches the target grade or the iteration limit.
     """
     config = load_config(ctx.obj['config_path'])
     db = ctx.obj['db']
 
     settings = config.get('settings', {})
-    llm_provider = settings.get('llm_provider', 'ollama')
-    llm_model = settings.get('llm_model', 'llama3.2:latest')
+    llm_provider, llm_model = resolve_provider_and_model(settings)
 
     if date:
         try:
@@ -440,24 +427,25 @@ def write(ctx, topic, date, target_grade, dry_run):
         db=db,
         llm_provider=llm_provider,
         llm_model=llm_model,
-        target_grade=target_grade
+        target_grade=target_grade,
+        ollama_base_url=settings.get('ollama_base_url', DEFAULT_OLLAMA_URL),
     )
 
     console.print(f"[blue]Generating blog post: '{topic}'[/blue]")
     console.print(f"Using {len(summaries)} podcast summaries from {target_date.date()}")
-    console.print(f"Target grade: {target_grade}/100 (inspired by Tomasz Tunguz)")
+    console.print(f"Target grade: {target_grade}/100")
 
     with console.status("[bold green]Writing and grading blog post..."):
         blog_result = writer.generate_blog_post_from_digest(topic, summaries)
 
-    console.print(f"\n[green]Blog post generated![/green]")
+    console.print("\n[green]Blog post generated![/green]")
     console.print(f"Final Grade: {blog_result['final_grade']} ({blog_result['final_score']}/100)")
     console.print(f"Iterations: {len(blog_result['iterations'])}")
 
     file_path = writer.save_blog_post(blog_result)
     console.print(f"Saved to: {file_path}")
 
-    console.print(f"\n[blue]Generating social media posts...[/blue]")
+    console.print("\n[blue]Generating social media posts...[/blue]")
     social_posts = writer.generate_social_posts(blog_result)
 
     if social_posts['twitter']:
@@ -470,7 +458,7 @@ def write(ctx, topic, date, target_grade, dry_run):
         for i, post in enumerate(social_posts['linkedin'], 1):
             console.print(f"{i}. {post[:100]}...")
 
-    console.print(f"\n[cyan]Blog Post Preview:[/cyan]")
+    console.print("\n[cyan]Blog Post Preview:[/cyan]")
     console.print("-" * 50)
     preview = blog_result['final_post'][:500]
     console.print(f"{preview}...")
@@ -508,27 +496,26 @@ def init(ctx):
         console.print()
 
     # Create directories
-    dirs = ['data', 'config', 'logs', 'data/audio', 'data/transcripts','exports', 'blog_posts']
+    dirs = ['data', 'config', 'data/audio', 'exports', 'blog_posts', 'linkedin_posts']
     for dir_name in dirs:
         Path(dir_name).mkdir(parents=True, exist_ok=True)
         console.print(f"  Created directory: {dir_name}")
 
     # Copy example config if it doesn't exist
-    config_path = Path("config/feeds.yaml")
+    config_path = Path(ctx.obj['config_path'])
     example_path = Path("config/feeds.yaml.example")
 
     if not config_path.exists() and example_path.exists():
+        config_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(example_path, config_path)
-        console.print("  Created config/feeds.yaml from example")
+        console.print(f"  Created {config_path} from example")
 
-    # Initialize database
-    with P3Database("data/p3.duckdb"):
-        pass
-    console.print("  Initialized database")
+    # The database schema is created when the connection is opened in main().
+    console.print(f"  Initialized database: {ctx.obj['db_path']}")
 
     console.print("[green]P³ initialized successfully![/green]")
     console.print("Next steps:")
-    console.print("1. Edit config/feeds.yaml with your RSS feeds")
+    console.print(f"1. Edit {config_path} with your RSS feeds")
     console.print("2. Run 'p3 fetch' to download episodes")
     console.print("3. Run 'p3 transcribe' to transcribe audio")
     console.print("4. Run 'p3 digest' to generate summaries")

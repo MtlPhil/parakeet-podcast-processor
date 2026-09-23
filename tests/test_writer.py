@@ -1,6 +1,5 @@
 """Tests for writer utilities (non-LLM paths)."""
 
-import pytest
 
 from p3.writer import BlogWriter
 
@@ -67,6 +66,11 @@ class TestGenerateSlug:
 
     def test_extra_spaces(self):
         assert BlogWriter._generate_slug("  too   many  spaces  ") == "too-many-spaces"
+
+    def test_long_titles_are_truncated(self):
+        slug = BlogWriter._generate_slug("word " * 100)
+        assert len(slug) <= 80
+        assert not slug.endswith("-")
 
 
 class TestBuildContext:

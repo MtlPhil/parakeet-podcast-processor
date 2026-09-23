@@ -1,19 +1,19 @@
-"""Background task wrappers around P3 pipeline modules.
+"""Job wrappers around the P3 pipeline modules.
 
-Each task function accepts a job_id and updates progress in the jobs table.
-These run in FastAPI BackgroundTasks (thread pool).
+Each task takes a job_id and records status and progress in the jobs table.
+Tasks are executed one at a time by the serial runner in job_queue.py.
+Pipeline modules are imported inside each task so the API starts quickly
+without loading ML dependencies.
 """
 
 import logging
 import threading
 import time
-import traceback
 from datetime import datetime
-from pathlib import Path
 
 from p3.api.deps import get_db, load_config
 from p3.api.job_queue import job_runner
-from p3.database import P3Database
+from p3.llm import DEFAULT_OLLAMA_URL, resolve_provider_and_model
 
 logger = logging.getLogger(__name__)
 
@@ -23,14 +23,49 @@ def _get_settings() -> dict:
     return config.get("settings", {})
 
 
+def _make_transcriber(db, settings: dict):
+    from p3.transcriber import DEFAULT_PARAKEET_MODEL, AudioTranscriber
+
+    return AudioTranscriber(
+        db=db,
+        whisper_model=settings.get("whisper_model", "base"),
+        use_parakeet=settings.get("parakeet_enabled", False),
+        parakeet_model=settings.get("parakeet_model", DEFAULT_PARAKEET_MODEL),
+    )
+
+
+def _make_cleaner(db, settings: dict, provider: str = None, model: str = None):
+    from p3.cleaner import TranscriptCleaner
+
+    llm_provider, llm_model = resolve_provider_and_model(settings, provider, model)
+    return TranscriptCleaner(
+        db=db,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        ollama_base_url=settings.get("ollama_base_url", DEFAULT_OLLAMA_URL),
+    )
+
+
+def _make_writer(db, settings: dict, provider: str = None, model: str = None, **kwargs):
+    from p3.writer import BlogWriter
+
+    llm_provider, llm_model = resolve_provider_and_model(settings, provider, model)
+    return BlogWriter(
+        db=db,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        ollama_base_url=settings.get("ollama_base_url", DEFAULT_OLLAMA_URL),
+        **kwargs,
+    )
+
+
 def _start_heartbeat(db, job_id: str, label: str, interval: float = 15.0):
     """Periodically update a running job's message with elapsed time.
 
-    Some steps (transcription) are a single blocking library call with no
-    internal progress hook — without this the message never changes while
-    it runs and the job looks frozen. Returns a stop() callable; it blocks
-    briefly until the heartbeat thread has exited, so the caller's own
-    final message is never overwritten by a late tick.
+    Used for steps that are a single blocking call with no progress hook
+    (transcription), so the job visibly stays alive. Returns a stop()
+    callable that waits for the heartbeat thread to exit, so a late tick
+    never overwrites the caller's final message.
     """
     stop_event = threading.Event()
     start = time.monotonic()
@@ -73,9 +108,7 @@ def task_fetch(job_id: str, podcast_id: int, max_episodes: int | None = None):
             return
 
         def on_progress(done: int, total: int, message: str):
-            # Reserve the tail of the bar for per-episode progress so the job
-            # visibly advances instead of sitting at a flat 10% the whole
-            # time a feed with several (or very long) episodes downloads.
+            # Map per-episode progress onto the 5%-95% range of the bar.
             frac = done / total if total else 0
             db.update_job(job_id, progress=0.05 + frac * 0.9, message=message)
 
@@ -115,15 +148,7 @@ def task_transcribe(job_id: str, episode_id: int):
             job_id, status="running", message=f"Loading transcription model for: {title}"
         )
 
-        from p3.transcriber import AudioTranscriber
-
-        settings = _get_settings()
-        transcriber = AudioTranscriber(
-            db=db,
-            whisper_model=settings.get("whisper_model", "base"),
-            use_parakeet=settings.get("parakeet_enabled", False),
-            parakeet_model=settings.get("parakeet_model", "mlx-community/parakeet-tdt-0.6b-v2"),
-        )
+        transcriber = _make_transcriber(db, _get_settings())
 
         db.update_job(job_id, progress=0.2, message=f"Transcribing: {title}")
         stop_heartbeat = _start_heartbeat(db, job_id, f"Transcribing: {title}")
@@ -152,15 +177,7 @@ def task_digest(job_id: str, episode_id: int):
     try:
         db.update_job(job_id, status="running", message="Generating summary...")
 
-        from p3.cleaner import TranscriptCleaner
-
-        settings = _get_settings()
-        cleaner = TranscriptCleaner(
-            db=db,
-            llm_provider=settings.get("llm_provider", "ollama"),
-            llm_model=settings.get("llm_model", "llama3.2:latest"),
-            ollama_base_url=settings.get("ollama_base_url", "http://localhost:11434"),
-        )
+        cleaner = _make_cleaner(db, _get_settings())
 
         db.update_job(job_id, progress=0.3, message="Cleaning transcript...")
         result = cleaner.generate_summary(episode_id)
@@ -225,15 +242,13 @@ def task_export(job_id: str, target_date: str, formats: list[str] | None = None)
 # Generate blog post
 # ------------------------------------------------------------------
 
-def task_write_blog(job_id: str, topic: str, target_date: str, target_grade: float = 91.0):
+def task_write_blog(job_id: str, topic: str, target_date: str, target_grade: float = 91.0,
+                     provider: str = None, model: str = None):
     """Generate a blog post from podcast summaries."""
     db = get_db()
     try:
         db.update_job(job_id, status="running", message="Preparing blog generation...")
 
-        from p3.writer import BlogWriter
-
-        settings = _get_settings()
         dt = datetime.strptime(target_date, "%Y-%m-%d")
         summaries = db.get_summaries_by_date(dt)
 
@@ -241,11 +256,8 @@ def task_write_blog(job_id: str, topic: str, target_date: str, target_grade: flo
             db.update_job(job_id, status="failed", error=f"No summaries for {target_date}")
             return
 
-        writer = BlogWriter(
-            db=db,
-            llm_provider=settings.get("llm_provider", "ollama"),
-            llm_model=settings.get("llm_model", "llama3.2:latest"),
-            target_grade=target_grade,
+        writer = _make_writer(
+            db, _get_settings(), provider, model, target_grade=target_grade
         )
 
         db.update_job(job_id, progress=0.2, message="Generating blog post...")
@@ -265,26 +277,19 @@ def task_write_blog(job_id: str, topic: str, target_date: str, target_grade: flo
         db.update_job(job_id, status="failed", error=str(e))
 
 
-def task_write_linkedin(job_id: str, episode_id: int):
+def task_write_linkedin(job_id: str, episode_id: int, provider: str = None, model: str = None):
     """Generate a LinkedIn post (English + Quebec French) from one episode."""
     db = get_db()
     try:
         db.update_job(job_id, status="running", message="Preparing LinkedIn post...")
 
-        from p3.writer import BlogWriter
-
-        settings = _get_settings()
         summary = db.get_summary_by_episode(episode_id)
 
         if not summary:
             db.update_job(job_id, status="failed", error=f"No summary for episode {episode_id}")
             return
 
-        writer = BlogWriter(
-            db=db,
-            llm_provider=settings.get("llm_provider", "ollama"),
-            llm_model=settings.get("llm_model", "llama3.2:latest"),
-        )
+        writer = _make_writer(db, _get_settings(), provider, model)
 
         db.update_job(job_id, progress=0.3, message="Generating LinkedIn post...")
         result = writer.generate_linkedin_post(summary)
@@ -303,8 +308,27 @@ def task_write_linkedin(job_id: str, episode_id: int):
         db.update_job(job_id, status="failed", error=str(e))
 
 
+def task_generate_synopsis(job_id: str, episode_id: int, provider: str = None, model: str = None):
+    """Generate the on-demand long-form synopsis for one episode."""
+    db = get_db()
+    try:
+        db.update_job(job_id, status="running", message="Generating synopsis...")
+
+        cleaner = _make_cleaner(db, _get_settings(), provider, model)
+
+        synopsis = cleaner.generate_synopsis(episode_id)
+        if not synopsis:
+            db.update_job(job_id, status="failed", error="Synopsis generation returned no content")
+            return
+
+        db.update_job(job_id, status="completed", progress=1.0, message="Synopsis generated")
+    except Exception as e:
+        logger.exception("Synopsis generation task failed")
+        db.update_job(job_id, status="failed", error=str(e))
+
+
 # ------------------------------------------------------------------
-# Full pipeline for an episode
+# Batch queueing and the full per-episode pipeline
 # ------------------------------------------------------------------
 
 def queue_step_jobs(db, episodes, step: str) -> list[str]:
@@ -351,14 +375,7 @@ def task_full_pipeline(job_id: str, episode_id: int):
         # Step 1: Transcribe (if needed)
         if episode["status"] == "downloaded":
             db.update_job(job_id, progress=0.1, message="Transcribing...")
-            from p3.transcriber import AudioTranscriber
-
-            transcriber = AudioTranscriber(
-                db=db,
-                whisper_model=settings.get("whisper_model", "base"),
-                use_parakeet=settings.get("parakeet_enabled", False),
-                parakeet_model=settings.get("parakeet_model", "mlx-community/parakeet-tdt-0.6b-v2"),
-            )
+            transcriber = _make_transcriber(db, settings)
             success = transcriber.transcribe_episode(episode_id)
             transcriber.unload_models()
             if not success:
@@ -369,14 +386,7 @@ def task_full_pipeline(job_id: str, episode_id: int):
         episode = db.get_episode_by_id(episode_id)
         if episode["status"] == "transcribed":
             db.update_job(job_id, progress=0.5, message="Generating summary...")
-            from p3.cleaner import TranscriptCleaner
-
-            cleaner = TranscriptCleaner(
-                db=db,
-                llm_provider=settings.get("llm_provider", "ollama"),
-                llm_model=settings.get("llm_model", "llama3.2:latest"),
-                ollama_base_url=settings.get("ollama_base_url", "http://localhost:11434"),
-            )
+            cleaner = _make_cleaner(db, settings)
             result = cleaner.generate_summary(episode_id)
             if not result:
                 db.update_job(job_id, status="failed", error="Summary generation failed")

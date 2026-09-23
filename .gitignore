@@ -7,16 +7,19 @@ __pycache__/
 dist/
 build/
 venv/
+.venv/
 .env
-.venv
 
-# P³ Data
+# Local configuration and secrets (see config/feeds.yaml.example)
+config/feeds.yaml
+config/gemini_api_key.txt
+
+# Runtime data and generated output
 data/
 logs/
 exports/
-# Note: Including config/feeds.yaml and blog_posts/ for demo purposes
-
-# P³ Generated Output Files
+blog_posts/
+linkedin_posts/
 digest_*.md
 digest_*.json
 *.wav
@@ -31,9 +34,6 @@ frontend/dist/
 .idea/
 *.swp
 *.swo
-
-# Agent instructions (local only)
-CLAUDE.md
 
 # OS
 .DS_Store

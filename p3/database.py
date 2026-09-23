@@ -2,13 +2,13 @@
 
 import json
 import logging
-import os
 import threading
 import uuid
 from datetime import datetime
-from typing import Dict, List, Optional, Any
-import duckdb
 from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import duckdb
 
 logger = logging.getLogger(__name__)
 
@@ -123,8 +123,7 @@ class P3Database:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        # Migration: a second, much longer "Coles Notes" style writeup
-        # alongside the short full_summary.
+        # Migration: long-form study-notes synopsis alongside full_summary.
         self.conn.execute(
             "ALTER TABLE summaries ADD COLUMN IF NOT EXISTS long_summary TEXT"
         )
@@ -151,14 +150,10 @@ class P3Database:
 
         # Indexes for common query patterns.
         #
-        # No index on episodes(status): DuckDB implements an UPDATE of an
-        # indexed column as delete+reinsert of the row, which fails with a
-        # foreign key ConstraintException once any transcript or summary
-        # references that episode (every transcribe/digest job hit this —
-        # the update to 'transcribed'/'processed' failed 100% of the time
-        # after the child row was inserted). A migration below drops the
-        # index if an older database still has it. At this app's scale a
-        # full scan for status filtering is effectively free.
+        # episodes.status is deliberately not indexed: DuckDB executes an
+        # UPDATE of an indexed column as delete+reinsert, which violates the
+        # foreign keys from transcripts/summaries once they reference the
+        # episode. Older databases may still carry the index, so drop it.
         self.conn.execute("DROP INDEX IF EXISTS idx_episodes_status")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_episodes_url ON episodes(url)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_transcripts_episode_id ON transcripts(episode_id)")
@@ -172,21 +167,13 @@ class P3Database:
     def _resync_sequences(self):
         """Ensure each id sequence starts past its table's current max id.
 
-        A hard-killed process can leave a sequence's on-disk position behind
-        the table's actual rows (observed after several forced restarts:
-        nextval() handed out an id that already existed, raising a duplicate
-        key constraint error on insert).
+        A hard-killed process can leave a sequence's persisted position
+        behind the table's rows, so nextval() would hand out an existing id.
 
-        This only issues DDL when a sequence is actually found behind — the
-        common case on every startup is a handful of read-only checks and
-        nothing else. That matters because repairing a sequence requires
-        DROP DEFAULT / DROP SEQUENCE / CREATE SEQUENCE / SET DEFAULT (the id
-        column's DEFAULT nextval(...) is a catalog dependency, so the
-        sequence can't be dropped directly), and a process killed mid-way
-        through that leaves a WAL entry DuckDB cannot replay on next open —
-        which happened here running it unconditionally on every connect.
-        Checking first keeps that four-statement window rare instead of
-        hitting it on every single restart.
+        Repair is only attempted when a sequence is actually behind. It takes
+        four DDL statements (the column default depends on the sequence, so
+        it must be detached first), and a process killed mid-way can leave a
+        WAL that DuckDB cannot replay. Checking first keeps that window rare.
         """
         for table, seq in (
             ("podcasts", "podcast_id_seq"),
@@ -305,12 +292,9 @@ class P3Database:
     def add_transcript_segments(self, episode_id: int, segments: List[Dict[str, Any]]):
         """Replace an episode's transcript segments with a fresh set.
 
-        Deletes any existing segments for this episode first. Without this,
-        an episode that was fully transcribed but interrupted before its
-        status flipped to 'transcribed' (a crash, or the FK bug fixed
-        earlier) stays eligible for transcription and gets picked up again —
-        a plain INSERT would then duplicate every segment. This makes a
-        retry idempotent instead.
+        Existing segments are deleted first so that re-transcribing an
+        episode (for example, after an interruption before its status was
+        updated) is idempotent rather than duplicating every segment.
         """
         self.conn.execute("DELETE FROM transcripts WHERE episode_id = ?", (episode_id,))
         for segment in segments:
@@ -336,9 +320,9 @@ class P3Database:
 
     def dedupe_transcripts(self) -> int:
         """Remove duplicate transcript segments (same episode, timestamps,
-        and text), keeping the earliest-inserted copy. Cleans up episodes
-        that were fully transcribed more than once before this became
-        impossible (see add_transcript_segments). Returns rows deleted."""
+        and text), keeping the earliest-inserted copy. Repairs databases
+        created before add_transcript_segments became idempotent. Returns
+        the number of rows deleted."""
         before = self.conn.execute("SELECT COUNT(*) FROM transcripts").fetchone()[0]
         self.conn.execute("""
             DELETE FROM transcripts WHERE id NOT IN (
@@ -364,15 +348,11 @@ class P3Database:
     def add_summary(self, episode_id: int, key_topics: List[str], themes: List[str],
                    quotes: List[str], startups: List[str], full_summary: str,
                    digest_date: datetime = None, long_summary: str = None):
-        """Replace this episode's summary with a fresh one. long_summary is
-        the longer, section-by-section "Coles Notes" writeup alongside the
-        short full_summary.
+        """Replace this episode's summary with a fresh one.
 
-        Deletes any existing summary for the episode first — without this, a
-        redigested episode (e.g. backfilling long_summary onto episodes
-        processed before that field existed) would get a second summary row
-        instead of replacing the first, the same duplication bug fixed
-        earlier for transcripts.
+        full_summary is the short overview; long_summary is the optional
+        long-form synopsis. Any existing row is deleted first so re-digesting
+        an episode never creates duplicates.
         """
         if digest_date is None:
             digest_date = datetime.now().date()
@@ -392,6 +372,14 @@ class P3Database:
             digest_date,
             long_summary
         ))
+
+    def update_summary_long_summary(self, episode_id: int, long_summary: str):
+        """Set the long-form synopsis on an episode's existing summary row,
+        leaving the other fields untouched."""
+        self.conn.execute(
+            "UPDATE summaries SET long_summary = ? WHERE episode_id = ?",
+            (long_summary, episode_id),
+        )
 
     def get_summaries_by_date(self, date: datetime) -> List[Dict[str, Any]]:
         """Get all summaries for a specific date."""

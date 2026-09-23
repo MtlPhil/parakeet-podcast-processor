@@ -7,10 +7,14 @@ import {
   transcribeEpisode,
   digestEpisode,
   runPipeline,
+  generateSynopsis,
+  createLinkedInPost,
+  downloadTranscript,
 } from '../api/client';
 import { useJobPoller } from '../hooks/useJobPoller';
 import StatusBadge from '../components/StatusBadge';
 import JobProgress from '../components/JobProgress';
+import ProviderSelect from '../components/ProviderSelect';
 
 const TABS = ['overview', 'transcript', 'summary'];
 
@@ -21,6 +25,9 @@ export default function EpisodeDetail() {
   const [summary, setSummary] = useState(null);
   const [tab, setTab] = useState('overview');
   const [error, setError] = useState(null);
+  const [notice, setNotice] = useState(null);
+  const [synopsisProvider, setSynopsisProvider] = useState('');
+  const [linkedinProvider, setLinkedinProvider] = useState('');
   const { job, isPolling, startPolling } = useJobPoller();
 
   const load = async () => {
@@ -53,6 +60,32 @@ export default function EpisodeDetail() {
       else if (action === 'digest') result = await digestEpisode(id);
       else if (action === 'pipeline') result = await runPipeline(id);
       if (result?.job_id) startPolling(result.job_id);
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  const handleGenerateSynopsis = async () => {
+    try {
+      setNotice(null);
+      const result = await generateSynopsis(id, { provider: synopsisProvider || undefined });
+      if (result?.job_id) startPolling(result.job_id);
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  const handleGenerateLinkedin = async () => {
+    try {
+      setError(null);
+      const result = await createLinkedInPost({
+        episode_id: Number(id),
+        provider: linkedinProvider || undefined,
+      });
+      if (result?.job_id) {
+        startPolling(result.job_id);
+        setNotice('Generating LinkedIn post — view it on the Content page once done.');
+      }
     } catch (e) {
       setError(e.message);
     }
@@ -122,6 +155,7 @@ export default function EpisodeDetail() {
       </div>
 
       {job && <div className="mb-6"><JobProgress job={job} /></div>}
+      {notice && <p className="text-sm text-green-700 mb-6">{notice}</p>}
 
       {/* Tabs */}
       <div className="border-b mb-4">
@@ -167,16 +201,26 @@ export default function EpisodeDetail() {
                 : 'Loading transcript...'}
             </p>
           ) : (
-            <div className="space-y-2 max-h-[600px] overflow-y-auto">
-              {transcript.map((seg) => (
-                <div key={seg.id} className="flex gap-3 text-sm">
-                  <span className="text-gray-400 w-16 shrink-0 text-right tabular-nums">
-                    {formatTime(seg.timestamp_start)}
-                  </span>
-                  <p className="text-gray-700">{seg.text}</p>
-                </div>
-              ))}
-            </div>
+            <>
+              <div className="mb-3">
+                <button
+                  onClick={() => downloadTranscript(id).catch((e) => setError(e.message))}
+                  className="px-3 py-1 bg-gray-100 text-gray-700 text-xs rounded-lg hover:bg-gray-200"
+                >
+                  Download transcript (.md)
+                </button>
+              </div>
+              <div className="space-y-2 max-h-[600px] overflow-y-auto">
+                {transcript.map((seg) => (
+                  <div key={seg.id} className="flex gap-3 text-sm">
+                    <span className="text-gray-400 w-16 shrink-0 text-right tabular-nums">
+                      {formatTime(seg.timestamp_start)}
+                    </span>
+                    <p className="text-gray-700">{seg.text}</p>
+                  </div>
+                ))}
+              </div>
+            </>
           )}
         </div>
       )}
@@ -197,16 +241,40 @@ export default function EpisodeDetail() {
                   <p className="text-sm text-gray-700">{summary.full_summary}</p>
                 </div>
               )}
-              {summary.long_summary && (
+              {summary.long_summary ? (
                 <div>
-                  <h3 className="font-medium text-gray-800 mb-1">Study Notes</h3>
+                  <h3 className="font-medium text-gray-800 mb-1">Synopsis (Study Notes)</h3>
                   <div className="space-y-2">
                     {summary.long_summary.split('\n\n').map((para, i) => (
                       <p key={i} className="text-sm text-gray-700">{para}</p>
                     ))}
                   </div>
                 </div>
+              ) : (
+                <div className="bg-gray-50 border rounded-lg p-3 flex flex-wrap items-center gap-2">
+                  <span className="text-sm text-gray-600">No synopsis yet.</span>
+                  <ProviderSelect value={synopsisProvider} onChange={setSynopsisProvider} />
+                  <button
+                    onClick={handleGenerateSynopsis}
+                    disabled={isPolling}
+                    className="px-3 py-1 bg-purple-600 text-white text-xs rounded-lg hover:bg-purple-700 disabled:opacity-50"
+                  >
+                    Generate Synopsis
+                  </button>
+                </div>
               )}
+
+              <div className="bg-gray-50 border rounded-lg p-3 flex flex-wrap items-center gap-2">
+                <span className="text-sm text-gray-600">LinkedIn post for this episode:</span>
+                <ProviderSelect value={linkedinProvider} onChange={setLinkedinProvider} />
+                <button
+                  onClick={handleGenerateLinkedin}
+                  disabled={isPolling}
+                  className="px-3 py-1 bg-purple-600 text-white text-xs rounded-lg hover:bg-purple-700 disabled:opacity-50"
+                >
+                  Generate LinkedIn Post
+                </button>
+              </div>
               {summary.key_topics?.length > 0 && (
                 <div>
                   <h3 className="font-medium text-gray-800 mb-1">Key Topics</h3>

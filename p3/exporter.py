@@ -13,6 +13,31 @@ logger = logging.getLogger(__name__)
 DEFAULT_EXPORT_DIR = Path("exports")
 
 
+def _segments_to_prose(segments: List[Dict[str, Any]], paragraph_gap_seconds: float = 3.0) -> str:
+    """Join transcript segments into flowing prose paragraphs.
+
+    Segments are short utterances, so they are joined with spaces and a new
+    paragraph starts only at a pause longer than paragraph_gap_seconds.
+    """
+    paragraphs: List[str] = []
+    current: List[str] = []
+    prev_end = None
+    for seg in segments:
+        text = (seg.get('text') or '').strip()
+        if not text:
+            continue
+        start = seg.get('timestamp_start')
+        if current and prev_end is not None and start is not None \
+                and (start - prev_end) >= paragraph_gap_seconds:
+            paragraphs.append(' '.join(current))
+            current = []
+        current.append(text)
+        prev_end = seg.get('timestamp_end', prev_end)
+    if current:
+        paragraphs.append(' '.join(current))
+    return '\n\n'.join(paragraphs)
+
+
 class DigestExporter:
     def __init__(self, db, export_dir: str = None):
         self.db = db
@@ -22,6 +47,18 @@ class DigestExporter:
     def get_export_path(self, filename: str) -> Path:
         """Return a path inside the export directory."""
         return self.export_dir / filename
+
+    def export_transcript_markdown(self, episode: Dict[str, Any], segments: List[Dict[str, Any]]) -> str:
+        """Format one episode's transcript as Markdown prose."""
+        content = [f"# {episode['title']}\n"]
+        meta_bits = [episode.get('podcast_title')]
+        if episode.get('date'):
+            meta_bits.append(str(episode['date']))
+        meta = ' — '.join(b for b in meta_bits if b)
+        if meta:
+            content.append(f"*{meta}*\n")
+        content.append(_segments_to_prose(segments))
+        return "\n".join(content) + "\n"
 
     def export_markdown(self, summaries: List[Dict[str, Any]], target_date: date) -> str:
         """Export summaries as Markdown."""
