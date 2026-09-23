@@ -407,3 +407,7 @@ See [ROADMAP.md](ROADMAP.md) for planned work.
   [OpenAI Whisper](https://github.com/openai/whisper).
 - Originally forked from
   [haasonsaas/parakeet-podcast-processor](https://github.com/haasonsaas/parakeet-podcast-processor).
+- The web app (FastAPI backend and React frontend), the test suite and several
+  module rewrites come from the
+  [kmbuilds-dbd/parakeet-podcast-processor](https://github.com/kmbuilds-dbd/parakeet-podcast-processor)
+  fork.
