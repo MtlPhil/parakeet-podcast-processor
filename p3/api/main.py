@@ -10,6 +10,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from p3.api.deps import get_db, close_db
 from p3.api.job_queue import job_runner
@@ -94,7 +95,26 @@ def get_stats():
     return db.get_stats()
 
 
+class SPAStaticFiles(StaticFiles):
+    """Static files for a single-page app.
+
+    Unknown page paths (e.g. /podcasts/3 after a browser refresh) are served
+    index.html so the client-side router can render them. API paths and
+    missing asset files (anything with a file extension) still return 404.
+    """
+
+    async def get_response(self, path: str, scope):
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            is_api = path == "api" or path.startswith("api/")
+            is_asset = "." in path.rsplit("/", 1)[-1]
+            if exc.status_code != 404 or is_api or is_asset:
+                raise
+            return await super().get_response("index.html", scope)
+
+
 # Serve the React frontend build (production)
 FRONTEND_BUILD = Path("frontend/dist")
 if FRONTEND_BUILD.exists():
-    app.mount("/", StaticFiles(directory=str(FRONTEND_BUILD), html=True), name="frontend")
+    app.mount("/", SPAStaticFiles(directory=str(FRONTEND_BUILD), html=True), name="frontend")

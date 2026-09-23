@@ -45,8 +45,6 @@ area, not ordered by priority.
 
 - Bring the codebase to a clean `black`/`isort`/`mypy` baseline and enforce it
   in CI.
-- Serve `index.html` for unknown non-API paths so deep links survive a page
-  refresh in the production build.
 
 ## Testing
 
