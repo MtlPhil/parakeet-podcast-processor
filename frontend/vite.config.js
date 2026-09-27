@@ -18,7 +18,18 @@ export default defineConfig(({ mode }) => {
       host: env.P3_DEV_HOST || 'localhost',
       allowedHosts,
       proxy: {
-        '/api': 'http://127.0.0.1:8000',
+        '/api': {
+          target: 'http://127.0.0.1:8000',
+          // Preserve the browser's original Host header instead of letting
+          // it default to the proxy target, so the API's same-origin check
+          // (Origin's host:port must match Host) works from any address
+          // this dev server is reached at, not just localhost/127.0.0.1.
+          configure: (proxy) => {
+            proxy.on('proxyReq', (proxyReq, req) => {
+              if (req.headers.host) proxyReq.setHeader('host', req.headers.host)
+            })
+          },
+        },
       },
     },
   }
