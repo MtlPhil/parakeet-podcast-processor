@@ -306,6 +306,51 @@ def list_channel_videos(channel: str, limit: int) -> List[Dict[str, Any]]:
     return kept
 
 
+def list_channel_videos_since(
+    channel: str, since: datetime, max_scan: int = 500
+) -> List[Dict[str, Any]]:
+    """Uploads of a channel from ``since`` onward, newest first, with full
+    metadata (including upload date).
+
+    The channel's Videos tab lists uploads newest-first but without dates,
+    so each candidate is looked up individually to read its upload date.
+    The scan stops at the first upload older than ``since``, and reads at
+    most ``max_scan`` flat entries to bound how far back it looks.
+    """
+    ref = parse_youtube_url(channel)
+    if ref.kind != KIND_CHANNEL:
+        raise ValueError(f"Not a YouTube channel URL: {channel}")
+    info = _extract(
+        f"{ref.url}/videos",
+        {"extract_flat": "in_playlist", "playlist_items": f"1:{max_scan}"},
+    )
+    kept: List[Dict[str, Any]] = []
+    for entry in _flat_entries(info):
+        reason = flat_entry_rejection(entry)
+        if reason:
+            logger.info("Skipping %s: %s", entry.get("id"), reason)
+            continue
+        try:
+            full = get_video_info(video_url(entry["id"]))
+        except YouTubeError as e:
+            logger.warning("Could not read %s: %s", entry["id"], e)
+            continue
+        if video_rejection(full):
+            continue
+        uploaded = upload_datetime(full)
+        if uploaded and uploaded < since:
+            break
+        kept.append(
+            {
+                "id": entry["id"],
+                "title": full.get("title") or entry.get("title") or entry["id"],
+                "date": uploaded,
+                "description": full.get("description") or "",
+            }
+        )
+    return kept
+
+
 def list_playlist_videos(
     playlist: str,
 ) -> tuple[str, List[Dict[str, Any]], int]:

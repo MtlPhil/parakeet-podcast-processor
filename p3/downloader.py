@@ -8,7 +8,7 @@ import re
 import subprocess
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
@@ -104,11 +104,16 @@ class PodcastDownloader:
         if youtube.is_youtube_url(rss_url):
             return self._youtube_listing(rss_url, limit)
 
+        return self._rss_episodes(rss_url)[:limit]
+
+    def _rss_episodes(self, rss_url: str) -> List[Dict]:
+        """Every episode in an RSS feed, newest-as-listed first, unfiltered
+        by any episode limit."""
         try:
             feed = feedparser.parse(rss_url)
             episodes = []
 
-            for entry in feed.entries[:limit]:
+            for entry in feed.entries:
                 # Find audio enclosure
                 audio_url = None
                 for enclosure in entry.get("enclosures", []):
@@ -142,6 +147,40 @@ class PodcastDownloader:
         except Exception as e:
             logger.error("Error fetching RSS feed %s: %s", rss_url, e)
             return []
+
+    def list_preview_episodes(self, url: str, months: int = 12) -> List[Dict]:
+        """Every episode available for hand-picking when a source is first
+        added.
+
+        RSS feeds return every entry. YouTube channels return uploads from
+        the last ``months`` months only, newest first (a channel's full
+        history can run into the thousands, and each candidate needs its
+        own lookup to date it -- see ``youtube.list_channel_videos_since``).
+        A single YouTube video returns just itself. Raises ``ValueError``
+        for a playlist, which is imported as one source per video instead
+        of picked from.
+        """
+        if not youtube.is_youtube_url(url):
+            return self._rss_episodes(url)
+
+        ref = youtube.parse_youtube_url(url)
+        if ref.kind == youtube.KIND_VIDEO:
+            return self._youtube_listing(url, 1)
+        if ref.kind == youtube.KIND_PLAYLIST:
+            raise ValueError("Playlists are imported as one source per video")
+
+        since = datetime.now(timezone.utc) - timedelta(days=30 * months)
+        entries = youtube.list_channel_videos_since(ref.url, since)
+        return [
+            {
+                "title": e.get("title") or youtube.video_url(e["id"]),
+                "url": youtube.video_url(e["id"]),
+                "date": e.get("date"),
+                "description": e.get("description") or "",
+                "guid": e["id"],
+            }
+            for e in entries
+        ]
 
     def download_episode(self, episode_url: str, filename: str) -> Optional[str]:
         """Download and normalize audio episode."""
@@ -241,17 +280,28 @@ class PodcastDownloader:
                 except OSError:
                     pass
 
-    def process_feed(self, rss_url: str) -> int:
-        """Process a single RSS feed and download new episodes."""
+    def process_feed(
+        self, rss_url: str, episode_guids: Optional[List[str]] = None
+    ) -> int:
+        """Process a single RSS feed and download new episodes.
+
+        If ``episode_guids`` is given (hand-picked from a preview listing),
+        only those episodes are downloaded, regardless of ``max_episodes``;
+        otherwise the usual top-N-by-feed-order behavior applies.
+        """
         podcast = self.db.get_podcast_by_url(rss_url)
         if not podcast:
             logger.error("Podcast not found for URL: %s", rss_url)
             return 0
 
         if youtube.is_youtube_url(rss_url):
-            return self._process_youtube_source(podcast)
+            return self._process_youtube_source(podcast, episode_guids)
 
-        episodes = self.fetch_episodes(rss_url)
+        if episode_guids is not None:
+            wanted = set(episode_guids)
+            episodes = [e for e in self._rss_episodes(rss_url) if e["guid"] in wanted]
+        else:
+            episodes = self.fetch_episodes(rss_url)
         total = len(episodes)
         downloaded_count = 0
 
@@ -378,15 +428,22 @@ class PodcastDownloader:
             for e in entries
         ]
 
-    def _process_youtube_source(self, podcast: Dict) -> int:
+    def _process_youtube_source(
+        self, podcast: Dict, episode_guids: Optional[List[str]] = None
+    ) -> int:
         """Download new videos of a YouTube channel or single-video source.
+
+        If ``episode_guids`` is given (video ids hand-picked from a preview
+        listing), only those are downloaded instead of the usual top-N.
 
         Raises ``youtube.YouTubeError`` if the listing fails, or if every
         video attempted failed to download (so a blocked or broken yt-dlp
         shows up as a failed job instead of "0 new episodes").
         """
         ref = youtube.parse_youtube_url(podcast["rss_url"])
-        if ref.kind == youtube.KIND_CHANNEL:
+        if episode_guids is not None:
+            videos = [(youtube.video_url(vid), vid) for vid in episode_guids]
+        elif ref.kind == youtube.KIND_CHANNEL:
             entries = youtube.list_channel_videos(ref.url, self.max_episodes)
             videos = [
                 (youtube.video_url(e["id"]), e.get("title") or e["id"]) for e in entries

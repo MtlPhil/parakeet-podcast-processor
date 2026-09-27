@@ -309,6 +309,88 @@ class TestListing:
             youtube.get_video_info("https://www.youtube.com/@pod")
 
 
+class TestListChannelVideosSince:
+    """Flat channel listings carry no date, so this looks up each candidate
+    individually and stops once it finds an upload older than the cutoff."""
+
+    def _channel_responses(self, entries, **video_infos):
+        channel = f"https://www.youtube.com/channel/{CHANNEL_ID}"
+        responses = {f"{channel}/videos": {"entries": entries}}
+        for vid, info in video_infos.items():
+            responses[youtube.video_url(vid)] = info
+        return channel, responses
+
+    def test_stops_at_first_video_older_than_cutoff(self, monkeypatch):
+        entries = [_flat(VID_A), _flat(VID_B), _flat(VID_C)]
+        channel, responses = self._channel_responses(
+            entries,
+            **{
+                VID_A: _info(VID_A, timestamp=1700000000),
+                VID_B: _info(VID_B, timestamp=1690000000),
+                VID_C: _info(VID_C, timestamp=1000000000),
+            },
+        )
+        fake = FakeExtract(responses)
+        monkeypatch.setattr(youtube, "_extract", fake)
+        since = datetime.fromtimestamp(1650000000, tz=timezone.utc)
+
+        got = youtube.list_channel_videos_since(channel, since)
+
+        assert [e["id"] for e in got] == [VID_A, VID_B]
+        # VID_C's full metadata was fetched to check its date, but nothing
+        # past it: the scan stops as soon as an upload predates `since`.
+        assert len(fake.calls) == 4  # 1 flat listing + 3 per-video lookups
+
+    def test_skips_livestream_without_a_full_lookup(self, monkeypatch):
+        entries = [_flat(VID_A, live_status="is_live"), _flat(VID_B)]
+        channel, responses = self._channel_responses(entries, **{VID_B: _info(VID_B)})
+        monkeypatch.setattr(youtube, "_extract", FakeExtract(responses))
+        since = datetime.fromtimestamp(0, tz=timezone.utc)
+
+        got = youtube.list_channel_videos_since(channel, since)
+
+        # VID_A was dropped from the flat listing, so its full metadata
+        # (not stubbed here) was never requested -- a KeyError would fail
+        # this test otherwise.
+        assert [e["id"] for e in got] == [VID_B]
+
+    def test_skips_short_found_only_in_full_metadata_without_stopping(
+        self, monkeypatch
+    ):
+        entries = [_flat(VID_A), _flat(VID_B)]
+        channel, responses = self._channel_responses(
+            entries,
+            **{
+                VID_A: _info(VID_A, media_type="short"),
+                VID_B: _info(VID_B),
+            },
+        )
+        monkeypatch.setattr(youtube, "_extract", FakeExtract(responses))
+        since = datetime.fromtimestamp(0, tz=timezone.utc)
+
+        got = youtube.list_channel_videos_since(channel, since)
+
+        assert [e["id"] for e in got] == [VID_B]
+
+    def test_returns_title_date_and_description(self, monkeypatch):
+        entries = [_flat(VID_A)]
+        channel, responses = self._channel_responses(
+            entries,
+            **{VID_A: _info(VID_A, description="desc", timestamp=1700000000)},
+        )
+        monkeypatch.setattr(youtube, "_extract", FakeExtract(responses))
+        since = datetime.fromtimestamp(0, tz=timezone.utc)
+
+        [got] = youtube.list_channel_videos_since(channel, since)
+
+        assert got == {
+            "id": VID_A,
+            "title": f"Video {VID_A}",
+            "date": datetime.fromtimestamp(1700000000, tz=timezone.utc),
+            "description": "desc",
+        }
+
+
 class TestExtractErrors:
     def test_yt_dlp_error_becomes_youtube_error(self, monkeypatch):
         from yt_dlp.utils import DownloadError
@@ -602,6 +684,23 @@ class TestChannelFetch:
         _stub_infos(monkeypatch, {VID_A: youtube.YouTubeError("Sign in to confirm")})
         with pytest.raises(youtube.YouTubeError, match="Sign in to confirm"):
             downloader.process_feed(url)
+
+    def test_episode_guids_downloads_only_selected_videos(
+        self, db, downloader, monkeypatch
+    ):
+        url = self._channel(db)
+
+        def boom(*a, **k):
+            raise AssertionError("should not list top-N when episode_guids is given")
+
+        monkeypatch.setattr(youtube, "list_channel_videos", boom)
+        _stub_infos(monkeypatch, {VID_A: _info(VID_A), VID_C: _info(VID_C)})
+
+        count = downloader.process_feed(url, episode_guids=[VID_A, VID_C])
+
+        assert count == 2
+        episodes = {e["url"] for e in db.get_all_episodes()}
+        assert episodes == {youtube.video_url(VID_A), youtube.video_url(VID_C)}
 
     def test_reuses_audio_from_interrupted_run(self, db, downloader, monkeypatch):
         import hashlib

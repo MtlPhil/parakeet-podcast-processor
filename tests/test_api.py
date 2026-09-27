@@ -187,6 +187,108 @@ class TestPodcasts:
         assert resp.status_code == 404
 
 
+class TestPreviewSource:
+    @pytest.fixture(autouse=True)
+    def _no_jobs(self, monkeypatch):
+        from p3.api import job_queue
+
+        self.enqueued = []
+        monkeypatch.setattr(
+            job_queue.job_runner,
+            "enqueue",
+            lambda fn, *args: self.enqueued.append((fn.__name__, args)),
+        )
+
+    def test_preview_lists_every_entry(self, monkeypatch):
+        from p3 import downloader
+
+        episodes = [
+            {
+                "title": "A",
+                "url": "http://x/a.mp3",
+                "date": None,
+                "description": "",
+                "guid": "a",
+            },
+            {
+                "title": "B",
+                "url": "http://x/b.mp3",
+                "date": None,
+                "description": "",
+                "guid": "b",
+            },
+        ]
+        monkeypatch.setattr(
+            downloader.PodcastDownloader,
+            "list_preview_episodes",
+            lambda self, url, months=12: episodes,
+        )
+        resp = client.get(
+            "/api/podcasts/preview", params={"url": "http://example.com/feed.xml"}
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["source_type"] == "rss"
+        assert [e["guid"] for e in data["episodes"]] == ["a", "b"]
+
+    def test_preview_sorts_newest_first(self, monkeypatch):
+        from p3 import downloader
+
+        episodes = [
+            {
+                "title": "Old",
+                "url": "u1",
+                "date": datetime(2020, 1, 1),
+                "description": "",
+                "guid": "old",
+            },
+            {
+                "title": "New",
+                "url": "u2",
+                "date": datetime(2024, 1, 1),
+                "description": "",
+                "guid": "new",
+            },
+        ]
+        monkeypatch.setattr(
+            downloader.PodcastDownloader,
+            "list_preview_episodes",
+            lambda self, url, months=12: episodes,
+        )
+        resp = client.get(
+            "/api/podcasts/preview", params={"url": "http://example.com/feed.xml"}
+        )
+        assert [e["guid"] for e in resp.json()["episodes"]] == ["new", "old"]
+
+    def test_preview_playlist_is_rejected(self):
+        resp = client.get(
+            "/api/podcasts/preview",
+            params={"url": "https://www.youtube.com/playlist?list=PL1"},
+        )
+        assert resp.status_code == 400
+
+    def test_preview_existing_podcast_is_409(self):
+        client.post("/api/podcasts", json={"url": "http://example.com/feed.xml"})
+        resp = client.get(
+            "/api/podcasts/preview", params={"url": "http://example.com/feed.xml"}
+        )
+        assert resp.status_code == 409
+
+    def test_add_podcast_with_episode_guids_passes_through(self):
+        resp = client.post(
+            "/api/podcasts",
+            json={"url": "http://example.com/feed.xml", "episode_guids": ["a", "c"]},
+        )
+        assert resp.status_code == 200
+        assert self.enqueued[0][0] == "task_fetch"
+        assert self.enqueued[0][1][-1] == ["a", "c"]
+
+    def test_add_podcast_without_episode_guids_passes_none(self):
+        resp = client.post("/api/podcasts", json={"url": "http://example.com/feed.xml"})
+        assert resp.status_code == 200
+        assert self.enqueued[0][1][-1] is None
+
+
 # ------------------------------------------------------------------
 # Episodes
 # ------------------------------------------------------------------

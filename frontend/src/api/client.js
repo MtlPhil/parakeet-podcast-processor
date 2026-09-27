@@ -29,6 +29,8 @@ export const getPodcasts = () => request('/podcasts');
 export const getPodcast = (id) => request(`/podcasts/${id}`);
 export const addPodcast = (data) =>
   request('/podcasts', { method: 'POST', body: JSON.stringify(data) });
+export const previewSource = (url) =>
+  request(`/podcasts/preview?${new URLSearchParams({ url })}`);
 export const updatePodcast = (id, data) =>
   request(`/podcasts/${id}`, { method: 'PATCH', body: JSON.stringify(data) });
 export const deletePodcast = (id) =>

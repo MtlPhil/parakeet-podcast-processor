@@ -27,6 +27,27 @@ class PodcastCreate(BaseModel):
         None, description="Display name (auto-detected from feed if omitted)"
     )
     category: Optional[str] = None
+    episode_guids: Optional[List[str]] = Field(
+        None,
+        description=(
+            "Hand-picked episode guids/video ids from a preview listing to "
+            "download initially, instead of the usual top-N most recent"
+        ),
+    )
+
+
+class PreviewEpisode(BaseModel):
+    guid: str
+    title: str
+    date: Optional[Any] = None
+    description: Optional[str] = None
+
+
+class SourcePreview(BaseModel):
+    url: str
+    name: Optional[str] = None
+    source_type: str
+    episodes: List[PreviewEpisode] = []
 
 
 class PodcastUpdate(BaseModel):

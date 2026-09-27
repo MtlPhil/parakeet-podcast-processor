@@ -101,9 +101,18 @@ def _start_heartbeat(db, job_id: str, label: str, interval: float = 15.0):
 # ------------------------------------------------------------------
 
 
-def task_fetch(job_id: str, podcast_id: int, max_episodes: int | None = None):
+def task_fetch(
+    job_id: str,
+    podcast_id: int,
+    max_episodes: int | None = None,
+    episode_guids: list[str] | None = None,
+):
     """Download new episodes from a source (RSS feed, YouTube channel or
-    YouTube video)."""
+    YouTube video).
+
+    If ``episode_guids`` is given (hand-picked from a preview listing), only
+    those are downloaded, regardless of ``max_episodes``.
+    """
     db = get_db()
     try:
         db.update_job(job_id, status="running", message="Starting fetch...")
@@ -135,7 +144,7 @@ def task_fetch(job_id: str, podcast_id: int, max_episodes: int | None = None):
         db.update_job(
             job_id, progress=0.05, message=f"Fetching feed: {podcast['title']}"
         )
-        count = downloader.process_feed(podcast["rss_url"])
+        count = downloader.process_feed(podcast["rss_url"], episode_guids)
 
         db.update_job(
             job_id,

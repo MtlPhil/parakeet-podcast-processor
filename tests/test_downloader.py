@@ -144,6 +144,33 @@ class TestProcessFeedResume:
         assert count == 0
         db.add_episode.assert_not_called()
 
+    def test_episode_guids_downloads_only_selected_episodes(
+        self, tmp_path, monkeypatch
+    ):
+        def ep(guid, title):
+            return {
+                "title": title,
+                "url": f"http://x/{guid}.mp3",
+                "date": None,
+                "description": "",
+                "guid": guid,
+            }
+
+        eps = [ep("a", "A"), ep("b", "B"), ep("c", "C")]
+        # max_episodes=1 in _downloader; the explicit selection must still
+        # win over that default top-N limit.
+        dl, db = self._downloader(tmp_path)
+        monkeypatch.setattr(dl, "_rss_episodes", lambda url: eps)
+        monkeypatch.setattr(
+            dl, "download_episode", lambda url, filename: f"data/audio/{filename}.wav"
+        )
+
+        count = dl.process_feed("http://example.com/feed.xml", episode_guids=["a", "c"])
+
+        assert count == 2
+        titles = {c.kwargs["title"] for c in db.add_episode.call_args_list}
+        assert titles == {"A", "C"}
+
 
 class TestFetchEpisodesDates:
     _FEED = """<?xml version="1.0"?><rss version="2.0"><channel><title>T</title>
@@ -167,3 +194,87 @@ class TestFetchEpisodesDates:
 
         assert episodes[0]["date"] == datetime(2025, 9, 2, 18, 30, tzinfo=timezone.utc)
         assert episodes[1]["date"] is None
+
+
+class TestListPreviewEpisodes:
+    """The preview listing shown when hand-picking episodes at add time."""
+
+    def test_rss_returns_every_entry_ignoring_max_episodes(self, tmp_path, monkeypatch):
+        import feedparser
+
+        from p3 import downloader
+
+        feed_xml = """<?xml version="1.0"?><rss version="2.0"><channel><title>T</title>
+<item><title>A</title><enclosure url="http://x/a.mp3" type="audio/mpeg"/></item>
+<item><title>B</title><enclosure url="http://x/b.mp3" type="audio/mpeg"/></item>
+<item><title>C</title><enclosure url="http://x/c.mp3" type="audio/mpeg"/></item>
+</channel></rss>"""
+        feed = feedparser.parse(feed_xml)
+        monkeypatch.setattr(downloader.feedparser, "parse", lambda url: feed)
+        dl = downloader.PodcastDownloader(
+            db=MagicMock(), data_dir=str(tmp_path), max_episodes=1
+        )
+
+        episodes = dl.list_preview_episodes("http://example.com/rss")
+
+        assert [e["title"] for e in episodes] == ["A", "B", "C"]
+
+    def test_playlist_is_rejected(self, tmp_path):
+        import pytest
+
+        from p3 import downloader
+
+        dl = downloader.PodcastDownloader(db=MagicMock(), data_dir=str(tmp_path))
+
+        with pytest.raises(ValueError):
+            dl.list_preview_episodes("https://www.youtube.com/playlist?list=PL1")
+
+    def test_single_video_needs_no_network_call(self, tmp_path):
+        from p3 import downloader
+
+        dl = downloader.PodcastDownloader(db=MagicMock(), data_dir=str(tmp_path))
+        vid = "a" * 11
+
+        [episode] = dl.list_preview_episodes(f"https://youtu.be/{vid}")
+
+        assert episode["guid"] == vid
+
+    def test_channel_maps_fields_and_uses_12_month_cutoff(self, tmp_path, monkeypatch):
+        from datetime import datetime, timedelta, timezone
+
+        from p3 import downloader
+        from p3 import youtube as yt_module
+
+        captured = {}
+
+        def fake_since(channel, since, max_scan=500):
+            captured["channel"] = channel
+            captured["since"] = since
+            return [
+                {
+                    "id": "vid1",
+                    "title": "A talk",
+                    "date": datetime(2024, 1, 1, tzinfo=timezone.utc),
+                    "description": "desc",
+                }
+            ]
+
+        monkeypatch.setattr(yt_module, "list_channel_videos_since", fake_since)
+        dl = downloader.PodcastDownloader(db=MagicMock(), data_dir=str(tmp_path))
+        channel_url = f"https://www.youtube.com/channel/UC{'a' * 22}"
+
+        episodes = dl.list_preview_episodes(channel_url)
+
+        assert episodes == [
+            {
+                "title": "A talk",
+                "url": yt_module.video_url("vid1"),
+                "date": datetime(2024, 1, 1, tzinfo=timezone.utc),
+                "description": "desc",
+                "guid": "vid1",
+            }
+        ]
+        assert captured["channel"] == channel_url
+        now = datetime.now(timezone.utc)
+        # Roughly a year back (30-day months), with slack for test runtime.
+        assert now - timedelta(days=370) < captured["since"] < now - timedelta(days=350)

@@ -2,6 +2,7 @@
 
 import io
 import zipfile
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -9,7 +10,13 @@ from fastapi.responses import Response
 
 from p3.api.deps import get_db
 from p3.api.job_queue import job_runner
-from p3.api.models import FetchAction, PodcastCreate, PodcastOut, PodcastUpdate
+from p3.api.models import (
+    FetchAction,
+    PodcastCreate,
+    PodcastOut,
+    PodcastUpdate,
+    SourcePreview,
+)
 from p3.api.tasks import queue_step_jobs, task_fetch, task_import_playlist
 
 router = APIRouter(prefix="/api/podcasts", tags=["podcasts"])
@@ -24,6 +31,61 @@ def list_podcasts():
         eps = db.get_episodes_by_podcast(p["id"])
         p["episode_count"] = len(eps)
     return podcasts
+
+
+@router.get("/preview", response_model=SourcePreview)
+def preview_source(url: str):
+    """List every available episode for a source URL, to hand-pick which
+    ones to fetch initially.
+
+    RSS feeds return every entry; YouTube channels are limited to uploads
+    from the last 12 months (see ``PodcastDownloader.list_preview_episodes``).
+    A playlist can't be previewed: it is imported as one source per video
+    rather than picked from.
+    """
+    db = get_db()
+
+    from p3 import youtube
+    from p3.downloader import PodcastDownloader
+    from p3.url_resolver import is_youtube_playlist, resolve_source
+
+    if is_youtube_playlist(url):
+        raise HTTPException(400, "Playlists import every video automatically")
+
+    try:
+        source = resolve_source(url)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except youtube.YouTubeError as e:
+        raise HTTPException(502, f"YouTube lookup failed: {e}")
+
+    if db.get_podcast_by_url(source.url):
+        raise HTTPException(409, "Podcast with this URL already exists")
+
+    downloader = PodcastDownloader(db=db)
+    try:
+        episodes = downloader.list_preview_episodes(source.url)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except youtube.YouTubeError as e:
+        raise HTTPException(502, f"YouTube lookup failed: {e}")
+
+    _epoch = datetime.min.replace(tzinfo=timezone.utc)
+    episodes.sort(key=lambda e: e["date"] or _epoch, reverse=True)
+    return {
+        "url": source.url,
+        "name": source.name,
+        "source_type": source.source_type,
+        "episodes": [
+            {
+                "guid": e["guid"],
+                "title": e["title"],
+                "date": e["date"],
+                "description": e["description"],
+            }
+            for e in episodes
+        ],
+    }
 
 
 @router.get("/{podcast_id}", response_model=PodcastOut)
@@ -75,9 +137,10 @@ def add_podcast(body: PodcastCreate):
     name = body.name or source.name or source.url.split("/")[-1] or "Untitled Podcast"
     podcast_id = db.add_podcast(name, source.url, body.category, source.source_type)
 
-    # Queue the initial fetch
+    # Queue the initial fetch. If episode_guids was hand-picked from a
+    # preview listing, only those are downloaded instead of the top-N.
     job_id = db.create_job("fetch", podcast_id=podcast_id)
-    job_runner.enqueue(task_fetch, job_id, podcast_id, None)
+    job_runner.enqueue(task_fetch, job_id, podcast_id, None, body.episode_guids)
 
     return {"podcast_id": podcast_id, "job_id": job_id}
 
