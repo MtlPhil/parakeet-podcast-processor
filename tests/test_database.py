@@ -127,6 +127,20 @@ class TestEpisodes:
         result = db.get_episode_by_id(9999)
         assert result is None
 
+    def test_timezone_aware_date_is_stored_as_naive_utc(self, db):
+        """Regression test: DuckDB's `date` column is timezone-naive, so
+        binding a timezone-aware datetime used to be silently converted to
+        the host machine's local time instead of UTC (see add_episode)."""
+        from datetime import timedelta, timezone
+
+        pid = db.add_podcast("Pod", "http://example.com/rss")
+        aware = datetime(2024, 1, 1, tzinfo=timezone(timedelta(hours=-5)))
+        eid = db.add_episode(pid, "Ep 1", aware, "http://example.com/ep1.mp3")
+
+        result = db.get_episode_by_id(eid)
+
+        assert result["date"] == datetime(2024, 1, 1, 5, 0)
+
     def test_get_episodes_by_status(self, db):
         pid = db.add_podcast("Pod", "http://example.com/rss")
         db.add_episode(pid, "Ep 1", datetime.now(), "http://example.com/ep1.mp3")

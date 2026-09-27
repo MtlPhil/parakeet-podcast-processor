@@ -4,7 +4,7 @@ import json
 import logging
 import threading
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -254,7 +254,16 @@ class P3Database:
         url: str,
         file_path: Optional[str] = None,
     ) -> int:
-        """Add new episode."""
+        """Add new episode.
+
+        ``date`` is stored as naive UTC. The ``date`` column is DuckDB's
+        timezone-naive TIMESTAMP, so binding a timezone-aware datetime (as
+        RSS and YouTube publication dates are) silently converts it to the
+        host machine's local wall-clock time instead -- making the stored
+        value depend on whatever timezone P3 happens to run in.
+        """
+        if date is not None and date.tzinfo is not None:
+            date = date.astimezone(timezone.utc).replace(tzinfo=None)
         next_id = self.conn.execute("SELECT nextval('episode_id_seq')").fetchone()[0]
         self.conn.execute(
             """
