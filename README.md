@@ -131,7 +131,7 @@ pip install -e ".[web]"      # CLI + web API; use -e . for the CLI only
 p3 init
 ```
 
-`p3 init` checks for `ffmpeg` and `ollama` and creates `data/`, `exports/`,
+`p3 init` checks for `ffmpeg`, `ollama` and `deno` and creates `data/`, `exports/`,
 `blog_posts/` and `linkedin_posts/`. It also copies
 `config/feeds.yaml.example` to `config/feeds.yaml` and creates the DuckDB
 database at `data/p3.duckdb`.
@@ -149,6 +149,10 @@ cd ..
 
 All settings live in `config/feeds.yaml`. The file is gitignored, so your feed
 list stays local. The web app's **Settings** page edits the same file.
+
+The `feeds` list is what `p3 fetch` downloads. Podcasts added through the web
+app's **Add Podcast** page are stored in the database only and are not written
+back to this file.
 
 ```yaml
 feeds:
@@ -199,7 +203,7 @@ Global options: `--config PATH`, `--db PATH`, `-v` (debug logging), `-q`
 | Command | Description |
 |---|---|
 | `p3 init` | Create directories, config and database; check prerequisites |
-| `p3 fetch [--max-episodes N] [--dry-run]` | Download new episodes from every configured feed (RSS or YouTube) |
+| `p3 fetch [--max-episodes N] [--dry-run]` | Download new episodes from every feed in `config/feeds.yaml` (RSS or YouTube) |
 | `p3 transcribe [--episode-id ID] [--model NAME]` | Transcribe all `downloaded` episodes, or one |
 | `p3 digest [--episode-id ID] [--provider P] [--model M]` | Clean and summarize all `transcribed` episodes, or one |
 | `p3 export [--date YYYY-MM-DD] [--format markdown\|json\|html] [--output PATH]` | Export the digest for a date (default: today) to `exports/` |
@@ -216,6 +220,11 @@ p3 write --topic "What founders are saying about AI agents"
 
 Digests are grouped by the date they were generated, so `p3 export` and
 `p3 write` with no `--date` use whatever was digested today.
+
+The CLI and the web server cannot use the database at the same time. DuckDB
+locks the file to one process, so while `uvicorn` is running every `p3`
+command fails with "Could not set lock on file". Stop the server first, or do
+the same work from the web app.
 
 ## Using the web app
 
@@ -318,7 +327,9 @@ The same security caveat applies.
 
 ### Scheduling the CLI
 
-Without the web app, the pipeline can run on a schedule with cron or launchd:
+Without the web app, the pipeline can run on a schedule with cron or launchd.
+This only works while the web server is stopped (see the database lock above),
+and only fetches the feeds listed in `config/feeds.yaml`:
 
 ```cron
 0 6 * * * cd /path/to/parakeet-podcast-processor && .venv/bin/p3 -q fetch && .venv/bin/p3 -q transcribe && .venv/bin/p3 -q digest && .venv/bin/p3 -q export
@@ -415,9 +426,10 @@ Apple Silicon macOS runner, and ESLint plus a production build for the
 frontend.
 
 Tests cover the database layer, API endpoints (through `TestClient` against a
-temporary database), the job queue, text-processing helpers in the cleaner and
-writer, the exporters and the LLM client's configuration logic. Model inference
-and network calls are not exercised.
+temporary database), the job queue and task wrappers, text-processing helpers
+in the cleaner and writer, the exporters, the LLM client's configuration logic,
+and the RSS and YouTube download paths with the network mocked out. Model
+inference, LLM requests and the CLI are not exercised.
 
 See [ROADMAP.md](ROADMAP.md) for planned work.
 
