@@ -572,3 +572,11 @@ class TestStats:
         assert stats["queued_jobs"] == 2
         assert stats["running_jobs"] == 1
         assert stats["active_jobs"] == 3
+
+
+class TestAppState:
+    def test_set_get_and_replace(self, db):
+        assert db.get_state("k") is None
+        db.set_state("k", "one")
+        db.set_state("k", "two")
+        assert db.get_state("k") == "two"

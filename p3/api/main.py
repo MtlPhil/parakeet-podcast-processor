@@ -25,6 +25,7 @@ from p3.api.routers import (
     summaries,
     transcripts,
 )
+from p3.api.scheduler import daily_scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +41,12 @@ async def lifespan(app: FastAPI):
     stale = db.fail_stale_jobs()
     if stale:
         logger.warning("Marked %d interrupted job(s) as failed", stale)
-    # Start the serial pipeline worker
+    # Start the serial pipeline worker, then the daily run that feeds it
     job_runner.start()
+    daily_scheduler.start()
     logger.info("P3 API started")
     yield
+    daily_scheduler.stop()
     job_runner.stop()
     close_db()
     logger.info("P3 API stopped")

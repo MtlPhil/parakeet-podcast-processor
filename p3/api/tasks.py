@@ -470,6 +470,32 @@ def queue_step_jobs(db, episodes, step: str) -> list[str]:
     return job_ids
 
 
+def queue_daily_run(db) -> list[str]:
+    """Queue the daily run: a fetch job for every source in the library,
+    then transcribe → digest for every episode not yet processed.
+
+    The library (the podcasts table) is the source list, not the config
+    file's feeds, so a podcast deleted in the web app stays deleted. The
+    pipeline jobs are queued by a follow-up step that the FIFO runner
+    reaches only after every fetch has finished, so they include the
+    episodes those fetches just downloaded. Returns the fetch job ids.
+    """
+    job_ids = []
+    for podcast in db.get_all_podcasts():
+        job_id = db.create_job("fetch", podcast_id=podcast["id"])
+        job_runner.enqueue(task_fetch, job_id, podcast["id"])
+        job_ids.append(job_id)
+    job_runner.enqueue(queue_pending_pipelines)
+    return job_ids
+
+
+def queue_pending_pipelines():
+    """Queue a full pipeline job for every episode not yet processed."""
+    db = get_db()
+    job_ids = queue_step_jobs(db, db.get_all_episodes(), "pipeline")
+    logger.info("Daily run: queued %d episode(s) for processing", len(job_ids))
+
+
 def task_full_pipeline(job_id: str, episode_id: int):
     """Run transcribe → digest for a single episode."""
     db = get_db()

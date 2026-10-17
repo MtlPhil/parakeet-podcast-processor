@@ -30,6 +30,12 @@ settings:
   # config/gemini_api_key.txt). OpenAI reads OPENAI_API_KEY.
   gemini_model: "gemini-flash-3.6"
 
+  # Web server only: each day at this local time, fetch every podcast in the
+  # library, then transcribe and digest new episodes. Quote the value. Runs
+  # as soon as the server is up if the time has passed and today's run has
+  # not happened yet (e.g. the Mac was asleep). Leave empty to disable.
+  daily_run_time: ""
+
   # Default formats for `p3 export`: markdown, json, html
   export_format:
     - markdown

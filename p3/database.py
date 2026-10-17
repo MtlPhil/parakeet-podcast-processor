@@ -156,6 +156,15 @@ class P3Database:
             "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS podcast_id INTEGER"
         )
 
+        # Small key-value store for app state that must survive restarts
+        # (e.g. the date of the last scheduled daily run).
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS app_state (
+                key VARCHAR PRIMARY KEY,
+                value VARCHAR
+            )
+        """)
+
         # Indexes for common query patterns.
         #
         # episodes.status is deliberately not indexed: DuckDB executes an
@@ -749,6 +758,24 @@ class P3Database:
         if count:
             self.conn.execute("DELETE FROM jobs WHERE status = 'failed'")
         return count
+
+    # ------------------------------------------------------------------
+    # App state
+    # ------------------------------------------------------------------
+
+    def get_state(self, key: str) -> Optional[str]:
+        """Get a stored app-state value, or None if unset."""
+        row = self.conn.execute(
+            "SELECT value FROM app_state WHERE key = ?", (key,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def set_state(self, key: str, value: str):
+        """Store an app-state value, replacing any previous one."""
+        self.conn.execute(
+            "INSERT OR REPLACE INTO app_state (key, value) VALUES (?, ?)",
+            (key, value),
+        )
 
     # ------------------------------------------------------------------
     # Stats

@@ -134,6 +134,23 @@ export default function Settings() {
           </select>
         </div>
 
+        <div>
+          <label htmlFor="daily-run-time" className="block text-sm font-medium text-gray-700 mb-1">
+            Daily Run Time
+          </label>
+          <input
+            type="time"
+            id="daily-run-time"
+            value={s.daily_run_time || ''}
+            onChange={(e) => handleChange('daily_run_time', e.target.value)}
+            className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <p className="text-xs text-gray-500 mt-1">
+            Each day at this time, fetch every podcast, then transcribe and summarize new
+            episodes. Runs on wake if the Mac was asleep. Clear to turn it off.
+          </p>
+        </div>
+
         <button
           onClick={handleSave}
           disabled={saving}
