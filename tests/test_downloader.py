@@ -278,3 +278,34 @@ class TestListPreviewEpisodes:
         now = datetime.now(timezone.utc)
         # Roughly a year back (30-day months), with slack for test runtime.
         assert now - timedelta(days=370) < captured["since"] < now - timedelta(days=350)
+
+
+class TestConfigFeedImport:
+    """feeds.yaml entries are imported into the library once."""
+
+    def test_new_library_imports_every_feed_once(self, tmp_path):
+        from p3.database import P3Database
+        from p3.downloader import mark_config_feeds_imported, new_config_feeds
+
+        db = P3Database(str(tmp_path / "test.duckdb"))
+        feeds = [{"name": "A", "url": "http://a"}, {"name": "B", "url": "http://b"}]
+        assert new_config_feeds(db, feeds) == feeds
+
+        mark_config_feeds_imported(db, feeds[:1])
+        assert new_config_feeds(db, feeds) == feeds[1:]
+        db.close()
+
+    def test_existing_library_baselines_current_feeds(self, tmp_path):
+        # Feeds already in use before import-once existed are not imported
+        # again, so a podcast deleted in the web app stays deleted.
+        from p3.database import P3Database
+        from p3.downloader import new_config_feeds
+
+        db = P3Database(str(tmp_path / "test.duckdb"))
+        db.add_podcast("Kept", "http://a")
+        feeds = [{"name": "A", "url": "http://a"}, {"name": "Gone", "url": "http://b"}]
+        assert new_config_feeds(db, feeds) == []
+
+        added = [{"name": "C", "url": "http://c"}]
+        assert new_config_feeds(db, feeds + added) == added
+        db.close()

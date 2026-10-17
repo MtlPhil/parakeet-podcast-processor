@@ -128,3 +128,21 @@ class TestExportPath:
     def test_get_export_path(self, exporter, tmp_path):
         path = exporter.get_export_path("digest_2025-08-25.md")
         assert path == tmp_path / "digest_2025-08-25.md"
+
+
+class TestLocalized:
+    def test_french_swaps_translated_fields_and_falls_back(self):
+        from p3.exporter import localized
+
+        summary = {
+            "full_summary": "English",
+            "full_summary_fr": "Français",
+            "key_topics": ["growth"],
+            "key_topics_fr": None,
+            "quotes": ["Verbatim"],
+        }
+        fr = localized(summary, "fr")
+        assert fr["full_summary"] == "Français"
+        assert fr["key_topics"] == ["growth"]  # not translated yet
+        assert fr["quotes"] == ["Verbatim"]
+        assert localized(summary, "en") is summary

@@ -333,3 +333,77 @@ class TestGenerateSummaryPreservesSynopsis:
             assert summary["long_summary"] == "a hand-generated synopsis"
         finally:
             db.close()
+
+
+class TestTranslation:
+    """Quebec French versions of digests (LLM replaced by a stub)."""
+
+    def _cleaner(self, monkeypatch, reply):
+        from p3.cleaner import TranscriptCleaner
+
+        cleaner = TranscriptCleaner(db=None, llm_provider="ollama")
+        calls = []
+
+        def fake_chat(system, user, max_tokens=2000):
+            calls.append(user)
+            return reply(user)
+
+        monkeypatch.setattr(cleaner, "_chat", fake_chat)
+        return cleaner, calls
+
+    def test_long_text_is_translated_in_paragraph_chunks(self, monkeypatch):
+        from p3.cleaner import _split_paragraph_chunks
+
+        text = "\n\n".join(["a" * 2000, "b" * 2000, "c" * 500])
+        assert [len(c) for c in _split_paragraph_chunks(text)] == [2000, 2502]
+
+        cleaner, calls = self._cleaner(monkeypatch, lambda prompt: "FR")
+        assert cleaner.translate_text(text) == "FR\n\nFR"
+        assert len(calls) == 2
+        assert "Quebec French" in calls[0]
+
+    def test_list_must_keep_its_length(self, monkeypatch):
+        cleaner, _ = self._cleaner(
+            monkeypatch, lambda prompt: '```json\n{"items": ["un", "deux"]}\n```'
+        )
+        assert cleaner.translate_list(["one", "two"]) == ["un", "deux"]
+        assert cleaner.translate_list(["one", "two", "three"]) is None
+        assert cleaner.translate_list([]) == []
+
+    def test_failure_returns_none(self, monkeypatch):
+        def boom(prompt):
+            raise RuntimeError("LLM down")
+
+        cleaner, _ = self._cleaner(monkeypatch, boom)
+        assert cleaner.translate_text("Hello") is None
+        assert cleaner.translate_list(["one"]) is None
+
+    def test_translate_digest_stores_french_fields(self, monkeypatch, tmp_path):
+        from datetime import datetime
+
+        from p3.cleaner import TranscriptCleaner
+        from p3.database import P3Database
+
+        db = P3Database(str(tmp_path / "test.duckdb"))
+        pid = db.add_podcast("Pod", "http://example.com/rss")
+        eid = db.add_episode(pid, "Ep", datetime(2026, 10, 1), "http://example.com/1")
+        db.add_summary(
+            eid, ["growth"], ["scale"], ["Quote"], [], "Summary", long_summary="Notes"
+        )
+        cleaner = TranscriptCleaner(db=db, llm_provider="ollama")
+
+        def fake_chat(system, user, max_tokens=2000):
+            if '"items"' in user:
+                return '{"items": ["FR item"]}'
+            return "FR text"
+
+        monkeypatch.setattr(cleaner, "_chat", fake_chat)
+        assert cleaner.translate_digest(eid, synopsis=True) is True
+
+        summary = db.get_summary_by_episode(eid)
+        assert summary["full_summary_fr"] == "FR text"
+        assert summary["long_summary_fr"] == "FR text"
+        assert summary["key_topics_fr"] == ["FR item"]
+        assert summary["themes_fr"] == ["FR item"]
+        assert summary["quotes"] == ["Quote"]  # quotes stay verbatim
+        db.close()

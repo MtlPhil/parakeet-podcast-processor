@@ -580,3 +580,38 @@ class TestAppState:
         db.set_state("k", "one")
         db.set_state("k", "two")
         assert db.get_state("k") == "two"
+
+
+class TestRemoveAudio:
+    def _episode(self, db, tmp_path, name, status):
+        audio = tmp_path / f"{name}.wav"
+        audio.write_bytes(b"x" * 100)
+        pid = db.get_podcast_by_url("http://example.com/rss")
+        pid = pid["id"] if pid else db.add_podcast("Pod", "http://example.com/rss")
+        eid = db.add_episode(
+            pid, name, None, f"http://example.com/{name}", file_path=str(audio)
+        )
+        db.update_episode_status(eid, status)
+        return eid, audio
+
+    def test_removes_file_and_clears_path(self, tmp_path):
+        db = P3Database(str(tmp_path / "test.duckdb"))
+        eid, audio = self._episode(db, tmp_path, "ep", "processed")
+
+        assert db.remove_audio(eid) == 100
+        assert not audio.exists()
+        assert db.get_episode_by_id(eid)["file_path"] is None
+        # Nothing left to remove; a file already gone is not an error.
+        assert db.remove_audio(eid) == 0
+        db.close()
+
+    def test_processed_only(self, tmp_path):
+        db = P3Database(str(tmp_path / "test.duckdb"))
+        done, done_audio = self._episode(db, tmp_path, "done", "processed")
+        pending, pending_audio = self._episode(db, tmp_path, "pending", "downloaded")
+
+        assert db.remove_processed_audio() == {"episodes": 1, "bytes_freed": 100}
+        assert not done_audio.exists()
+        assert pending_audio.exists()
+        assert db.get_episode_by_id(pending)["file_path"] == str(pending_audio)
+        db.close()

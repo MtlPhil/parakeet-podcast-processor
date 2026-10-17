@@ -5,25 +5,29 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from p3.api.auth import current_username
 from p3.api.deps import close_db, get_db
 from p3.api.job_queue import job_runner
 from p3.api.models import StatsOut
 from p3.api.routers import (
     blogs,
+    daily_run,
     episodes,
     exports,
     jobs,
     linkedin,
     podcasts,
+    search,
     settings,
     summaries,
     transcripts,
+    users,
 )
 from p3.api.scheduler import daily_scheduler
 
@@ -34,7 +38,14 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Startup / shutdown lifecycle."""
     # Ensure directories exist
-    for d in ("data", "data/audio", "exports", "blog_posts", "config"):
+    for d in (
+        "data",
+        "data/audio",
+        "exports",
+        "blog_posts",
+        "linkedin_posts",
+        "config",
+    ):
         Path(d).mkdir(parents=True, exist_ok=True)
     # Warm up database and clear jobs orphaned by a previous process
     db = get_db()
@@ -101,13 +112,16 @@ app.include_router(exports.router)
 app.include_router(blogs.router)
 app.include_router(linkedin.router)
 app.include_router(settings.router)
+app.include_router(search.router)
+app.include_router(daily_run.router)
+app.include_router(users.router)
 
 
 @app.get("/api/stats", response_model=StatsOut, tags=["stats"])
-def get_stats():
-    """Dashboard statistics."""
+def get_stats(username: str = Depends(current_username)):
+    """Dashboard statistics for the user's library."""
     db = get_db()
-    return db.get_stats()
+    return db.get_stats(username)
 
 
 class SPAStaticFiles(StaticFiles):

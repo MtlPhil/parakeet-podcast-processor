@@ -136,3 +136,28 @@ class TestSaveLinkedInPost:
         assert "Français (Québec)" in content
         assert "Episode 1" in content
         assert "Podcast A" in content
+
+
+class TestToneAndLanguages:
+    def test_tone_is_added_to_prompts(self):
+        writer = BlogWriter(db=None, tone="  Dry humour, short sentences.  ")
+        assert "Dry humour, short sentences." in writer._tone_section()
+        prompt = writer._build_writing_prompt("AI", "context")
+        assert "Dry humour, short sentences." in prompt
+        assert BlogWriter(db=None)._tone_section() == ""
+
+    def test_split_languages(self):
+        from p3.api.content import split_languages
+
+        linkedin = "## English\n\nHello\n\n## Français (Québec)\n\nBonjour"
+        assert split_languages(linkedin) == ("Hello", "Bonjour")
+
+        blog = (
+            "# Title\n\nPost\n\n## Français (Québec)\n\n# Titre\n\nBillet\n\n"
+            "---\n\n## Generation Notes\n\n- Grade"
+        )
+        english, french = split_languages(blog)
+        assert english.startswith("# Title\n\nPost") and english.endswith("- Grade")
+        assert french.startswith("# Titre\n\nBillet") and french.endswith("- Grade")
+
+        assert split_languages("Old post") == ("Old post", None)

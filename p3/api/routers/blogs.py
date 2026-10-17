@@ -4,8 +4,10 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from p3.api.auth import current_username
+from p3.api.content import post_files, split_languages
 from p3.api.deps import get_db
 from p3.api.job_queue import job_runner
 from p3.api.models import BlogCreate, BlogOut
@@ -13,7 +15,7 @@ from p3.api.tasks import task_write_blog
 
 router = APIRouter(prefix="/api/blogs", tags=["blogs"])
 
-BLOG_DIR = Path("blog_posts")
+POSTS_DIR = "blog_posts"
 
 
 def _parse_blog_file(path: Path) -> dict:
@@ -48,29 +50,25 @@ def _parse_blog_file(path: Path) -> dict:
         "filename": path.name,
         "final_grade": meta.get("final_grade"),
         "final_score": float(meta["final_score"]) if "final_score" in meta else None,
-        "content": text.strip(),
+        **dict(zip(("content", "content_fr"), split_languages(text))),
     }
 
 
 @router.get("", response_model=list[BlogOut])
-def list_blogs():
-    """List all generated blog posts (without full content)."""
-    if not BLOG_DIR.exists():
-        return []
+def list_blogs(username: str = Depends(current_username)):
+    """List the user's blog posts (without full content)."""
     blogs = []
-    for path in sorted(BLOG_DIR.glob("*.md"), reverse=True):
+    for path in post_files(POSTS_DIR, username):
         info = _parse_blog_file(path)
-        info["content"] = None  # omit full content in list view
+        info["content"] = info["content_fr"] = None  # omitted in list view
         blogs.append(info)
     return blogs
 
 
 @router.get("/{slug}", response_model=BlogOut)
-def get_blog(slug: str):
-    """Get a single blog post by slug."""
-    if not BLOG_DIR.exists():
-        raise HTTPException(404, "No blog posts found")
-    for path in BLOG_DIR.glob("*.md"):
+def get_blog(slug: str, username: str = Depends(current_username)):
+    """Get one of the user's blog posts by slug."""
+    for path in post_files(POSTS_DIR, username):
         info = _parse_blog_file(path)
         if info["slug"] == slug:
             return info
@@ -78,12 +76,13 @@ def get_blog(slug: str):
 
 
 @router.post("", response_model=dict)
-def create_blog(body: BlogCreate):
-    """Generate a new blog post from podcast summaries."""
+def create_blog(body: BlogCreate, username: str = Depends(current_username)):
+    """Generate a new blog post (English + Quebec French) from the day's
+    summaries of the user's episodes, in their tone."""
     db = get_db()
     target_date = body.date or datetime.now().strftime("%Y-%m-%d")
 
-    job_id = db.create_job("write")
+    job_id = db.create_job("write", username=username)
     job_runner.enqueue(
         task_write_blog,
         job_id,
@@ -92,5 +91,6 @@ def create_blog(body: BlogCreate):
         body.target_grade,
         body.provider,
         body.model,
+        username,
     )
     return {"job_id": job_id}

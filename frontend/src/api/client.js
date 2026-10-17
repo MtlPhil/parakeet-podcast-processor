@@ -21,6 +21,20 @@ async function request(path, options = {}) {
   return res.json();
 }
 
+// The signed-in user (from the reverse proxy's Remote-User header)
+export const getMe = () => request('/me');
+export const updateMySettings = (settings) =>
+  request('/me/settings', { method: 'PUT', body: JSON.stringify(settings) });
+
+// Admin
+export const getUsers = () => request('/admin/users');
+export const setUserRole = (username, role) =>
+  request(`/admin/users/${encodeURIComponent(username)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ role }),
+  });
+export const translateAll = () => request('/episodes/translate-all', { method: 'POST' });
+
 // Stats
 export const getStats = () => request('/stats');
 
@@ -35,6 +49,9 @@ export const updatePodcast = (id, data) =>
   request(`/podcasts/${id}`, { method: 'PATCH', body: JSON.stringify(data) });
 export const deletePodcast = (id) =>
   request(`/podcasts/${id}`, { method: 'DELETE' });
+export const bulkAddPodcasts = (urls, category) =>
+  request('/podcasts/bulk', { method: 'POST', body: JSON.stringify({ urls, category }) });
+export const getAvailableEpisodes = (id) => request(`/podcasts/${id}/available`);
 export const fetchPodcast = (id, data = {}) =>
   request(`/podcasts/${id}/fetch`, { method: 'POST', body: JSON.stringify(data) });
 
@@ -44,12 +61,17 @@ export const getEpisodes = (params = {}) => {
   return request(`/episodes${qs ? '?' + qs : ''}`);
 };
 export const getEpisode = (id) => request(`/episodes/${id}`);
+export const deleteEpisode = (id) => request(`/episodes/${id}`, { method: 'DELETE' });
+export const translateEpisode = (id) =>
+  request(`/episodes/${id}/translate`, { method: 'POST' });
 export const transcribeEpisode = (id) =>
   request(`/episodes/${id}/transcribe`, { method: 'POST' });
 export const digestEpisode = (id) =>
   request(`/episodes/${id}/digest`, { method: 'POST' });
 export const runPipeline = (id) =>
   request(`/episodes/${id}/pipeline`, { method: 'POST' });
+export const cleanupAudio = () =>
+  request('/episodes/cleanup-audio', { method: 'POST' });
 export const generateSynopsis = (id, { provider, model } = {}) =>
   request(`/episodes/${id}/synopsis`, { method: 'POST', body: JSON.stringify({ provider, model }) });
 
@@ -128,6 +150,12 @@ export const getLinkedInPosts = () => request('/linkedin');
 export const getLinkedInPost = (slug) => request(`/linkedin/${slug}`);
 export const createLinkedInPost = (data) =>
   request('/linkedin', { method: 'POST', body: JSON.stringify(data) });
+
+// Search
+export const search = (q) => request(`/search?${new URLSearchParams({ q })}`);
+
+// Daily run
+export const getDailyRun = () => request('/daily-run');
 
 // Settings
 export const getSettings = () => request('/settings');

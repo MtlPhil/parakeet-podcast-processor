@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 # Keeps generated filenames well under filesystem limits.
 _MAX_SLUG_LENGTH = 80
 
+# Heading that starts the French half of a saved post (LinkedIn and blog).
+FRENCH_HEADING = "## Français (Québec)"
+
 
 class BlogWriter:
     def __init__(
@@ -28,8 +31,12 @@ class BlogWriter:
         llm_model: str = DEFAULT_OLLAMA_MODEL,
         target_grade: float = 91.0,
         ollama_base_url: str = DEFAULT_OLLAMA_URL,
+        tone: str = "",
     ):
+        """``tone`` is the author's own description of their voice, added to
+        every writing prompt."""
         self.db = db
+        self.tone = tone.strip()
         self.llm_model = llm_model
         self.target_grade = target_grade
         self.max_iterations = 3
@@ -100,6 +107,10 @@ class BlogWriter:
 
         return {
             "final_post": current_post,
+            "final_post_fr": self._adapt_to_quebec_french(
+                current_post, "article de blogue"
+            ),
+            "topic_fr": self._adapt_to_quebec_french(topic, "titre d'article"),
             "final_grade": iterations[-1]["grade"],
             "final_score": iterations[-1]["score"],
             "iterations": iterations,
@@ -173,7 +184,7 @@ Style Guidelines:
             f"{style_guidelines}\n"
             f"Topic: {topic}\n\n"
             f"Source Material:\n{context}\n"
-            f"{context_section}\n"
+            f"{context_section}{self._tone_section()}\n"
             "Write a compelling blog post that:\n"
             "1. Opens with a strong hook that draws readers in\n"
             "2. Presents insights from the podcast content\n"
@@ -194,9 +205,36 @@ Style Guidelines:
             "- Concise, engaging style (500 words or less)\n"
             "- Strong hook and conclusion\n"
             "- Smooth paragraph transitions\n"
-            "- Actionable takeaways\n\n"
+            "- Actionable takeaways\n"
+            f"{self._tone_section()}\n"
             "Focus especially on addressing the specific issues mentioned in the feedback."
         )
+
+    def _tone_section(self) -> str:
+        """The author's tone instructions as a prompt section, or ''."""
+        if not self.tone:
+            return ""
+        return (
+            "\nThe author's voice and tone (write as they would; this overrides "
+            f"the default tone):\n{self.tone}\n"
+        )
+
+    def _adapt_to_quebec_french(self, text: str, kind: str) -> str:
+        """Translate and adapt English text (a post of type ``kind``, in
+        French) to Quebec French, keeping the author's tone."""
+        tone = f"\nTon de l'auteur (à respecter) :\n{self.tone}\n" if self.tone else ""
+        prompt = (
+            f"Traduis et adapte le texte suivant ({kind}) en français québécois "
+            "(pas le français de France : utilise le vocabulaire, les tournures et "
+            "le registre du Québec). Garde le même sens, le même ton et une "
+            f"longueur similaire.\n{tone}\n"
+            f"Texte original (anglais) :\n{text}\n\n"
+            "Retourne uniquement le texte, sans commentaire."
+        )
+        return self._generate_with_llm(
+            prompt,
+            system="Tu es un rédacteur professionnel qui écrit en français québécois.",
+        ).strip()
 
     # ------------------------------------------------------------------
     # Grading (uses a distinct persona to reduce self-grading bias)
@@ -319,6 +357,12 @@ model: {blog_result['metadata']['model_used']}
 
 {blog_result['final_post']}
 
+{FRENCH_HEADING}
+
+# {blog_result.get('topic_fr') or blog_result['topic']}
+
+{blog_result.get('final_post_fr', '')}
+
 ---
 
 ## Generation Notes
@@ -369,7 +413,8 @@ model: {blog_result['metadata']['model_used']}
             "- Reference the episode and podcast by name\n"
             "- Share the most interesting insight or argument, not a generic teaser\n"
             "- End with a short takeaway or a question inviting engagement\n"
-            "- At most 3 relevant hashtags at the end, no hashtag spam\n\n"
+            "- At most 3 relevant hashtags at the end, no hashtag spam\n"
+            f"{self._tone_section()}\n"
             "Return only the post text."
         )
         english_post = self._generate_with_llm(
@@ -378,19 +423,7 @@ model: {blog_result['metadata']['model_used']}
             "summarize podcast insights for a business audience.",
         ).strip()
 
-        french_prompt = (
-            "Traduis et adapte le billet LinkedIn suivant en français québécois "
-            "(pas le français de France : utilise le vocabulaire, les tournures et "
-            "le registre du Québec). Garde le même sens, le même ton professionnel "
-            "et une longueur similaire.\n\n"
-            f"Billet original (anglais) :\n{english_post}\n\n"
-            "Retourne uniquement le texte du billet, sans commentaire."
-        )
-        french_post = self._generate_with_llm(
-            french_prompt,
-            system="Tu es un rédacteur professionnel qui écrit des billets LinkedIn "
-            "en français québécois.",
-        ).strip()
+        french_post = self._adapt_to_quebec_french(english_post, "billet LinkedIn")
 
         slug = self._generate_slug(f"{podcast_title}-{episode_title}")
 
@@ -430,7 +463,7 @@ model: {meta['model_used']}
 
 {result['english']}
 
-## Français (Québec)
+{FRENCH_HEADING}
 
 {result['french_quebec']}
 """

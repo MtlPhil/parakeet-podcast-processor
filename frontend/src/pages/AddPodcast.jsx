@@ -1,12 +1,28 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { addPodcast, previewSource } from '../api/client';
+import { addPodcast, bulkAddPodcasts, previewSource } from '../api/client';
 import { useJobPoller } from '../hooks/useJobPoller';
 import JobProgress from '../components/JobProgress';
+import EpisodePicker from '../components/EpisodePicker';
 
 const DEFAULT_SELECTED = 5;
 
+// The newest `count` episodes not already in the library.
+const defaultSelection = (episodes, count) =>
+  new Set(episodes.filter((ep) => !ep.in_library).slice(0, count).map((ep) => ep.guid));
+
+// One URL per line; anything after the URL on a line is ignored.
+const parseUrls = (text) =>
+  [...new Set(text.split('\n').map((line) => line.match(/https?:\/\/\S+/)?.[0]).filter(Boolean))];
+
+// Feed URLs from an OPML file, the subscription export of podcast apps.
+const opmlUrls = (xml) =>
+  [...new DOMParser().parseFromString(xml, 'text/xml').querySelectorAll('outline[xmlUrl]')]
+    .map((el) => el.getAttribute('xmlUrl'));
+
 export default function AddPodcast() {
+  const [mode, setMode] = useState('single');
+  const [bulkText, setBulkText] = useState('');
   const [url, setUrl] = useState('');
   const [name, setName] = useState('');
   const [category, setCategory] = useState('');
@@ -32,7 +48,7 @@ export default function AddPodcast() {
     try {
       const result = await previewSource(url);
       setPreview(result);
-      setSelected(new Set(result.episodes.slice(0, DEFAULT_SELECTED).map((ep) => ep.guid)));
+      setSelected(defaultSelection(result.episodes, DEFAULT_SELECTED));
     } catch (e) {
       // Playlists can't be previewed (every video is imported automatically);
       // fall back to the direct add-and-fetch flow instead of erroring out.
@@ -69,13 +85,31 @@ export default function AddPodcast() {
     }
   };
 
-  const toggle = (guid) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(guid)) next.delete(guid);
-      else next.add(guid);
-      return next;
-    });
+  const handleBulk = async (e) => {
+    e.preventDefault();
+    setError(null);
+    setSubmitting(true);
+    try {
+      const result = await bulkAddPodcasts(parseUrls(bulkText), category || undefined);
+      startPolling(result.job_id);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const importOpml = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    const urls = opmlUrls(await file.text());
+    if (urls.length === 0) {
+      setError('No feeds found in that OPML file.');
+      return;
+    }
+    setError(null);
+    setBulkText((prev) => [prev.trim(), ...urls].filter(Boolean).join('\n'));
   };
 
   const done = job?.status === 'completed';
@@ -85,6 +119,70 @@ export default function AddPodcast() {
       <h1 className="text-2xl font-bold text-gray-900 mb-6">Add Podcast</h1>
 
       {!preview && !job && (
+        <div className="flex gap-1 mb-4 border-b">
+          {[['single', 'One podcast'], ['bulk', 'Bulk add']].map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => { setMode(value); setError(null); }}
+              className={`px-3 py-2 text-sm -mb-px border-b-2 ${
+                mode === value ? 'border-blue-600 text-blue-700 font-medium' : 'border-transparent text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {mode === 'bulk' && !job && (
+        <form onSubmit={handleBulk} className="space-y-4">
+          <div>
+            <label htmlFor="bulk-urls" className="block text-sm font-medium text-gray-700 mb-1">
+              URLs, one per line
+            </label>
+            <textarea
+              id="bulk-urls"
+              value={bulkText}
+              onChange={(e) => setBulkText(e.target.value)}
+              rows={10}
+              placeholder={'https://example.com/feed.rss\nhttps://podcasts.apple.com/...\nhttps://www.youtube.com/@channel'}
+              className="w-full border rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <p className="mt-1 text-xs text-gray-500">
+              Same kinds of links as a single add. Each new podcast fetches its newest
+              episodes per your settings; podcasts already in the library are skipped.
+              {' '}{parseUrls(bulkText).length} URL{parseUrls(bulkText).length === 1 ? '' : 's'} found.
+            </p>
+            <label className="inline-block mt-2 text-sm text-blue-600 hover:underline cursor-pointer">
+              Import an OPML file
+              <input type="file" accept=".opml,.xml,text/xml" onChange={importOpml} className="hidden" />
+            </label>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Category (optional)</label>
+            <input
+              type="text"
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              placeholder="Applied to every podcast added"
+              className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+
+          {error && <p className="text-sm text-red-600">{error}</p>}
+
+          <button
+            type="submit"
+            disabled={submitting || parseUrls(bulkText).length === 0}
+            className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 text-sm font-medium"
+          >
+            {submitting ? 'Adding...' : `Add ${parseUrls(bulkText).length} Podcast${parseUrls(bulkText).length === 1 ? '' : 's'}`}
+          </button>
+        </form>
+      )}
+
+      {mode === 'single' && !preview && !job && (
         <form onSubmit={handlePreview} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">URL *</label>
@@ -146,51 +244,12 @@ export default function AddPodcast() {
               Pick which ones to fetch now &mdash; every future fetch will pull the top episodes
               per your settings.
             </p>
-            <div className="mt-2 flex gap-3 text-xs">
-              <button
-                type="button"
-                onClick={() => setSelected(new Set(preview.episodes.map((ep) => ep.guid)))}
-                className="text-blue-600 hover:underline"
-              >
-                Select all
-              </button>
-              <button
-                type="button"
-                onClick={() => setSelected(new Set())}
-                className="text-blue-600 hover:underline"
-              >
-                Select none
-              </button>
-            </div>
-          </div>
-
-          <div className="border rounded-lg divide-y max-h-96 overflow-y-auto">
-            {preview.episodes.map((ep) => (
-              <label
-                key={ep.guid}
-                className="flex items-start gap-3 px-3 py-2 text-sm hover:bg-gray-50 cursor-pointer"
-              >
-                <input
-                  type="checkbox"
-                  checked={selected.has(ep.guid)}
-                  onChange={() => toggle(ep.guid)}
-                  className="mt-1"
-                />
-                <span>
-                  <span className="block text-gray-900">{ep.title}</span>
-                  {ep.date && (
-                    <span className="block text-xs text-gray-500">
-                      {new Date(ep.date).toLocaleDateString()}
-                    </span>
-                  )}
-                </span>
-              </label>
-            ))}
-            {preview.episodes.length === 0 && (
-              <p className="px-3 py-4 text-sm text-gray-500">
-                No episodes found in the last 12 months.
-              </p>
-            )}
+            <EpisodePicker
+              episodes={preview.episodes}
+              selected={selected}
+              onChange={setSelected}
+              emptyText="No episodes found in the last 12 months."
+            />
           </div>
 
           {error && <p className="text-sm text-red-600">{error}</p>}
@@ -231,7 +290,9 @@ export default function AddPodcast() {
       )}
       {isPolling && !job && (
         <p className="mt-6 text-sm text-gray-500">
-          {isPlaylist ? 'Importing playlist...' : 'Fetching episodes...'}
+          {mode === 'bulk'
+            ? 'Adding podcasts...'
+            : isPlaylist ? 'Importing playlist...' : 'Fetching episodes...'}
         </p>
       )}
     </div>

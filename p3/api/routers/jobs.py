@@ -1,7 +1,8 @@
 """Job status routes."""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from p3.api.auth import current_username
 from p3.api.deps import get_db
 from p3.api.job_queue import job_runner
 from p3.api.models import JobOut
@@ -56,7 +57,11 @@ def _retry_plan(db, job):
             return None
         if _newer_completed_fetch(db, pid, job["created_at"]):
             return None
-        return (task_fetch, (pid, None), {"podcast_id": pid})
+        return (
+            task_fetch,
+            (pid, None, None, job["username"]),
+            {"podcast_id": pid, "username": job["username"]},
+        )
 
     if job_type in _EPISODE_TASKS:
         episode = db.get_episode_by_id(job["episode_id"]) if job["episode_id"] else None
@@ -65,24 +70,33 @@ def _retry_plan(db, job):
         return (
             _EPISODE_TASKS[job_type],
             (episode["id"],),
-            {"episode_id": episode["id"], "podcast_id": episode["podcast_id"]},
+            {
+                "episode_id": episode["id"],
+                "podcast_id": episode["podcast_id"],
+                "username": job["username"],
+            },
         )
 
     return None
 
 
 @router.get("", response_model=list[JobOut])
-def list_jobs(active_only: bool = False, limit: int | None = None):
-    """List jobs. limit is omitted (or <=0) to return all — the frontend
-    filters and paginates client-side."""
+def list_jobs(
+    active_only: bool = False,
+    limit: int | None = None,
+    username: str = Depends(current_username),
+):
+    """List the jobs the user started or that concern their podcasts. limit
+    is omitted (or <=0) to return all — the frontend filters and paginates
+    client-side."""
     db = get_db()
     if active_only:
-        return db.get_active_jobs()
-    return db.get_recent_jobs(limit=limit)
+        return db.get_active_jobs(username)
+    return db.get_recent_jobs(limit=limit, username=username)
 
 
 @router.post("/retry-failed", response_model=dict)
-def retry_failed_jobs():
+def retry_failed_jobs(username: str = Depends(current_username)):
     """Re-queue every failed job that still needs doing, then clear the failed
     records — they're superseded by the new jobs (or already resolved).
     Each target+step is retried at most once. Declared before ``/{job_id}``
@@ -90,7 +104,7 @@ def retry_failed_jobs():
     db = get_db()
     seen = set()
     job_ids = []
-    for job in db.get_failed_jobs():
+    for job in db.get_failed_jobs(username):
         key = (job["job_type"], job["episode_id"], job["podcast_id"])
         if key in seen:
             continue
@@ -102,41 +116,42 @@ def retry_failed_jobs():
         new_id = db.create_job(job["job_type"], **create_kwargs)
         job_runner.enqueue(task_fn, new_id, *task_args)
         job_ids.append(new_id)
-    db.clear_failed_jobs()
+    db.clear_failed_jobs(username)
     return {"queued": len(job_ids), "job_ids": job_ids}
 
 
 @router.delete("/failed", response_model=dict)
-def clear_failed_jobs():
-    """Delete all failed job records. Declared before ``/{job_id}`` so
-    ``failed`` is not read as an id."""
+def clear_failed_jobs(username: str = Depends(current_username)):
+    """Delete the user's visible failed job records. Declared before
+    ``/{job_id}`` so ``failed`` is not read as an id."""
     db = get_db()
-    return {"deleted": db.clear_failed_jobs()}
+    return {"deleted": db.clear_failed_jobs(username)}
 
 
 @router.delete("", response_model=dict)
-def clear_jobs():
-    """Delete completed and failed job records. Pending/running jobs are kept."""
+def clear_jobs(username: str = Depends(current_username)):
+    """Delete the user's visible completed and failed job records.
+    Pending/running jobs are kept."""
     db = get_db()
-    return {"deleted": db.clear_finished_jobs()}
+    return {"deleted": db.clear_finished_jobs(username)}
 
 
 @router.get("/{job_id}", response_model=JobOut)
-def get_job(job_id: str):
+def get_job(job_id: str, username: str = Depends(current_username)):
     db = get_db()
     job = db.get_job(job_id)
-    if not job:
+    if not job or not db.job_visible_to(job_id, username):
         raise HTTPException(404, "Job not found")
     return job
 
 
 @router.post("/{job_id}/retry", response_model=dict)
-def retry_job(job_id: str):
+def retry_job(job_id: str, username: str = Depends(current_username)):
     """Re-queue a single failed job as a new job. The original row is kept as
     history."""
     db = get_db()
     job = db.get_job(job_id)
-    if not job:
+    if not job or not db.job_visible_to(job_id, username):
         raise HTTPException(404, "Job not found")
     if job["status"] != "failed":
         raise HTTPException(400, "Only failed jobs can be retried")

@@ -1,10 +1,11 @@
-"""Daily automatic run of the pipeline, up to but not including content.
+"""Each user's daily automatic run of the pipeline.
 
-Once a day, at ``settings.daily_run_time`` (local time, "HH:MM"), every source
-in the library is fetched and every new episode is transcribed and digested,
-all through the serial job queue. The check repeats every minute, so a run
-missed while the Mac was asleep or the server was down starts as soon as it
-is back. The last run's date is kept in the database, so a restart never
+Once a day, at the user's ``daily_run_time`` (local time, "HH:MM"), every
+podcast they follow is fetched and every new episode of theirs transcribed
+and digested, all through the serial job queue (see
+``tasks.queue_daily_run``). The check repeats every minute, so a run missed
+while the Mac was asleep or the server was down starts as soon as it is
+back. Each user's last run date is kept in the database, so a restart never
 runs the same day twice.
 """
 
@@ -13,12 +14,11 @@ import threading
 from datetime import datetime
 from typing import Optional, Tuple
 
-from p3.api.deps import get_db, load_config
-from p3.api.tasks import queue_daily_run
+from p3.api.deps import get_db, user_settings
+from p3.api.tasks import queue_daily_run, run_key
 
 logger = logging.getLogger(__name__)
 
-LAST_RUN_KEY = "daily_run_last_date"
 _CHECK_INTERVAL = 60.0
 
 
@@ -37,27 +37,25 @@ def parse_run_time(value) -> Optional[Tuple[int, int]]:
     return parsed.hour, parsed.minute
 
 
-def run_if_due(now: Optional[datetime] = None) -> bool:
-    """Queue today's run if its time has passed and it has not run yet
-    today. Returns True if a run was queued."""
-    settings = load_config().get("settings", {})
-    run_time = parse_run_time(settings.get("daily_run_time"))
-    if run_time is None:
-        return False
-
+def run_if_due(now: Optional[datetime] = None) -> list[str]:
+    """Queue today's run for every user whose run time has passed and who
+    has not had one yet today. Returns the users whose run was queued."""
     now = now or datetime.now()
-    if (now.hour, now.minute) < run_time:
-        return False
-
-    db = get_db()
     today = now.date().isoformat()
-    if db.get_state(LAST_RUN_KEY) == today:
-        return False
-
-    db.set_state(LAST_RUN_KEY, today)
-    job_ids = queue_daily_run(db)
-    logger.info("Daily run queued: fetching %d source(s)", len(job_ids))
-    return True
+    db = get_db()
+    started = []
+    for user in db.get_all_users():
+        username = user["username"]
+        run_time = parse_run_time(user_settings(username).get("daily_run_time"))
+        if run_time is None or (now.hour, now.minute) < run_time:
+            continue
+        if db.get_state(run_key("last_date", username)) == today:
+            continue
+        db.set_state(run_key("last_date", username), today)
+        queue_daily_run(db, username)
+        logger.info("Daily run queued for %s", username)
+        started.append(username)
+    return started
 
 
 class DailyScheduler:

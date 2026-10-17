@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import {
   getEpisode,
   getTranscript,
@@ -10,7 +10,11 @@ import {
   generateSynopsis,
   createLinkedInPost,
   downloadTranscript,
+  deleteEpisode,
+  translateEpisode,
 } from '../api/client';
+import { languageOf, useMe } from '../hooks/useMe';
+import LanguageToggle from '../components/LanguageToggle';
 import { useJobPoller } from '../hooks/useJobPoller';
 import StatusBadge from '../components/StatusBadge';
 import ExternalLink from '../components/ExternalLink';
@@ -29,7 +33,11 @@ export default function EpisodeDetail() {
   const [notice, setNotice] = useState(null);
   const [synopsisProvider, setSynopsisProvider] = useState('');
   const [linkedinProvider, setLinkedinProvider] = useState('');
+  const [pickedLanguage, setPickedLanguage] = useState(null);
   const { job, isPolling, startPolling } = useJobPoller();
+  const { me } = useMe();
+  const navigate = useNavigate();
+  const language = languageOf(me, pickedLanguage);
 
   const load = useCallback(
     () =>
@@ -75,6 +83,29 @@ export default function EpisodeDetail() {
     }
   };
 
+  const handleTranslate = async () => {
+    try {
+      setError(null);
+      const result = await translateEpisode(id);
+      if (result?.job_id) startPolling(result.job_id);
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!window.confirm(
+      `Delete "${episode.title}" from your library? Fetches won't bring it back; ` +
+      'you can still add it again with "Add Past Episodes".'
+    )) return;
+    try {
+      await deleteEpisode(id);
+      navigate(`/podcasts/${episode.podcast_id}`);
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
   const handleGenerateLinkedin = async () => {
     try {
       setError(null);
@@ -93,6 +124,10 @@ export default function EpisodeDetail() {
 
   if (error) return <p className="text-red-600">Error: {error}</p>;
   if (!episode) return <p className="text-gray-500">Loading...</p>;
+
+  // A summary field in the shown language; English until it's translated.
+  const text = (field) =>
+    (language === 'fr' && summary?.[`${field}_fr`]) || summary?.[field];
   const isYouTube = /^https:\/\/www\.youtube\.com\/watch\?v=/.test(episode.url);
 
   const steps = [
@@ -153,6 +188,13 @@ export default function EpisodeDetail() {
             Generate Summary
           </button>
         )}
+        <button
+          onClick={handleDelete}
+          disabled={isPolling}
+          className="px-4 py-2 border border-red-200 text-red-600 text-sm rounded-lg hover:bg-red-50 disabled:opacity-50"
+        >
+          Delete
+        </button>
       </div>
 
       {job && <div className="mb-6"><JobProgress job={job} /></div>}
@@ -236,17 +278,36 @@ export default function EpisodeDetail() {
             </p>
           ) : (
             <div className="space-y-4">
-              {summary.full_summary && (
+              <div className="flex flex-wrap items-center gap-3">
+                <LanguageToggle value={language} onChange={setPickedLanguage} />
+                {language === 'fr' && !summary.full_summary_fr && (
+                  <>
+                    <span className="text-xs text-gray-500">
+                      Pas encore traduit : affiché en anglais.
+                    </span>
+                    <button
+                      onClick={handleTranslate}
+                      disabled={isPolling}
+                      className="px-3 py-1 bg-purple-600 text-white text-xs rounded-lg hover:bg-purple-700 disabled:opacity-50"
+                    >
+                      Translate to French
+                    </button>
+                  </>
+                )}
+              </div>
+              {text('full_summary') && (
                 <div>
-                  <h3 className="font-medium text-gray-800 mb-1">Summary</h3>
-                  <p className="text-sm text-gray-700">{summary.full_summary}</p>
+                  <h3 className="font-medium text-gray-800 mb-1">{language === 'fr' ? 'Résumé' : 'Summary'}</h3>
+                  <p className="text-sm text-gray-700">{text('full_summary')}</p>
                 </div>
               )}
-              {summary.long_summary ? (
+              {text('long_summary') ? (
                 <div>
-                  <h3 className="font-medium text-gray-800 mb-1">Synopsis (Study Notes)</h3>
+                  <h3 className="font-medium text-gray-800 mb-1">
+                    {language === 'fr' ? 'Synopsis (notes d’étude)' : 'Synopsis (Study Notes)'}
+                  </h3>
                   <div className="space-y-2">
-                    {summary.long_summary.split('\n\n').map((para, i) => (
+                    {text('long_summary').split('\n\n').map((para, i) => (
                       <p key={i} className="text-sm text-gray-700">{para}</p>
                     ))}
                   </div>
@@ -276,11 +337,11 @@ export default function EpisodeDetail() {
                   Generate LinkedIn Post
                 </button>
               </div>
-              {summary.key_topics?.length > 0 && (
+              {text('key_topics')?.length > 0 && (
                 <div>
-                  <h3 className="font-medium text-gray-800 mb-1">Key Topics</h3>
+                  <h3 className="font-medium text-gray-800 mb-1">{language === 'fr' ? 'Sujets clés' : 'Key Topics'}</h3>
                   <div className="flex flex-wrap gap-2">
-                    {summary.key_topics.map((t, i) => (
+                    {text('key_topics').map((t, i) => (
                       <span key={i} className="bg-blue-50 text-blue-700 text-xs px-2 py-1 rounded">
                         {t}
                       </span>
@@ -288,11 +349,11 @@ export default function EpisodeDetail() {
                   </div>
                 </div>
               )}
-              {summary.themes?.length > 0 && (
+              {text('themes')?.length > 0 && (
                 <div>
-                  <h3 className="font-medium text-gray-800 mb-1">Themes</h3>
+                  <h3 className="font-medium text-gray-800 mb-1">{language === 'fr' ? 'Thèmes' : 'Themes'}</h3>
                   <div className="flex flex-wrap gap-2">
-                    {summary.themes.map((t, i) => (
+                    {text('themes').map((t, i) => (
                       <span key={i} className="bg-purple-50 text-purple-700 text-xs px-2 py-1 rounded">
                         {t}
                       </span>

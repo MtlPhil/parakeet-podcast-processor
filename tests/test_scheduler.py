@@ -1,13 +1,13 @@
-"""Tests for the daily run scheduler (no jobs are executed)."""
+"""Tests for the per-user daily run scheduler (no jobs are executed)."""
 
 from datetime import datetime
 
 import pytest
 
 import p3.api.deps as deps
-from p3.api import job_queue
-from p3.api.scheduler import LAST_RUN_KEY, parse_run_time, run_if_due
-from p3.api.tasks import queue_pending_pipelines
+from p3.api import job_queue, tasks
+from p3.api.scheduler import parse_run_time, run_if_due
+from p3.api.tasks import run_key
 
 
 @pytest.fixture
@@ -16,17 +16,20 @@ def env(tmp_path, monkeypatch):
     deps.close_db()
     monkeypatch.setattr(deps, "_DB_PATH", str(tmp_path / "test.duckdb"))
     monkeypatch.setattr(deps, "_CONFIG_PATH", str(tmp_path / "feeds.yaml"))
+    deps.save_config({"feeds": [], "settings": {}})
 
     enqueued = []
     monkeypatch.setattr(
         job_queue.job_runner, "enqueue", lambda fn, *a: enqueued.append((fn, a))
     )
-
-    def set_run_time(value):
-        deps.save_config({"feeds": [], "settings": {"daily_run_time": value}})
-
-    yield deps.get_db(), enqueued, set_run_time
+    yield deps.get_db(), enqueued
     deps.close_db()
+
+
+def _user(db, name, **settings):
+    db.ensure_user(name)
+    db.update_user_settings(name, settings)
+    return name
 
 
 def _names(enqueued):
@@ -51,77 +54,155 @@ class TestParseRunTime:
 
 
 class TestRunIfDue:
-    def test_disabled_without_setting(self, env):
-        db, enqueued, set_run_time = env
-        set_run_time("")
-        db.add_podcast("Pod", "http://example.com/rss")
-        assert run_if_due(datetime(2026, 10, 17, 12, 0)) is False
-        assert enqueued == []
+    def test_only_users_who_set_a_time(self, env):
+        db, enqueued = env
+        _user(db, "ann", daily_run_time="06:00")
+        _user(db, "bob")
+        assert run_if_due(datetime(2026, 10, 17, 12, 0)) == ["ann"]
+        assert _names(enqueued) == ["daily_queue_fetches"]
+        assert enqueued[0][1][1] == "ann"
 
-    def test_not_due_before_run_time(self, env):
-        db, enqueued, set_run_time = env
-        set_run_time("06:00")
-        db.add_podcast("Pod", "http://example.com/rss")
-        assert run_if_due(datetime(2026, 10, 17, 5, 59)) is False
-        assert enqueued == []
+    def test_shared_config_time_is_ignored(self, env):
+        # A run time in the shared config must not start runs for users
+        # who never asked for one.
+        db, enqueued = env
+        deps.save_config({"feeds": [], "settings": {"daily_run_time": "06:00"}})
+        _user(db, "ann")
+        assert run_if_due(datetime(2026, 10, 17, 12, 0)) == []
 
-    def test_queues_fetch_per_source_then_pipelines(self, env):
-        db, enqueued, set_run_time = env
-        set_run_time("06:00")
-        p1 = db.add_podcast("A", "http://example.com/a.rss")
-        p2 = db.add_podcast("B", "http://example.com/b.rss")
-
-        assert run_if_due(datetime(2026, 10, 17, 6, 0)) is True
-
-        # One fetch job per source, then the follow-up that queues the
-        # pipeline jobs -- last, so it runs after every fetch.
-        assert _names(enqueued) == [
-            "task_fetch",
-            "task_fetch",
-            "queue_pending_pipelines",
-        ]
-        assert {a[1] for _, a in enqueued[:2]} == {p1, p2}
-        assert db.get_state(LAST_RUN_KEY) == "2026-10-17"
+    def test_each_user_at_their_own_time(self, env):
+        db, enqueued = env
+        _user(db, "ann", daily_run_time="06:00")
+        _user(db, "bob", daily_run_time="18:00")
+        assert run_if_due(datetime(2026, 10, 17, 12, 0)) == ["ann"]
+        assert run_if_due(datetime(2026, 10, 17, 18, 0)) == ["bob"]
 
     def test_runs_once_per_day(self, env):
-        db, enqueued, set_run_time = env
-        set_run_time("06:00")
-        db.add_podcast("Pod", "http://example.com/rss")
-
-        assert run_if_due(datetime(2026, 10, 17, 6, 0)) is True
-        assert run_if_due(datetime(2026, 10, 17, 18, 0)) is False
-        assert run_if_due(datetime(2026, 10, 18, 5, 0)) is False
-        assert run_if_due(datetime(2026, 10, 18, 6, 1)) is True
-        assert _names(enqueued).count("queue_pending_pipelines") == 2
-
-    def test_catches_up_late_in_the_day(self, env):
-        # e.g. the Mac was asleep at 06:00 and woke at 14:00.
-        db, enqueued, set_run_time = env
-        set_run_time("06:00")
-        assert run_if_due(datetime(2026, 10, 17, 14, 0)) is True
+        db, enqueued = env
+        _user(db, "ann", daily_run_time="06:00")
+        assert run_if_due(datetime(2026, 10, 17, 6, 0)) == ["ann"]
+        assert run_if_due(datetime(2026, 10, 17, 18, 0)) == []
+        assert run_if_due(datetime(2026, 10, 18, 5, 0)) == []
+        assert run_if_due(datetime(2026, 10, 18, 6, 1)) == ["ann"]
+        assert db.get_state(run_key("last_date", "ann")) == "2026-10-18"
 
     def test_last_run_survives_a_restart(self, env):
-        db, enqueued, set_run_time = env
-        set_run_time("06:00")
-        assert run_if_due(datetime(2026, 10, 17, 6, 0)) is True
+        db, enqueued = env
+        _user(db, "ann", daily_run_time="06:00")
+        assert run_if_due(datetime(2026, 10, 17, 6, 0)) == ["ann"]
         deps.close_db()
-        assert run_if_due(datetime(2026, 10, 17, 9, 0)) is False
+        assert run_if_due(datetime(2026, 10, 17, 9, 0)) == []
 
 
-class TestQueuePendingPipelines:
-    def test_queues_only_unprocessed_episodes(self, env):
-        db, enqueued, _ = env
+class TestDailyRunSteps:
+    def test_owner_run_imports_new_config_feeds_first(self, env):
+        db, enqueued = env
+        owner = _user(db, "ann")
+        feeds = [{"name": "New", "url": "http://example.com/new.rss"}]
+        deps.save_config({"feeds": feeds, "settings": {}})
+
+        run_id = tasks.queue_daily_run(db, owner)
+
+        assert _names(enqueued) == ["task_import_feeds", "daily_queue_fetches"]
+        assert enqueued[0][1][1] == feeds
+        assert run_id in tasks.active_run_ids
+        assert db.get_state(run_key("id", owner)) == run_id
+
+    def test_other_users_never_import_config_feeds(self, env):
+        db, enqueued = env
+        _user(db, "ann")
+        bob = _user(db, "bob")
+        deps.save_config({"feeds": [{"name": "N", "url": "http://n"}], "settings": {}})
+        tasks.queue_daily_run(db, bob)
+        assert _names(enqueued) == ["daily_queue_fetches"]
+
+    def test_fetch_step_covers_only_the_users_podcasts(self, env):
+        db, enqueued = env
+        ann = _user(db, "ann")
+        mine = db.add_podcast("A", "http://example.com/a.rss")
+        db.add_podcast("Theirs", "http://example.com/b.rss")
+        db.subscribe(ann, mine)
+
+        tasks.daily_queue_fetches("run-1", ann)
+
+        assert _names(enqueued) == ["task_fetch", "daily_queue_pipelines"]
+        assert enqueued[0][1][1:] == (mine, None, None, ann)
+        (job,) = db.get_jobs_by_run("run-1")
+        assert job["username"] == ann
+
+    def test_pipeline_step_queues_the_users_unprocessed_episodes(self, env):
+        db, enqueued = env
+        ann = _user(db, "ann")
         pid = db.add_podcast("Pod", "http://example.com/rss")
         ids = {}
-        for status in ("downloaded", "transcribed", "processed"):
+        for status in ("downloaded", "transcribed", "processed", "other_user"):
             eid = db.add_episode(
                 pid, status, datetime(2026, 10, 1), f"http://example.com/{status}"
             )
-            db.update_episode_status(eid, status)
+            if status != "other_user":
+                db.update_episode_status(eid, status)
+                db.link_episode(ann, eid)
             ids[status] = eid
 
-        queue_pending_pipelines()
+        tasks.daily_queue_pipelines("run-1", ann)
 
-        assert _names(enqueued) == ["task_full_pipeline", "task_full_pipeline"]
-        queued_episodes = {a[1] for _, a in enqueued}
-        assert queued_episodes == {ids["downloaded"], ids["transcribed"]}
+        assert _names(enqueued) == [
+            "task_full_pipeline",
+            "task_full_pipeline",
+            "daily_queue_content",
+        ]
+        assert {a[1] for _, a in enqueued[:2]} == {
+            ids["downloaded"],
+            ids["transcribed"],
+        }
+
+    def test_content_step_is_opt_in_and_marks_the_run_finished(self, env):
+        db, enqueued = env
+        ann = _user(db, "ann")
+        tasks.active_run_ids.add("run-1")
+
+        tasks.daily_queue_content("run-1", ann)
+        assert _names(enqueued) == ["daily_finish"]
+
+        tasks.daily_finish("run-1", ann)
+        assert db.get_state(run_key("finished_id", ann)) == "run-1"
+        assert "run-1" not in tasks.active_run_ids
+
+    def test_content_step_drafts_linkedin_for_completed_pipelines(self, env):
+        db, enqueued = env
+        ann = _user(db, "ann", daily_run_linkedin=True)
+        pid = db.add_podcast("Pod", "http://example.com/rss")
+        ok = db.add_episode(pid, "Ok", datetime(2026, 10, 1), "http://example.com/ok")
+        bad = db.add_episode(pid, "Bad", datetime(2026, 10, 1), "http://example.com/b")
+        for eid, status in ((ok, "completed"), (bad, "failed")):
+            job = db.create_job(
+                "full_pipeline", episode_id=eid, podcast_id=pid, run_id="run-1"
+            )
+            db.update_job(job, status=status)
+        # A pipeline outside this run is ignored.
+        other = db.create_job("full_pipeline", episode_id=bad, podcast_id=pid)
+        db.update_job(other, status="completed")
+
+        tasks.daily_queue_content("run-1", ann)
+
+        assert _names(enqueued) == ["task_write_linkedin", "daily_finish"]
+        assert enqueued[0][1][1:] == (ok, None, None, ann)
+
+    def test_content_step_exports_only_the_users_digests(self, env):
+        db, enqueued = env
+        ann = _user(db, "ann", daily_run_export=True)
+        deps.save_config({"feeds": [], "settings": {"export_format": ["html"]}})
+        pid = db.add_podcast("Pod", "http://example.com/rss")
+        eid = db.add_episode(pid, "Ep", datetime(2026, 10, 1), "http://example.com/1")
+        db.add_summary(eid, [], [], [], [], "Summary")
+
+        tasks.daily_queue_content("run-1", ann)
+        assert _names(enqueued) == ["daily_finish"]  # not ann's episode
+
+        enqueued.clear()
+        db.link_episode(ann, eid)
+        tasks.daily_queue_content("run-1", ann)
+
+        assert _names(enqueued) == ["task_export", "daily_finish"]
+        # HTML isn't produced by the export task, so the default formats apply.
+        assert enqueued[0][1][2:] == (["markdown", "json"], ann)

@@ -9,10 +9,11 @@ without loading ML dependencies.
 import logging
 import threading
 import time
+import uuid
 from datetime import datetime
 from typing import Optional
 
-from p3.api.deps import get_db, load_config
+from p3.api.deps import content_dir, get_db, load_config, user_settings
 from p3.api.job_queue import job_runner
 from p3.llm import DEFAULT_OLLAMA_URL, resolve_provider_and_model
 
@@ -20,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 
 def _get_settings() -> dict:
+    """The shared settings: transcription and digest run once per episode,
+    whoever's library it is in."""
     config = load_config()
     return config.get("settings", {})
 
@@ -56,6 +59,8 @@ def _make_writer(
     model: Optional[str] = None,
     **kwargs,
 ):
+    """A writer with the LLM and tone of ``settings`` (a user's settings,
+    see deps.user_settings)."""
     from p3.writer import BlogWriter
 
     llm_provider, llm_model = resolve_provider_and_model(settings, provider, model)
@@ -64,6 +69,7 @@ def _make_writer(
         llm_provider=llm_provider,
         llm_model=llm_model,
         ollama_base_url=settings.get("ollama_base_url", DEFAULT_OLLAMA_URL),
+        tone=settings.get("tone") or "",
         **kwargs,
     )
 
@@ -106,12 +112,12 @@ def task_fetch(
     podcast_id: int,
     max_episodes: int | None = None,
     episode_guids: list[str] | None = None,
+    username: str | None = None,
 ):
     """Download new episodes from a source (RSS feed, YouTube channel or
-    YouTube video).
-
-    If ``episode_guids`` is given (hand-picked from a preview listing), only
-    those are downloaded, regardless of ``max_episodes``.
+    YouTube video) for ``username``: the newest ones per their settings, or
+    the hand-picked ``episode_guids``. Episodes already downloaded for
+    someone else are linked instead of downloaded again.
     """
     db = get_db()
     try:
@@ -119,7 +125,7 @@ def task_fetch(
 
         from p3.downloader import PodcastDownloader
 
-        settings = _get_settings()
+        settings = user_settings(username)
         max_eps = max_episodes or settings.get("max_episodes_per_feed", 10)
 
         podcast = db.get_podcast_by_id(podcast_id)
@@ -139,6 +145,7 @@ def task_fetch(
             max_episodes=max_eps,
             audio_format=settings.get("audio_format", "wav"),
             progress_callback=on_progress,
+            username=username,
         )
 
         db.update_job(
@@ -162,7 +169,12 @@ def task_fetch(
 # ------------------------------------------------------------------
 
 
-def task_import_playlist(job_id: str, playlist_url: str, category: str | None = None):
+def task_import_playlist(
+    job_id: str,
+    playlist_url: str,
+    category: str | None = None,
+    username: str | None = None,
+):
     """Create a standalone source for each video of a YouTube playlist and
     download it. Shorts and livestreams are skipped."""
     db = get_db()
@@ -181,6 +193,7 @@ def task_import_playlist(job_id: str, playlist_url: str, category: str | None = 
             db=db,
             audio_format=settings.get("audio_format", "wav"),
             progress_callback=on_progress,
+            username=username,
         )
         stats = downloader.import_youtube_playlist(playlist_url, category)
 
@@ -197,6 +210,141 @@ def task_import_playlist(job_id: str, playlist_url: str, category: str | None = 
         )
     except Exception as e:
         logger.exception("Playlist import failed")
+        db.update_job(job_id, status="failed", error=str(e))
+
+
+# ------------------------------------------------------------------
+# Add many sources at once
+# ------------------------------------------------------------------
+
+
+def task_bulk_add(
+    job_id: str,
+    urls: list[str],
+    category: str | None = None,
+    username: str | None = None,
+):
+    """Resolve and add each URL as a source to ``username``'s library, then
+    queue its initial fetch (the top episodes per their settings). A source
+    someone else already follows is subscribed to, not added twice. A
+    playlist queues its own import job.
+
+    Resolving is quick next to downloading, so it happens here for every URL
+    and the downloads follow as separate fetch jobs, one per source.
+    """
+    db = get_db()
+    try:
+        db.update_job(job_id, status="running", message="Adding sources...")
+
+        from p3 import youtube
+        from p3.url_resolver import is_youtube_playlist, resolve_source
+
+        added, existing, failed = 0, 0, []
+        for i, url in enumerate(urls):
+            db.update_job(job_id, progress=i / len(urls), message=f"Looking up: {url}")
+            try:
+                if is_youtube_playlist(url):
+                    playlist_url = youtube.parse_youtube_url(url).url
+                    import_id = db.create_job("import_playlist", username=username)
+                    job_runner.enqueue(
+                        task_import_playlist,
+                        import_id,
+                        playlist_url,
+                        category,
+                        username,
+                    )
+                    added += 1
+                    continue
+
+                source = resolve_source(url)
+                podcast = db.get_podcast_by_url(source.url)
+                if podcast is None and (
+                    source.source_type == youtube.SOURCE_VIDEO
+                    and db.episode_exists(source.url)
+                ):
+                    existing += 1  # already an episode of another source
+                    continue
+                if podcast is not None and (
+                    username is None or db.is_subscribed(username, podcast["id"])
+                ):
+                    existing += 1
+                    continue
+
+                if podcast is None:
+                    name = (
+                        source.name or source.url.split("/")[-1] or "Untitled Podcast"
+                    )
+                    podcast_id = db.add_podcast(
+                        name, source.url, category, source.source_type
+                    )
+                else:
+                    podcast_id = podcast["id"]
+                if username:
+                    db.subscribe(username, podcast_id)
+                fetch_id = db.create_job(
+                    "fetch", podcast_id=podcast_id, username=username
+                )
+                job_runner.enqueue(
+                    task_fetch, fetch_id, podcast_id, None, None, username
+                )
+                added += 1
+            except (ValueError, youtube.YouTubeError) as e:
+                failed.append(f"{url}: {e}")
+
+        summary = f"Added {added}, {existing} already in library, {len(failed)} failed"
+        if failed and not added and not existing:
+            db.update_job(job_id, status="failed", error="; ".join(failed))
+            return
+        db.update_job(
+            job_id,
+            status="completed",
+            progress=1.0,
+            message=summary,
+            error="; ".join(failed) if failed else None,
+        )
+    except Exception as e:
+        logger.exception("Bulk add failed")
+        db.update_job(job_id, status="failed", error=str(e))
+
+
+# ------------------------------------------------------------------
+# Import config-file feeds into the library
+# ------------------------------------------------------------------
+
+
+def task_import_feeds(job_id: str, feeds: list[dict]):
+    """Add feeds.yaml entries not yet imported to the owner's library (see
+    P3Database.get_owner), and fetch them. Each is imported once: a failure
+    is logged, not retried."""
+    db = get_db()
+    try:
+        db.update_job(
+            job_id, status="running", message=f"Importing {len(feeds)} feed(s)..."
+        )
+
+        from p3.downloader import PodcastDownloader, mark_config_feeds_imported
+
+        settings = _get_settings()
+        downloader = PodcastDownloader(
+            db=db,
+            max_episodes=settings.get("max_episodes_per_feed", 10),
+            audio_format=settings.get("audio_format", "wav"),
+            username=db.get_owner(),
+        )
+        results = downloader.fetch_all_feeds(feeds)
+        mark_config_feeds_imported(db, feeds)
+
+        db.update_job(
+            job_id,
+            status="completed",
+            progress=1.0,
+            message=(
+                f"Imported {len(feeds)} feed(s) from the config file,"
+                f" {sum(results.values())} new episodes"
+            ),
+        )
+    except Exception as e:
+        logger.exception("Feed import failed")
         db.update_job(job_id, status="failed", error=str(e))
 
 
@@ -278,16 +426,25 @@ def task_digest(job_id: str, episode_id: int):
 # ------------------------------------------------------------------
 
 
-def task_export(job_id: str, target_date: str, formats: list[str] | None = None):
-    """Generate export files for a date."""
+def task_export(
+    job_id: str,
+    target_date: str,
+    formats: list[str] | None = None,
+    username: str | None = None,
+):
+    """Generate export files of a day's digests: ``username``'s episodes,
+    in their language, written to their exports folder."""
     db = get_db()
     try:
         db.update_job(job_id, status="running", message="Exporting...")
 
-        from p3.exporter import DigestExporter
+        from p3.exporter import DigestExporter, localized
 
         dt = datetime.strptime(target_date, "%Y-%m-%d")
-        summaries = db.get_summaries_by_date(dt)
+        language = user_settings(username).get("language", "en")
+        summaries = [
+            localized(row, language) for row in db.get_summaries_by_date(dt, username)
+        ]
 
         if not summaries:
             db.update_job(
@@ -295,7 +452,7 @@ def task_export(job_id: str, target_date: str, formats: list[str] | None = None)
             )
             return
 
-        exporter = DigestExporter(db)
+        exporter = DigestExporter(db, str(content_dir("exports", username)))
         export_formats = formats or ["markdown", "json"]
         files = []
 
@@ -335,14 +492,16 @@ def task_write_blog(
     target_grade: float = 91.0,
     provider: Optional[str] = None,
     model: Optional[str] = None,
+    username: Optional[str] = None,
 ):
-    """Generate a blog post from podcast summaries."""
+    """Generate a blog post (English and Quebec French) from the day's
+    summaries of ``username``'s episodes, in their tone."""
     db = get_db()
     try:
         db.update_job(job_id, status="running", message="Preparing blog generation...")
 
         dt = datetime.strptime(target_date, "%Y-%m-%d")
-        summaries = db.get_summaries_by_date(dt)
+        summaries = db.get_summaries_by_date(dt, username)
 
         if not summaries:
             db.update_job(
@@ -351,14 +510,16 @@ def task_write_blog(
             return
 
         writer = _make_writer(
-            db, _get_settings(), provider, model, target_grade=target_grade
+            db, user_settings(username), provider, model, target_grade=target_grade
         )
 
         db.update_job(job_id, progress=0.2, message="Generating blog post...")
         blog_result = writer.generate_blog_post_from_digest(topic, summaries)
 
         db.update_job(job_id, progress=0.8, message="Saving blog post...")
-        file_path = writer.save_blog_post(blog_result)
+        file_path = writer.save_blog_post(
+            blog_result, str(content_dir("blog_posts", username))
+        )
 
         db.update_job(
             job_id,
@@ -376,8 +537,10 @@ def task_write_linkedin(
     episode_id: int,
     provider: Optional[str] = None,
     model: Optional[str] = None,
+    username: Optional[str] = None,
 ):
-    """Generate a LinkedIn post (English + Quebec French) from one episode."""
+    """Generate a LinkedIn post (English + Quebec French) from one episode,
+    in ``username``'s tone, saved to their folder."""
     db = get_db()
     try:
         db.update_job(job_id, status="running", message="Preparing LinkedIn post...")
@@ -390,13 +553,15 @@ def task_write_linkedin(
             )
             return
 
-        writer = _make_writer(db, _get_settings(), provider, model)
+        writer = _make_writer(db, user_settings(username), provider, model)
 
         db.update_job(job_id, progress=0.3, message="Generating LinkedIn post...")
         result = writer.generate_linkedin_post(summary)
 
         db.update_job(job_id, progress=0.8, message="Saving LinkedIn post...")
-        file_path = writer.save_linkedin_post(result)
+        file_path = writer.save_linkedin_post(
+            result, str(content_dir("linkedin_posts", username))
+        )
 
         db.update_job(
             job_id,
@@ -414,13 +579,16 @@ def task_generate_synopsis(
     episode_id: int,
     provider: Optional[str] = None,
     model: Optional[str] = None,
+    username: Optional[str] = None,
 ):
-    """Generate the on-demand long-form synopsis for one episode."""
+    """Generate the on-demand long-form synopsis for one episode, in English
+    and Quebec French, with the requesting user's LLM. The synopsis is
+    shared: everyone with the episode sees it."""
     db = get_db()
     try:
         db.update_job(job_id, status="running", message="Generating synopsis...")
 
-        cleaner = _make_cleaner(db, _get_settings(), provider, model)
+        cleaner = _make_cleaner(db, user_settings(username), provider, model)
 
         synopsis = cleaner.generate_synopsis(episode_id)
         if not synopsis:
@@ -437,12 +605,36 @@ def task_generate_synopsis(
         db.update_job(job_id, status="failed", error=str(e))
 
 
+def task_translate(job_id: str, episode_id: int):
+    """Add the Quebec French version of an episode's digest (and synopsis),
+    for digests made before every digest came in both languages."""
+    db = get_db()
+    try:
+        db.update_job(job_id, status="running", message="Translating digest...")
+        cleaner = _make_cleaner(db, _get_settings())
+        if cleaner.translate_digest(episode_id, synopsis=True):
+            db.update_job(
+                job_id, status="completed", progress=1.0, message="Digest translated"
+            )
+        else:
+            db.update_job(job_id, status="failed", error="Translation failed")
+    except Exception as e:
+        logger.exception("Translate task failed")
+        db.update_job(job_id, status="failed", error=str(e))
+
+
 # ------------------------------------------------------------------
 # Batch queueing and the full per-episode pipeline
 # ------------------------------------------------------------------
 
 
-def queue_step_jobs(db, episodes, step: str) -> list[str]:
+def queue_step_jobs(
+    db,
+    episodes,
+    step: str,
+    run_id: Optional[str] = None,
+    username: Optional[str] = None,
+) -> list[str]:
     """Create one job per eligible episode for a pipeline step and hand it to
     the serial job runner.
 
@@ -463,37 +655,123 @@ def queue_step_jobs(db, episodes, step: str) -> list[str]:
         if not eligible(ep["status"]):
             continue
         job_id = db.create_job(
-            job_type, episode_id=ep["id"], podcast_id=ep["podcast_id"]
+            job_type,
+            episode_id=ep["id"],
+            podcast_id=ep["podcast_id"],
+            run_id=run_id,
+            username=username,
         )
         job_runner.enqueue(task_fn, job_id, ep["id"])
         job_ids.append(job_id)
     return job_ids
 
 
-def queue_daily_run(db) -> list[str]:
-    """Queue the daily run: a fetch job for every source in the library,
-    then transcribe → digest for every episode not yet processed.
-
-    The library (the podcasts table) is the source list, not the config
-    file's feeds, so a podcast deleted in the web app stays deleted. The
-    pipeline jobs are queued by a follow-up step that the FIFO runner
-    reaches only after every fetch has finished, so they include the
-    episodes those fetches just downloaded. Returns the fetch job ids.
-    """
-    job_ids = []
-    for podcast in db.get_all_podcasts():
-        job_id = db.create_job("fetch", podcast_id=podcast["id"])
-        job_runner.enqueue(task_fetch, job_id, podcast["id"])
-        job_ids.append(job_id)
-    job_runner.enqueue(queue_pending_pipelines)
-    return job_ids
+# Each user's daily run is a chain of steps on the serial queue. Each step
+# queues its jobs, tagged with the run's id, then queues the next step behind
+# them, so the next step sees the results of everything before it. Runs of
+# different users share the queue; an episode two of them follow is still
+# processed once (the second pipeline job finds it done).
 
 
-def queue_pending_pipelines():
-    """Queue a full pipeline job for every episode not yet processed."""
+def run_key(name: str, username: str) -> str:
+    """app_state key of a per-user daily run value: ``id``, ``started_at``,
+    ``finished_id`` or ``last_date``."""
+    return f"daily_run_{name}:{username}"
+
+
+# Runs in progress in this process. A run whose id is in neither this nor
+# its ``finished_id`` key was cut short by a server restart.
+active_run_ids: set[str] = set()
+
+
+def queue_daily_run(db, username: str) -> str:
+    """Start ``username``'s daily run: fetch every podcast they follow,
+    transcribe → digest every one of their episodes not yet processed, then
+    their opt-in LinkedIn drafts and digest export. The owner's run first
+    imports new config-file feeds. Returns the run id."""
+    from p3.downloader import new_config_feeds
+
+    run_id = str(uuid.uuid4())
+    active_run_ids.add(run_id)
+    db.set_state(run_key("id", username), run_id)
+    db.set_state(
+        run_key("started_at", username), datetime.now().isoformat(timespec="seconds")
+    )
+
+    if username == db.get_owner():
+        feeds = new_config_feeds(db, load_config().get("feeds") or [])
+        if feeds:
+            job_id = db.create_job("import_feeds", run_id=run_id, username=username)
+            job_runner.enqueue(task_import_feeds, job_id, feeds)
+    job_runner.enqueue(daily_queue_fetches, run_id, username)
+    return run_id
+
+
+def daily_queue_fetches(run_id: str, username: str):
+    """Daily run step: a fetch job for every podcast the user follows."""
     db = get_db()
-    job_ids = queue_step_jobs(db, db.get_all_episodes(), "pipeline")
+    for podcast in db.get_all_podcasts(username):
+        job_id = db.create_job(
+            "fetch", podcast_id=podcast["id"], run_id=run_id, username=username
+        )
+        job_runner.enqueue(task_fetch, job_id, podcast["id"], None, None, username)
+    job_runner.enqueue(daily_queue_pipelines, run_id, username)
+
+
+def daily_queue_pipelines(run_id: str, username: str):
+    """Daily run step: a full pipeline job for every one of the user's
+    episodes not yet processed, including those the fetches just added."""
+    db = get_db()
+    job_ids = queue_step_jobs(
+        db, db.get_all_episodes(username), "pipeline", run_id, username
+    )
     logger.info("Daily run: queued %d episode(s) for processing", len(job_ids))
+    job_runner.enqueue(daily_queue_content, run_id, username)
+
+
+def daily_queue_content(run_id: str, username: str):
+    """Daily run step: the user's opt-in extras. A LinkedIn draft for each
+    episode this run processed (``daily_run_linkedin``) and the day's digest
+    export (``daily_run_export``)."""
+    db = get_db()
+    settings = user_settings(username)
+
+    if settings.get("daily_run_linkedin"):
+        for job in db.get_jobs_by_run(run_id):
+            if job["job_type"] != "full_pipeline" or job["status"] != "completed":
+                continue
+            job_id = db.create_job(
+                "write_linkedin",
+                episode_id=job["episode_id"],
+                podcast_id=job["podcast_id"],
+                run_id=run_id,
+                username=username,
+            )
+            job_runner.enqueue(
+                task_write_linkedin, job_id, job["episode_id"], None, None, username
+            )
+
+    if settings.get("daily_run_export"):
+        today = datetime.now()
+        if db.get_summaries_by_date(today, username):
+            formats = [
+                f
+                for f in settings.get("export_format") or []
+                if f in ("markdown", "json")
+            ] or ["markdown", "json"]
+            job_id = db.create_job("export", run_id=run_id, username=username)
+            job_runner.enqueue(
+                task_export, job_id, today.strftime("%Y-%m-%d"), formats, username
+            )
+
+    job_runner.enqueue(daily_finish, run_id, username)
+
+
+def daily_finish(run_id: str, username: str):
+    """Daily run step: mark the run finished."""
+    get_db().set_state(run_key("finished_id", username), run_id)
+    active_run_ids.discard(run_id)
+    logger.info("Daily run finished for %s", username)
 
 
 def task_full_pipeline(job_id: str, episode_id: int):

@@ -9,8 +9,10 @@ import {
   retryFailedJobs,
   clearJobs,
   clearFailedJobs,
+  getDailyRun,
 } from '../api/client';
 import StatusBadge from '../components/StatusBadge';
+import DailyRunCard from '../components/DailyRunCard';
 
 const today = () => new Date().toISOString().slice(0, 10);
 const RETRYABLE = ['fetch', 'transcribe', 'digest', 'full_pipeline'];
@@ -46,6 +48,7 @@ function pageWindow(current, total) {
 export default function Dashboard() {
   const [stats, setStats] = useState(null);
   const [jobs, setJobs] = useState([]);
+  const [dailyRun, setDailyRun] = useState(null);
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -56,9 +59,10 @@ export default function Dashboard() {
 
   const loadData = async () => {
     try {
-      const [s, j] = await Promise.all([getStats(), getJobs()]);
+      const [s, j, run] = await Promise.all([getStats(), getJobs(), getDailyRun()]);
       setStats(s);
       setJobs(j);
+      setDailyRun(run);
     } catch (e) {
       setError(e.message);
     }
@@ -226,6 +230,8 @@ export default function Dashboard() {
           </div>
         ))}
       </div>
+
+      <DailyRunCard run={dailyRun} />
 
       {/* Pipeline actions */}
       <div className="bg-white rounded-lg border p-4 mb-6">

@@ -4,6 +4,7 @@ import {
   getPodcast,
   getEpisodes,
   fetchPodcast,
+  getAvailableEpisodes,
   updatePodcast,
   deletePodcast,
   processPodcast,
@@ -16,6 +17,7 @@ import ExternalLink from '../components/ExternalLink';
 import { useJobPoller } from '../hooks/useJobPoller';
 import StatusBadge from '../components/StatusBadge';
 import JobProgress from '../components/JobProgress';
+import EpisodePicker from '../components/EpisodePicker';
 
 export default function PodcastDetail() {
   const { id } = useParams();
@@ -28,6 +30,9 @@ export default function PodcastDetail() {
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [available, setAvailable] = useState(null);
+  const [picked, setPicked] = useState(new Set());
+  const [loadingAvailable, setLoadingAvailable] = useState(false);
   const { job, isPolling, startPolling } = useJobPoller();
 
   const load = useCallback(
@@ -51,6 +56,29 @@ export default function PodcastDetail() {
   const handleFetch = async () => {
     try {
       const result = await fetchPodcast(id);
+      startPolling(result.job_id);
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  const openPicker = async () => {
+    setLoadingAvailable(true);
+    setError(null);
+    try {
+      setAvailable(await getAvailableEpisodes(id));
+      setPicked(new Set());
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoadingAvailable(false);
+    }
+  };
+
+  const fetchPicked = async () => {
+    try {
+      const result = await fetchPodcast(id, { episode_guids: Array.from(picked) });
+      setAvailable(null);
       startPolling(result.job_id);
     } catch (e) {
       setError(e.message);
@@ -84,7 +112,7 @@ export default function PodcastDetail() {
   };
 
   const handleDelete = async () => {
-    if (!confirm(`Delete "${podcast.title}" and all its episodes?`)) return;
+    if (!confirm(`Remove "${podcast.title}" and its episodes from your library?`)) return;
     try {
       await deletePodcast(id);
       navigate('/podcasts');
@@ -224,6 +252,13 @@ export default function PodcastDetail() {
               {isPolling ? 'Fetching...' : 'Fetch New Episodes'}
             </button>
             <button
+              onClick={openPicker}
+              disabled={isPolling || loadingAvailable || available != null}
+              className="px-4 py-2 border text-sm rounded-lg hover:bg-gray-50 disabled:opacity-50"
+            >
+              {loadingAvailable ? 'Loading episodes...' : 'Add Past Episodes'}
+            </button>
+            <button
               onClick={startEdit}
               className="px-4 py-2 border text-sm rounded-lg hover:bg-gray-50"
             >
@@ -271,6 +306,37 @@ export default function PodcastDetail() {
 
       {notice && <p className="text-sm text-green-700 mb-4">{notice}</p>}
       {error && !editing && <p className="text-sm text-red-600 mb-4">{error}</p>}
+
+      {available && (
+        <div className="mb-6 max-w-2xl border rounded-lg p-4 bg-gray-50">
+          <h2 className="text-lg font-semibold text-gray-800">Add past episodes</h2>
+          <p className="text-sm text-gray-600">
+            Pick episodes to download. They are transcribed and summarized by the next
+            daily run, or right away with &ldquo;Run full pipeline&rdquo;.
+          </p>
+          <EpisodePicker
+            episodes={available.episodes}
+            selected={picked}
+            onChange={setPicked}
+            emptyText="This source lists no episodes."
+          />
+          <div className="flex gap-2 mt-3">
+            <button
+              onClick={() => setAvailable(null)}
+              className="px-4 py-2 border text-sm rounded-lg hover:bg-white"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={fetchPicked}
+              disabled={picked.size === 0}
+              className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50"
+            >
+              Add {picked.size} episode{picked.size === 1 ? '' : 's'}
+            </button>
+          </div>
+        </div>
+      )}
 
       {job && <div className="mb-6"><JobProgress job={job} /></div>}
 

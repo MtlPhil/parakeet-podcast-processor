@@ -2,6 +2,7 @@
 
 import calendar
 import hashlib
+import json
 import logging
 import os
 import re
@@ -61,6 +62,39 @@ def _safe_filename(title: str, max_length: int = 50) -> str:
     return cleaned[:max_length]
 
 
+# The library (podcasts table) is the one source list. Feeds in the config
+# file are imported into it once; afterwards they are fetched as library
+# podcasts like any other, and deleting one in the web app keeps it deleted.
+IMPORTED_FEEDS_KEY = "imported_config_feeds"
+
+
+def new_config_feeds(db: P3Database, feeds: List[Dict]) -> List[Dict]:
+    """Config feeds not yet imported into the library.
+
+    The first time this runs on a library that already has podcasts, every
+    current config feed is recorded as imported instead: they were added by
+    earlier fetches, and importing them again would bring back any the user
+    has since deleted.
+    """
+    stored = db.get_state(IMPORTED_FEEDS_KEY)
+    if stored is None and db.get_all_podcasts():
+        mark_config_feeds_imported(db, feeds)
+        return []
+    imported = set(json.loads(stored)) if stored else set()
+    return [f for f in feeds if f.get("url") and f["url"] not in imported]
+
+
+def mark_config_feeds_imported(db: P3Database, feeds: List[Dict]):
+    """Record config feeds as imported, so they are never imported again."""
+    stored = db.get_state(IMPORTED_FEEDS_KEY)
+    imported = json.loads(stored) if stored else []
+    for feed in feeds:
+        url = feed.get("url")
+        if url and url not in imported:
+            imported.append(url)
+    db.set_state(IMPORTED_FEEDS_KEY, json.dumps(imported))
+
+
 class PodcastDownloader:
     def __init__(
         self,
@@ -69,8 +103,13 @@ class PodcastDownloader:
         max_episodes: int = 10,
         audio_format: str = "wav",
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        username: Optional[str] = None,
     ):
+        """``username`` is the user this fetch is for: sources it adds are
+        subscribed for them and episodes it adds are linked to them.
+        Without one (tests, pre-multi-user use) nothing is linked."""
         self.db = db
+        self.username = username
         self.data_dir = Path(data_dir)
         self.audio_dir = self.data_dir / "audio"
         self.audio_dir.mkdir(parents=True, exist_ok=True)
@@ -85,11 +124,33 @@ class PodcastDownloader:
         category: Optional[str] = None,
         source_type: str = youtube.SOURCE_RSS,
     ) -> int:
-        """Add a new source to the database, or return the existing one's id."""
+        """Add a new source to the database, or return the existing one's id.
+        Either way the fetching user is subscribed to it."""
         existing = self.db.get_podcast_by_url(url)
-        if existing:
-            return existing["id"]
-        return self.db.add_podcast(name, url, category, source_type)
+        podcast_id = (
+            existing["id"]
+            if existing
+            else self.db.add_podcast(name, url, category, source_type)
+        )
+        if self.username:
+            self.db.subscribe(self.username, podcast_id)
+        return podcast_id
+
+    def _claim_existing(self, url: str, hand_picked: bool) -> bool:
+        """For an episode already in the database (possibly fetched for
+        another user), link it to the fetching user instead of downloading
+        it again. Skipped if the user deleted it, unless hand-picked.
+        Returns True if it was newly added to the user's library."""
+        episode_id = self.db.get_episode_id_by_url(url)
+        if not self.username or episode_id is None:
+            return False
+        if not hand_picked and self.db.is_episode_hidden(self.username, episode_id):
+            return False
+        return self.db.link_episode(self.username, episode_id)
+
+    def _link_new(self, episode_id: int):
+        if self.username:
+            self.db.link_episode(self.username, episode_id)
 
     def fetch_episodes(self, rss_url: str, limit: Optional[int] = None) -> List[Dict]:
         """Fetch episode metadata from an RSS feed or a YouTube source.
@@ -306,8 +367,10 @@ class PodcastDownloader:
         downloaded_count = 0
 
         for i, ep_data in enumerate(episodes):
-            # Skip if episode already exists
+            # Already downloaded (maybe for another user): just link it.
             if self.db.episode_exists(ep_data["url"]):
+                if self._claim_existing(ep_data["url"], episode_guids is not None):
+                    downloaded_count += 1
                 continue
 
             # Deterministic filename per episode, so audio already downloaded
@@ -329,13 +392,14 @@ class PodcastDownloader:
                 file_path = self.download_episode(ep_data["url"], filename)
 
             if file_path:
-                self.db.add_episode(
+                episode_id = self.db.add_episode(
                     podcast_id=podcast["id"],
                     title=ep_data["title"],
                     date=ep_data["date"],
                     url=ep_data["url"],
                     file_path=file_path,
                 )
+                self._link_new(episode_id)
                 downloaded_count += 1
                 logger.info("Downloaded: %s", ep_data["title"])
                 if self.progress_callback:
@@ -458,6 +522,8 @@ class PodcastDownloader:
         errors: List[str] = []
         for i, (video, label) in enumerate(videos):
             if self.db.episode_exists(video):
+                if self._claim_existing(video, episode_guids is not None):
+                    downloaded += 1
                 continue
             if self.progress_callback:
                 self.progress_callback(i, total, f"Downloading: {label}")
@@ -520,13 +586,14 @@ class PodcastDownloader:
             if not file_path:
                 raise youtube.YouTubeError(f"ffmpeg could not convert {video}")
 
-        self.db.add_episode(
+        episode_id = self.db.add_episode(
             podcast_id=podcast_id,
             title=title,
             date=youtube.upload_datetime(info),
             url=video,
             file_path=file_path,
         )
+        self._link_new(episode_id)
         logger.info("Downloaded: %s", title)
         return title
 
@@ -549,6 +616,10 @@ class PodcastDownloader:
         for i, entry in enumerate(entries):
             video = youtube.video_url(entry["id"])
             if self.db.episode_exists(video):
+                self._claim_existing(video, hand_picked=True)
+                source = self.db.get_podcast_by_url(video)
+                if source and self.username:
+                    self.db.subscribe(self.username, source["id"])
                 stats["existing"] += 1
                 continue
             if self.progress_callback:
@@ -559,16 +630,8 @@ class PodcastDownloader:
                 if youtube.video_rejection(info):
                     stats["skipped"] += 1
                     continue
-                source = self.db.get_podcast_by_url(video)
-                podcast_id = (
-                    source["id"]
-                    if source
-                    else self.db.add_podcast(
-                        info.get("title") or video,
-                        video,
-                        category,
-                        youtube.SOURCE_VIDEO,
-                    )
+                podcast_id = self.add_feed(
+                    info.get("title") or video, video, category, youtube.SOURCE_VIDEO
                 )
                 self._ingest_youtube_video(podcast_id, video, info)
                 stats["downloaded"] += 1

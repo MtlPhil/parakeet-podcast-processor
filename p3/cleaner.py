@@ -68,6 +68,46 @@ _SECTION_NOTES_PROMPT = """This is one part of a longer podcast transcript (not 
 Transcript part:
 """
 
+# Every digest also exists in Quebec French. Spelled out because models
+# default to France French, which reads as foreign to a Quebec audience.
+_QUEBEC_FRENCH = (
+    "Quebec French (français québécois, as written in Quebec, not France "
+    "French: Quebec vocabulary and usage, e.g. « courriel », « fin de "
+    "semaine », « balado » for podcast)"
+)
+
+_TRANSLATE_PROMPT = f"""Translate this text into {_QUEBEC_FRENCH}. Keep names of people, companies and products, and all numbers, unchanged. Keep the formatting: paragraphs, headings and lists. Return only the translation, no commentary.
+
+Text:
+"""
+
+_TRANSLATE_LIST_PROMPT = f"""Translate each item of this list of short phrases into {_QUEBEC_FRENCH}. Keep names unchanged. Return JSON only, in the form {{"items": ["...", "..."]}}, with the same number of items in the same order.
+
+List:
+"""
+
+# Longer texts are translated a few paragraphs at a time, for the same
+# reason the synopsis is written section by section: small local models
+# shorten whatever doesn't fit comfortably in one reply.
+_TRANSLATE_CHUNK_CHARS = 3000
+
+
+def _split_paragraph_chunks(text: str, max_chars: int = _TRANSLATE_CHUNK_CHARS):
+    """Group paragraphs into chunks of at most ``max_chars`` (a single longer
+    paragraph is its own chunk)."""
+    chunks: List[str] = []
+    current: List[str] = []
+    size = 0
+    for paragraph in re.split(r"\n\s*\n", text.strip()):
+        if current and size + len(paragraph) > max_chars:
+            chunks.append("\n\n".join(current))
+            current, size = [], 0
+        current.append(paragraph)
+        size += len(paragraph)
+    if current:
+        chunks.append("\n\n".join(current))
+    return chunks
+
 
 def _truncate_transcript(text: str, max_chars: int = _MAX_TRANSCRIPT_CHARS) -> str:
     """Truncate a transcript to fit within LLM context limits.
@@ -438,9 +478,15 @@ class TranscriptCleaner:
                 startups=summary_data.get("startups", []),
                 full_summary=summary_data.get("summary", ""),
                 long_summary=existing_long_summary,
+                long_summary_fr=existing.get("long_summary_fr") if existing else None,
                 digest_date=datetime.now(),
             )
+            if self.llm.is_configured:
+                self.translate_digest(episode_id)
             self.db.update_episode_status(episode_id, "processed")
+            # The transcript and summary are all later steps need, so the
+            # audio, by far the largest part of an episode, can go.
+            self.db.remove_audio(episode_id)
 
         return summary_data
 
@@ -457,7 +503,67 @@ class TranscriptCleaner:
         synopsis = self._generate_long_summary(cleaned_text)
         if synopsis:
             self.db.update_summary_long_summary(episode_id, synopsis)
+            self.db.update_summary_fields(
+                episode_id, long_summary_fr=self.translate_text(synopsis)
+            )
         return synopsis
+
+    def translate_digest(self, episode_id: int, synopsis: bool = False) -> bool:
+        """Store the Quebec French version of an episode's digest: summary,
+        topics and themes, plus the synopsis if ``synopsis`` is set and there
+        is one. Quotes stay verbatim. Returns False if there is no digest or
+        the summary could not be translated."""
+        summary = self.db.get_summary_by_episode(episode_id)
+        if not summary:
+            return False
+        fields: Dict[str, Any] = {
+            "full_summary_fr": self.translate_text(summary.get("full_summary") or ""),
+            "key_topics_fr": self.translate_list(summary.get("key_topics") or []),
+            "themes_fr": self.translate_list(summary.get("themes") or []),
+        }
+        if synopsis and summary.get("long_summary"):
+            fields["long_summary_fr"] = self.translate_text(summary["long_summary"])
+        self.db.update_summary_fields(
+            episode_id, **{k: v for k, v in fields.items() if v is not None}
+        )
+        return fields["full_summary_fr"] is not None
+
+    def translate_text(self, text: str) -> Optional[str]:
+        """Quebec French translation of ``text``, or None on failure."""
+        if not text.strip():
+            return None
+        try:
+            parts = [
+                self._chat(
+                    "You are a professional English to Quebec French translator.",
+                    _TRANSLATE_PROMPT + chunk,
+                    max_tokens=2500,
+                ).strip()
+                for chunk in _split_paragraph_chunks(text)
+            ]
+        except Exception as e:
+            logger.warning("Translation failed: %s", e)
+            return None
+        return "\n\n".join(parts) if all(parts) else None
+
+    def translate_list(self, items: List[str]) -> Optional[List[str]]:
+        """Quebec French translation of a list of short phrases, or None on
+        failure (including a reply with a different number of items)."""
+        if not items:
+            return []
+        try:
+            response = self._chat(
+                "You are a professional English to Quebec French translator. "
+                "Return valid JSON only.",
+                _TRANSLATE_LIST_PROMPT + json.dumps(items, ensure_ascii=False),
+                max_tokens=800,
+            )
+        except Exception as e:
+            logger.warning("List translation failed: %s", e)
+            return None
+        result = _extract_json(response)
+        translated = _coerce_str_list(result.get("items")) if result else []
+        return translated if len(translated) == len(items) else None
 
     def _generate_short_summary(self, text: str) -> Optional[str]:
         """Generate the short (~300 word) summary as its own call — see

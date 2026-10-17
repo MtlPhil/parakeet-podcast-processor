@@ -13,6 +13,19 @@ logger = logging.getLogger(__name__)
 DEFAULT_EXPORT_DIR = Path("exports")
 
 
+def localized(summary: Dict[str, Any], language: str) -> Dict[str, Any]:
+    """A copy of a summary row with its text fields in ``language``: "fr"
+    swaps in the Quebec French versions where they exist, falling back to
+    English for any not translated yet. Quotes always stay verbatim."""
+    if language != "fr":
+        return summary
+    result = dict(summary)
+    for field in ("full_summary", "long_summary", "key_topics", "themes"):
+        if summary.get(f"{field}_fr"):
+            result[field] = summary[f"{field}_fr"]
+    return result
+
+
 def _segments_to_prose(
     segments: List[Dict[str, Any]], paragraph_gap_seconds: float = 3.0
 ) -> str:

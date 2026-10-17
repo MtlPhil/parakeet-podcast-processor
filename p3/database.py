@@ -155,6 +155,60 @@ class P3Database:
         self.conn.execute(
             "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS podcast_id INTEGER"
         )
+        # Migration: group the jobs of one scheduled daily run
+        self.conn.execute("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS run_id VARCHAR")
+
+        # Migration: who started a job (None for the daily run and the CLI)
+        self.conn.execute("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS username VARCHAR")
+        # Migration: Quebec French versions of the digest, next to English
+        for column, kind in (
+            ("full_summary_fr", "TEXT"),
+            ("long_summary_fr", "TEXT"),
+            ("key_topics_fr", "JSON"),
+            ("themes_fr", "JSON"),
+        ):
+            self.conn.execute(
+                f"ALTER TABLE summaries ADD COLUMN IF NOT EXISTS {column} {kind}"
+            )
+
+        # Users, signed in through the reverse proxy. Podcasts and episodes
+        # are shared rows processed once; these tables say who sees what.
+        # A user sees the podcasts they subscribe to and the episodes linked
+        # to them. Deleting an episode unlinks it and leaves a tombstone, so
+        # the user's own fetches never bring it back unless hand-picked.
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                username VARCHAR PRIMARY KEY,
+                display_name VARCHAR,
+                email VARCHAR,
+                role VARCHAR DEFAULT 'user',
+                settings JSON,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_podcasts (
+                username VARCHAR NOT NULL,
+                podcast_id INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (username, podcast_id)
+            )
+        """)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_episodes (
+                username VARCHAR NOT NULL,
+                episode_id INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (username, episode_id)
+            )
+        """)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_hidden_episodes (
+                username VARCHAR NOT NULL,
+                episode_id INTEGER NOT NULL,
+                PRIMARY KEY (username, episode_id)
+            )
+        """)
 
         # Small key-value store for app state that must survive restarts
         # (e.g. the date of the last scheduled daily run).
@@ -303,17 +357,21 @@ class P3Database:
         )
         return self._fetchone_as_dict(cursor)
 
-    def get_episodes_by_status(self, status: str) -> List[Dict[str, Any]]:
-        """Get episodes by processing status."""
+    def get_episodes_by_status(
+        self, status: str, username: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Get episodes by processing status (only a user's, if given)."""
+        join, params = self._user_episode_join(username)
         cursor = self.conn.execute(
-            """
+            f"""
             SELECT e.*, p.title as podcast_title
             FROM episodes e
             JOIN podcasts p ON e.podcast_id = p.id
+            {join}
             WHERE e.status = ?
             ORDER BY e.date DESC
         """,
-            (status,),
+            params + [status],
         )
         return self._fetchall_as_dicts(cursor)
 
@@ -353,6 +411,37 @@ class P3Database:
         self.conn.execute(
             "UPDATE episodes SET status = ? WHERE id = ?", (status, episode_id)
         )
+
+    def remove_audio(self, episode_id: int) -> int:
+        """Delete an episode's audio file and clear its file_path, keeping
+        the episode, transcript and summary. Returns the bytes freed."""
+        row = self.conn.execute(
+            "SELECT file_path FROM episodes WHERE id = ?", (episode_id,)
+        ).fetchone()
+        if not row or not row[0]:
+            return 0
+        path = Path(row[0])
+        freed = 0
+        if path.exists():
+            freed = path.stat().st_size
+            path.unlink()
+        self.conn.execute(
+            "UPDATE episodes SET file_path = NULL WHERE id = ?", (episode_id,)
+        )
+        return freed
+
+    def remove_processed_audio(self) -> Dict[str, int]:
+        """Delete the audio of every processed episode that still has some.
+        Returns the number of episodes cleaned and the bytes freed."""
+        ids = [
+            row[0]
+            for row in self.conn.execute(
+                "SELECT id FROM episodes "
+                "WHERE status = 'processed' AND file_path IS NOT NULL"
+            ).fetchall()
+        ]
+        freed = sum(self.remove_audio(episode_id) for episode_id in ids)
+        return {"episodes": len(ids), "bytes_freed": freed}
 
     def add_transcript_segments(self, episode_id: int, segments: List[Dict[str, Any]]):
         """Replace an episode's transcript segments with a fresh set.
@@ -429,6 +518,7 @@ class P3Database:
         full_summary: str,
         digest_date: Optional[date] = None,
         long_summary: Optional[str] = None,
+        long_summary_fr: Optional[str] = None,
     ):
         """Replace this episode's summary with a fresh one.
 
@@ -443,8 +533,9 @@ class P3Database:
         self.conn.execute(
             """
             INSERT INTO summaries
-                (episode_id, key_topics, themes, quotes, startups, full_summary, digest_date, long_summary)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (episode_id, key_topics, themes, quotes, startups, full_summary,
+                 digest_date, long_summary, long_summary_fr)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
             (
                 episode_id,
@@ -455,6 +546,7 @@ class P3Database:
                 full_summary,
                 digest_date,
                 long_summary,
+                long_summary_fr,
             ),
         )
 
@@ -466,25 +558,46 @@ class P3Database:
             (long_summary, episode_id),
         )
 
-    def get_summaries_by_date(self, date: datetime) -> List[Dict[str, Any]]:
-        """Get all summaries for a specific date."""
+    _FRENCH_SUMMARY_FIELDS = (
+        "full_summary_fr",
+        "long_summary_fr",
+        "key_topics_fr",
+        "themes_fr",
+    )
+
+    def update_summary_fields(self, episode_id: int, **fields: Any):
+        """Set French fields on an episode's existing summary row (see
+        _FRENCH_SUMMARY_FIELDS); list values are stored as JSON."""
+        for column, value in fields.items():
+            if column not in self._FRENCH_SUMMARY_FIELDS:
+                raise ValueError(f"Not an updatable summary field: {column}")
+            if isinstance(value, list):
+                value = json.dumps(value, ensure_ascii=False)
+            self.conn.execute(
+                f"UPDATE summaries SET {column} = ? WHERE episode_id = ?",
+                (value, episode_id),
+            )
+
+    def get_summaries_by_date(
+        self, date: datetime, username: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Get all summaries for a specific date (only a user's, if given)."""
+        join, params = self._user_episode_join(username)
         cursor = self.conn.execute(
-            """
+            f"""
             SELECT s.*, e.title as episode_title, p.title as podcast_title
             FROM summaries s
             JOIN episodes e ON s.episode_id = e.id
             JOIN podcasts p ON e.podcast_id = p.id
+            {join}
             WHERE s.digest_date = ?
             ORDER BY p.title, e.title
         """,
-            (date.date(),),
+            params + [date.date()],
         )
         rows = self._fetchall_as_dicts(cursor)
-        # Deserialize JSON columns
         for row in rows:
-            for col in ("key_topics", "themes", "quotes", "startups"):
-                if isinstance(row[col], str):
-                    row[col] = json.loads(row[col])
+            self._decode_summary(row)
         return rows
 
     # ------------------------------------------------------------------
@@ -496,9 +609,21 @@ class P3Database:
         cursor = self.conn.execute("SELECT * FROM podcasts WHERE id = ?", (podcast_id,))
         return self._fetchone_as_dict(cursor)
 
-    def get_all_podcasts(self) -> List[Dict[str, Any]]:
-        """Get all podcasts."""
-        cursor = self.conn.execute("SELECT * FROM podcasts ORDER BY created_at DESC")
+    def get_all_podcasts(self, username: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get all podcasts, or only those a user subscribes to."""
+        if username is None:
+            cursor = self.conn.execute(
+                "SELECT * FROM podcasts ORDER BY created_at DESC"
+            )
+        else:
+            cursor = self.conn.execute(
+                """
+                SELECT p.* FROM podcasts p
+                JOIN user_podcasts up ON up.podcast_id = p.id AND up.username = ?
+                ORDER BY p.created_at DESC
+            """,
+                (username,),
+            )
         return self._fetchall_as_dicts(cursor)
 
     def update_podcast(
@@ -554,6 +679,15 @@ class P3Database:
         """,
             (podcast_id, podcast_id),
         )
+        for table in ("user_episodes", "user_hidden_episodes"):
+            self.conn.execute(
+                f"DELETE FROM {table} WHERE episode_id IN "
+                "(SELECT id FROM episodes WHERE podcast_id = ?)",
+                (podcast_id,),
+            )
+        self.conn.execute(
+            "DELETE FROM user_podcasts WHERE podcast_id = ?", (podcast_id,)
+        )
         self.conn.execute("DELETE FROM episodes WHERE podcast_id = ?", (podcast_id,))
         self.conn.execute("DELETE FROM podcasts WHERE id = ?", (podcast_id,))
 
@@ -561,29 +695,48 @@ class P3Database:
     # Episode helpers
     # ------------------------------------------------------------------
 
-    def get_episodes_by_podcast(self, podcast_id: int) -> List[Dict[str, Any]]:
-        """Get all episodes for a podcast."""
+    def get_episodes_by_podcast(
+        self, podcast_id: int, username: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Get all episodes for a podcast (only a user's, if given)."""
+        join, params = self._user_episode_join(username)
         cursor = self.conn.execute(
-            """
+            f"""
             SELECT e.*, p.title as podcast_title
             FROM episodes e
             JOIN podcasts p ON e.podcast_id = p.id
+            {join}
             WHERE e.podcast_id = ?
             ORDER BY e.date DESC
         """,
-            (podcast_id,),
+            params + [podcast_id],
         )
         return self._fetchall_as_dicts(cursor)
 
-    def get_all_episodes(self) -> List[Dict[str, Any]]:
-        """Get all episodes with podcast title."""
-        cursor = self.conn.execute("""
+    def get_all_episodes(self, username: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get all episodes with podcast title (only a user's, if given)."""
+        join, params = self._user_episode_join(username)
+        cursor = self.conn.execute(
+            f"""
             SELECT e.*, p.title as podcast_title
             FROM episodes e
             JOIN podcasts p ON e.podcast_id = p.id
+            {join}
             ORDER BY e.date DESC
-        """)
+        """,
+            params,
+        )
         return self._fetchall_as_dicts(cursor)
+
+    def _user_episode_join(self, username: Optional[str]):
+        """SQL join restricting ``e`` (episodes) to a user's, and its params.
+        No restriction when ``username`` is None."""
+        if username is None:
+            return "", []
+        return (
+            "JOIN user_episodes ue ON ue.episode_id = e.id AND ue.username = ?",
+            [username],
+        )
 
     # ------------------------------------------------------------------
     # Summary helpers
@@ -605,26 +758,42 @@ class P3Database:
         )
         row = self._fetchone_as_dict(cursor)
         if row:
-            for col in ("key_topics", "themes", "quotes", "startups"):
-                if isinstance(row[col], str):
-                    row[col] = json.loads(row[col])
+            self._decode_summary(row)
         return row
 
-    def get_all_summaries(self) -> List[Dict[str, Any]]:
-        """Get all summaries."""
-        cursor = self.conn.execute("""
+    def get_all_summaries(self, username: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get all summaries (only a user's, if given)."""
+        join, params = self._user_episode_join(username)
+        cursor = self.conn.execute(
+            f"""
             SELECT s.*, e.title as episode_title, p.title as podcast_title
             FROM summaries s
             JOIN episodes e ON s.episode_id = e.id
             JOIN podcasts p ON e.podcast_id = p.id
+            {join}
             ORDER BY s.created_at DESC
-        """)
+        """,
+            params,
+        )
         rows = self._fetchall_as_dicts(cursor)
         for row in rows:
-            for col in ("key_topics", "themes", "quotes", "startups"):
-                if isinstance(row[col], str):
-                    row[col] = json.loads(row[col])
+            self._decode_summary(row)
         return rows
+
+    _SUMMARY_JSON_COLUMNS = (
+        "key_topics",
+        "themes",
+        "quotes",
+        "startups",
+        "key_topics_fr",
+        "themes_fr",
+    )
+
+    def _decode_summary(self, row: Dict[str, Any]):
+        """Deserialize a summary row's JSON columns in place."""
+        for col in self._SUMMARY_JSON_COLUMNS:
+            if isinstance(row.get(col), str):
+                row[col] = json.loads(row[col])
 
     # ------------------------------------------------------------------
     # Job tracking
@@ -635,15 +804,18 @@ class P3Database:
         job_type: str,
         episode_id: Optional[int] = None,
         podcast_id: Optional[int] = None,
+        run_id: Optional[str] = None,
+        username: Optional[str] = None,
     ) -> str:
         """Create a new background job. Returns the job ID."""
         job_id = str(uuid.uuid4())
         self.conn.execute(
             """
-            INSERT INTO jobs (id, episode_id, podcast_id, job_type, status)
-            VALUES (?, ?, ?, ?, 'pending')
+            INSERT INTO jobs
+                (id, episode_id, podcast_id, job_type, status, run_id, username)
+            VALUES (?, ?, ?, ?, 'pending', ?, ?)
         """,
-            (job_id, episode_id, podcast_id, job_type),
+            (job_id, episode_id, podcast_id, job_type, run_id, username),
         )
         return job_id
 
@@ -714,50 +886,276 @@ class P3Database:
         cursor = self.conn.execute(self._JOBS_SELECT + " WHERE j.id = ?", (job_id,))
         return self._fetchone_as_dict(cursor)
 
-    def get_recent_jobs(self, limit: Optional[int] = 20) -> List[Dict[str, Any]]:
+    # A user sees the jobs they started and every job about a podcast they
+    # subscribe to (the daily run's included).
+    _JOB_VISIBLE = """
+        (j.username = ? OR COALESCE(j.podcast_id, e.podcast_id) IN
+            (SELECT podcast_id FROM user_podcasts WHERE username = ?))
+    """
+
+    def _jobs_where(self, condition: str, username: Optional[str]):
+        """WHERE clause and params for jobs matching ``condition``, limited
+        to those visible to ``username`` when given."""
+        if username is None:
+            return f" WHERE {condition}", []
+        return f" WHERE {condition} AND {self._JOB_VISIBLE}", [username, username]
+
+    def job_visible_to(self, job_id: str, username: str) -> bool:
+        """True if the user started this job or follows its podcast."""
+        where, params = self._jobs_where("j.id = ?", username)
+        sql = "SELECT 1 FROM jobs j LEFT JOIN episodes e ON e.id = j.episode_id"
+        return self.conn.execute(sql + where, [job_id] + params).fetchone() is not None
+
+    def get_recent_jobs(
+        self, limit: Optional[int] = 20, username: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """Get recent jobs ordered by creation time. limit=None (or <=0)
-        returns all of them."""
-        sql = self._JOBS_SELECT + " ORDER BY j.created_at DESC"
+        returns all of them. Only a user's visible jobs, if given."""
+        where, params = self._jobs_where("TRUE", username)
+        sql = self._JOBS_SELECT + where + " ORDER BY j.created_at DESC"
         if limit is not None and limit > 0:
-            cursor = self.conn.execute(sql + " LIMIT ?", (limit,))
+            cursor = self.conn.execute(sql + " LIMIT ?", params + [limit])
         else:
-            cursor = self.conn.execute(sql)
+            cursor = self.conn.execute(sql, params)
         return self._fetchall_as_dicts(cursor)
 
-    def get_active_jobs(self) -> List[Dict[str, Any]]:
+    def get_active_jobs(self, username: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get all pending or running jobs."""
+        where, params = self._jobs_where("j.status IN ('pending', 'running')", username)
         cursor = self.conn.execute(
-            self._JOBS_SELECT
-            + " WHERE j.status IN ('pending', 'running') ORDER BY j.created_at"
+            self._JOBS_SELECT + where + " ORDER BY j.created_at", params
         )
         return self._fetchall_as_dicts(cursor)
 
-    def get_failed_jobs(self) -> List[Dict[str, Any]]:
+    def get_failed_jobs(self, username: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get all failed jobs, newest first."""
+        where, params = self._jobs_where("j.status = 'failed'", username)
         cursor = self.conn.execute(
-            self._JOBS_SELECT + " WHERE j.status = 'failed' ORDER BY j.created_at DESC"
+            self._JOBS_SELECT + where + " ORDER BY j.created_at DESC", params
         )
         return self._fetchall_as_dicts(cursor)
 
-    def clear_finished_jobs(self) -> int:
-        """Delete completed and failed jobs. Pending/running jobs are kept."""
+    def get_jobs_by_run(self, run_id: str) -> List[Dict[str, Any]]:
+        """Get every job of one daily run, oldest first."""
         cursor = self.conn.execute(
-            "SELECT COUNT(*) FROM jobs WHERE status IN ('completed', 'failed')"
+            self._JOBS_SELECT + " WHERE j.run_id = ? ORDER BY j.created_at",
+            (run_id,),
         )
-        count = cursor.fetchone()[0]
-        if count:
-            self.conn.execute(
-                "DELETE FROM jobs WHERE status IN ('completed', 'failed')"
-            )
-        return count
+        return self._fetchall_as_dicts(cursor)
 
-    def clear_failed_jobs(self) -> int:
-        """Delete only failed jobs."""
-        cursor = self.conn.execute("SELECT COUNT(*) FROM jobs WHERE status = 'failed'")
-        count = cursor.fetchone()[0]
-        if count:
-            self.conn.execute("DELETE FROM jobs WHERE status = 'failed'")
-        return count
+    def count_episodes_created_since(
+        self, since: datetime, username: Optional[str] = None
+    ) -> int:
+        """Count episodes added to the library (a user's, if given) at or
+        after ``since``."""
+        if username is None:
+            return self.conn.execute(
+                "SELECT COUNT(*) FROM episodes WHERE created_at >= ?", (since,)
+            ).fetchone()[0]
+        return self.conn.execute(
+            "SELECT COUNT(*) FROM user_episodes WHERE username = ? AND created_at >= ?",
+            (username, since),
+        ).fetchone()[0]
+
+    def clear_finished_jobs(self, username: Optional[str] = None) -> int:
+        """Delete completed and failed jobs (only a user's visible ones, if
+        given). Pending/running jobs are kept."""
+        return self._delete_jobs("j.status IN ('completed', 'failed')", username)
+
+    def clear_failed_jobs(self, username: Optional[str] = None) -> int:
+        """Delete only failed jobs (only a user's visible ones, if given)."""
+        return self._delete_jobs("j.status = 'failed'", username)
+
+    def _delete_jobs(self, condition: str, username: Optional[str]) -> int:
+        where, params = self._jobs_where(condition, username)
+        ids = [
+            row[0]
+            for row in self.conn.execute(
+                "SELECT j.id FROM jobs j LEFT JOIN episodes e ON e.id = j.episode_id"
+                + where,
+                params,
+            ).fetchall()
+        ]
+        for job_id in ids:
+            self.conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+        return len(ids)
+
+    # ------------------------------------------------------------------
+    # Users, subscriptions and episode links
+    # ------------------------------------------------------------------
+
+    def ensure_user(
+        self,
+        username: str,
+        display_name: Optional[str] = None,
+        email: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Return the user, creating them on first sign-in.
+
+        The first user ever is an admin and takes over everything already in
+        the library (from before users existed): every podcast and episode.
+        """
+        user = self.get_user(username)
+        if user is None:
+            first = self.conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
+            self.conn.execute(
+                "INSERT INTO users (username, display_name, email, role, settings) "
+                "VALUES (?, ?, ?, ?, '{}')",
+                (username, display_name, email, "admin" if first else "user"),
+            )
+            if first:
+                self.conn.execute(
+                    "INSERT INTO user_podcasts (username, podcast_id) "
+                    "SELECT ?, id FROM podcasts",
+                    (username,),
+                )
+                self.conn.execute(
+                    "INSERT INTO user_episodes (username, episode_id) "
+                    "SELECT ?, id FROM episodes",
+                    (username,),
+                )
+            user = self.get_user(username)
+        elif (display_name and display_name != user["display_name"]) or (
+            email and email != user["email"]
+        ):
+            self.conn.execute(
+                "UPDATE users SET display_name = COALESCE(?, display_name), "
+                "email = COALESCE(?, email) WHERE username = ?",
+                (display_name, email, username),
+            )
+            user = self.get_user(username)
+        assert user is not None
+        return user
+
+    def get_user(self, username: str) -> Optional[Dict[str, Any]]:
+        """Get a user, with ``settings`` decoded to a dict."""
+        row = self._fetchone_as_dict(
+            self.conn.execute("SELECT * FROM users WHERE username = ?", (username,))
+        )
+        if row is not None:
+            row["settings"] = json.loads(row["settings"] or "{}")
+        return row
+
+    def get_all_users(self) -> List[Dict[str, Any]]:
+        """Get every user, oldest first, with ``settings`` decoded."""
+        rows = self._fetchall_as_dicts(
+            self.conn.execute("SELECT * FROM users ORDER BY created_at, username")
+        )
+        for row in rows:
+            row["settings"] = json.loads(row["settings"] or "{}")
+        return rows
+
+    def get_owner(self) -> Optional[str]:
+        """The first admin: the user the CLI and config-file feeds act as."""
+        row = self.conn.execute(
+            "SELECT username FROM users WHERE role = 'admin' "
+            "ORDER BY created_at, username LIMIT 1"
+        ).fetchone()
+        return row[0] if row else None
+
+    def set_user_role(self, username: str, role: str):
+        """Make a user an 'admin' or a 'user'."""
+        if role not in ("admin", "user"):
+            raise ValueError(f"Unknown role: {role}")
+        self.conn.execute(
+            "UPDATE users SET role = ? WHERE username = ?", (role, username)
+        )
+
+    def update_user_settings(self, username: str, settings: Dict[str, Any]):
+        """Replace a user's own settings."""
+        self.conn.execute(
+            "UPDATE users SET settings = ? WHERE username = ?",
+            (json.dumps(settings), username),
+        )
+
+    def subscribe(self, username: str, podcast_id: int):
+        """Add a podcast to a user's library."""
+        self.conn.execute(
+            "INSERT OR IGNORE INTO user_podcasts (username, podcast_id) VALUES (?, ?)",
+            (username, podcast_id),
+        )
+
+    def unsubscribe(self, username: str, podcast_id: int) -> int:
+        """Remove a podcast and its episodes from a user's library. Returns
+        how many users still subscribe to it."""
+        self.conn.execute(
+            "DELETE FROM user_podcasts WHERE username = ? AND podcast_id = ?",
+            (username, podcast_id),
+        )
+        self.conn.execute(
+            "DELETE FROM user_episodes WHERE username = ? AND episode_id IN "
+            "(SELECT id FROM episodes WHERE podcast_id = ?)",
+            (username, podcast_id),
+        )
+        return self.conn.execute(
+            "SELECT COUNT(*) FROM user_podcasts WHERE podcast_id = ?", (podcast_id,)
+        ).fetchone()[0]
+
+    def is_subscribed(self, username: str, podcast_id: int) -> bool:
+        return (
+            self.conn.execute(
+                "SELECT 1 FROM user_podcasts WHERE username = ? AND podcast_id = ?",
+                (username, podcast_id),
+            ).fetchone()
+            is not None
+        )
+
+    def get_episode_id_by_url(self, url: str) -> Optional[int]:
+        row = self.conn.execute(
+            "SELECT id FROM episodes WHERE url = ?", (url,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def link_episode(self, username: str, episode_id: int) -> bool:
+        """Add an episode to a user's library, undoing an earlier delete.
+        Returns True if it was not there already."""
+        self.conn.execute(
+            "DELETE FROM user_hidden_episodes WHERE username = ? AND episode_id = ?",
+            (username, episode_id),
+        )
+        if self.user_has_episode(username, episode_id):
+            return False
+        self.conn.execute(
+            "INSERT INTO user_episodes (username, episode_id) VALUES (?, ?)",
+            (username, episode_id),
+        )
+        return True
+
+    def hide_episode(self, username: str, episode_id: int) -> int:
+        """Delete an episode from a user's library, for good: their fetches
+        skip it from now on, unless they hand-pick it. Returns how many users
+        still have it."""
+        self.conn.execute(
+            "DELETE FROM user_episodes WHERE username = ? AND episode_id = ?",
+            (username, episode_id),
+        )
+        self.conn.execute(
+            "INSERT OR IGNORE INTO user_hidden_episodes (username, episode_id) "
+            "VALUES (?, ?)",
+            (username, episode_id),
+        )
+        return self.conn.execute(
+            "SELECT COUNT(*) FROM user_episodes WHERE episode_id = ?", (episode_id,)
+        ).fetchone()[0]
+
+    def user_has_episode(self, username: str, episode_id: int) -> bool:
+        return (
+            self.conn.execute(
+                "SELECT 1 FROM user_episodes WHERE username = ? AND episode_id = ?",
+                (username, episode_id),
+            ).fetchone()
+            is not None
+        )
+
+    def is_episode_hidden(self, username: str, episode_id: int) -> bool:
+        return (
+            self.conn.execute(
+                "SELECT 1 FROM user_hidden_episodes "
+                "WHERE username = ? AND episode_id = ?",
+                (username, episode_id),
+            ).fetchone()
+            is not None
+        )
 
     # ------------------------------------------------------------------
     # App state
@@ -778,24 +1176,122 @@ class P3Database:
         )
 
     # ------------------------------------------------------------------
+    # Search
+    # ------------------------------------------------------------------
+
+    def search(
+        self, query: str, limit: int = 50, username: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Case-insensitive substring search over episode titles, summaries
+        and transcript segments.
+
+        Returns one dict per matching episode (episode fields plus
+        ``podcast_title``), with ``title_match``, ``summary_match``,
+        ``segment_count`` and ``segments`` (every matching transcript
+        segment, in order). Episodes matching in the title come first, then
+        the summary, then by number of matching segments, then newest.
+        """
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{escaped}%"
+
+        title_ids = {
+            row[0]
+            for row in self.conn.execute(
+                "SELECT id FROM episodes WHERE title ILIKE ? ESCAPE '\\'", (pattern,)
+            ).fetchall()
+        }
+        summary_rows = self._fetchall_as_dicts(
+            self.conn.execute(
+                """
+                SELECT episode_id, full_summary, long_summary FROM summaries
+                WHERE full_summary ILIKE ? ESCAPE '\\'
+                   OR long_summary ILIKE ? ESCAPE '\\'
+            """,
+                (pattern, pattern),
+            )
+        )
+        segment_rows = self._fetchall_as_dicts(
+            self.conn.execute(
+                """
+                SELECT episode_id, timestamp_start, text FROM transcripts
+                WHERE text ILIKE ? ESCAPE '\\'
+                ORDER BY episode_id, timestamp_start
+            """,
+                (pattern,),
+            )
+        )
+
+        summaries = {row["episode_id"]: row for row in summary_rows}
+        segments: Dict[int, List[Dict[str, Any]]] = {}
+        for row in segment_rows:
+            segments.setdefault(row["episode_id"], []).append(
+                {"start": row["timestamp_start"], "text": row["text"]}
+            )
+
+        ids = title_ids | set(summaries) | set(segments)
+        if username is not None:
+            ids &= {e["id"] for e in self.get_all_episodes(username)}
+        if not ids:
+            return []
+        placeholders = ", ".join("?" for _ in ids)
+        episodes = self._fetchall_as_dicts(
+            self.conn.execute(
+                f"""
+                SELECT e.*, p.title as podcast_title
+                FROM episodes e
+                JOIN podcasts p ON e.podcast_id = p.id
+                WHERE e.id IN ({placeholders})
+            """,
+                list(ids),
+            )
+        )
+
+        results = []
+        for ep in episodes:
+            summary = summaries.get(ep["id"])
+            ep["title_match"] = ep["id"] in title_ids
+            ep["summary_match"] = summary is not None
+            ep["summary_text"] = (
+                (summary["full_summary"] or "")
+                + "\n\n"
+                + (summary["long_summary"] or "")
+                if summary
+                else None
+            )
+            ep["segments"] = segments.get(ep["id"], [])
+            ep["segment_count"] = len(ep["segments"])
+            results.append(ep)
+
+        _oldest = datetime.min
+        results.sort(key=lambda r: r["date"] or _oldest, reverse=True)
+        results.sort(
+            key=lambda r: (r["title_match"], r["summary_match"], r["segment_count"]),
+            reverse=True,
+        )
+        return results[:limit]
+
+    # ------------------------------------------------------------------
     # Stats
     # ------------------------------------------------------------------
 
-    def get_stats(self) -> Dict[str, int]:
-        """Get pipeline statistics."""
+    def get_stats(self, username: Optional[str] = None) -> Dict[str, int]:
+        """Get pipeline statistics (a user's library, if given). Job counts
+        are always for the whole queue, which every user shares."""
         stats = {}
-        stats["total_podcasts"] = self.conn.execute(
-            "SELECT COUNT(*) FROM podcasts"
-        ).fetchone()[0]
+        stats["total_podcasts"] = len(self.get_all_podcasts(username))
+        join, params = self._user_episode_join(username)
+        episodes = f"FROM episodes e {join}"
         stats["total_episodes"] = self.conn.execute(
-            "SELECT COUNT(*) FROM episodes"
+            f"SELECT COUNT(*) {episodes}", params
         ).fetchone()[0]
         for status in ("downloaded", "transcribed", "processed"):
             stats[f"episodes_{status}"] = self.conn.execute(
-                "SELECT COUNT(*) FROM episodes WHERE status = ?", (status,)
+                f"SELECT COUNT(*) {episodes} WHERE e.status = ?", params + [status]
             ).fetchone()[0]
         stats["total_summaries"] = self.conn.execute(
-            "SELECT COUNT(*) FROM summaries"
+            f"SELECT COUNT(*) FROM summaries s JOIN episodes e ON e.id = s.episode_id"
+            f" {join}",
+            params,
         ).fetchone()[0]
         stats["active_jobs"] = self.conn.execute(
             "SELECT COUNT(*) FROM jobs WHERE status IN ('pending', 'running')"

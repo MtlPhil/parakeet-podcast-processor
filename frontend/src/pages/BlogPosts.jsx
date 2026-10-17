@@ -7,6 +7,27 @@ import {
 import { useJobPoller } from '../hooks/useJobPoller';
 import JobProgress from '../components/JobProgress';
 import ProviderSelect from '../components/ProviderSelect';
+import LanguageToggle from '../components/LanguageToggle';
+import { languageOf, useMe } from '../hooks/useMe';
+
+// A post's text in the chosen language, with a note when a post made
+// before French versions existed has only English.
+function PostBody({ post, language, onLanguage }) {
+  const french = language === 'fr' && post.content_fr;
+  return (
+    <>
+      <div className="flex flex-wrap items-center gap-3 mb-4">
+        <LanguageToggle value={language} onChange={onLanguage} />
+        {language === 'fr' && !post.content_fr && (
+          <span className="text-xs text-gray-500">Aucune version française pour ce billet.</span>
+        )}
+      </div>
+      <div className="prose prose-sm max-w-none text-gray-700 whitespace-pre-wrap">
+        {french ? post.content_fr : post.content}
+      </div>
+    </>
+  );
+}
 
 export default function BlogPosts() {
   const [mode, setMode] = useState('linkedin'); // 'linkedin' (default) or 'blog'
@@ -27,6 +48,9 @@ export default function BlogPosts() {
   const [blogProvider, setBlogProvider] = useState('');
 
   const [showForm, setShowForm] = useState(false);
+  const [pickedLanguage, setPickedLanguage] = useState(null);
+  const { me } = useMe();
+  const language = languageOf(me, pickedLanguage);
   const [error, setError] = useState(null);
   const { job, isPolling, startPolling } = useJobPoller();
 
@@ -131,9 +155,7 @@ export default function BlogPosts() {
           {selectedLinkedin.date}
           {selectedLinkedin.podcast_title && ` · ${selectedLinkedin.podcast_title}`}
         </p>
-        <div className="prose prose-sm max-w-none text-gray-700 whitespace-pre-wrap">
-          {selectedLinkedin.content}
-        </div>
+        <PostBody post={selectedLinkedin} language={language} onLanguage={setPickedLanguage} />
       </div>
     );
   }
@@ -153,9 +175,7 @@ export default function BlogPosts() {
           {selectedBlog.final_grade && ` · Grade: ${selectedBlog.final_grade}`}
           {selectedBlog.final_score && ` (${selectedBlog.final_score}/100)`}
         </p>
-        <div className="prose prose-sm max-w-none text-gray-700 whitespace-pre-wrap">
-          {selectedBlog.content}
-        </div>
+        <PostBody post={selectedBlog} language={language} onLanguage={setPickedLanguage} />
       </div>
     );
   }
@@ -232,7 +252,8 @@ export default function BlogPosts() {
               ))}
             </select>
             <p className="text-xs text-gray-500 mt-1">
-              Generates one post in English and one in Quebec French, based on this episode's summary.
+              Generates one post in English and one in Quebec French, based on this episode&apos;s
+              summary and written in your tone (Settings).
             </p>
           </div>
           <div>

@@ -16,7 +16,11 @@ from rich.table import Table
 
 from .cleaner import TranscriptCleaner
 from .database import P3Database
-from .downloader import PodcastDownloader
+from .downloader import (
+    PodcastDownloader,
+    mark_config_feeds_imported,
+    new_config_feeds,
+)
 from .exporter import DigestExporter
 from .llm import DEFAULT_OLLAMA_URL, SUPPORTED_PROVIDERS, resolve_provider_and_model
 from .transcriber import DEFAULT_PARAKEET_MODEL, AudioTranscriber
@@ -110,9 +114,12 @@ def main(ctx, config, db, verbose, quiet):
 )
 @click.pass_context
 def fetch(ctx, max_episodes, dry_run):
-    """Download new episodes from configured feeds.
+    """Download new episodes for every podcast in the library.
 
-    Feeds can be RSS URLs or YouTube channel, video or playlist URLs.
+    Feeds in the config file (RSS URLs or YouTube channel, video or playlist
+    URLs) are added to the library the first time they are seen, for the
+    owner (the first admin). Once there are users, each user's podcasts are
+    fetched for them, as their daily run would.
     """
     config = load_config(ctx.obj["config_path"])
     db = ctx.obj["db"]
@@ -120,14 +127,21 @@ def fetch(ctx, max_episodes, dry_run):
     settings = config.get("settings", {})
     max_eps = max_episodes or settings.get("max_episodes_per_feed", 10)
 
-    feeds = config.get("feeds", [])
-    if not feeds:
+    new_feeds = new_config_feeds(db, config.get("feeds") or [])
+    library = db.get_all_podcasts()
+    if not new_feeds and not library:
         console.print("[yellow]No feeds configured[/yellow]")
         return
 
-    downloader = PodcastDownloader(
-        db=db, max_episodes=max_eps, audio_format=settings.get("audio_format", "wav")
-    )
+    def downloader_for(username):
+        return PodcastDownloader(
+            db=db,
+            max_episodes=max_eps,
+            audio_format=settings.get("audio_format", "wav"),
+            username=username,
+        )
+
+    downloader = downloader_for(db.get_owner())
 
     if dry_run:
         console.print(
@@ -138,9 +152,9 @@ def fetch(ctx, max_episodes, dry_run):
         table.add_column("Episode", style="white")
         table.add_column("Date", style="green")
 
-        for feed_config in feeds:
-            name = feed_config["name"]
-            url = feed_config["url"]
+        sources = [(f["name"], f["url"]) for f in new_feeds]
+        sources += [(p["title"], p["rss_url"]) for p in library]
+        for name, url in sources:
             try:
                 episodes = downloader.fetch_episodes(url, limit=max_eps)
             except (YouTubeError, ValueError) as e:
@@ -158,13 +172,27 @@ def fetch(ctx, max_episodes, dry_run):
 
     console.print("[blue]Fetching podcast episodes...[/blue]")
 
-    total_downloaded = 0
-    results = downloader.fetch_all_feeds(feeds)
+    results = {}
+    if new_feeds:
+        results = downloader.fetch_all_feeds(new_feeds)
+        mark_config_feeds_imported(db, new_feeds)
+
+    users = [u["username"] for u in db.get_all_users()] or [None]
+    for username in users:
+        user_downloader = downloader_for(username)
+        for podcast in db.get_all_podcasts(username):
+            try:
+                count = user_downloader.process_feed(podcast["rss_url"])
+            except (YouTubeError, ValueError) as e:
+                console.print(f"[red]{podcast['title']}: {e}[/red]")
+                count = 0
+            results[podcast["title"]] = results.get(podcast["title"], 0) + count
 
     table = Table(title="Download Results")
     table.add_column("Podcast", style="cyan")
     table.add_column("New Episodes", style="green", justify="right")
 
+    total_downloaded = 0
     for name, count in results.items():
         table.add_row(name, str(count))
         total_downloaded += count

@@ -1,6 +1,7 @@
 """Shared dependencies for the API."""
 
 from pathlib import Path
+from typing import Any, Optional
 
 import yaml
 
@@ -44,3 +45,59 @@ def save_config(config: dict):
     config_file.parent.mkdir(parents=True, exist_ok=True)
     with open(config_file, "w") as f:
         yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+
+
+# Settings each user sets for themselves. A user without their own LLM or
+# episode limit gets the shared setting of the same name, then these
+# defaults. The rest are personal only: a value in the shared config is
+# ignored, so e.g. no daily run starts for a user who never asked for one.
+USER_SETTING_DEFAULTS: dict[str, Any] = {
+    "language": "en",  # "en" or "fr" (Quebec French): what pages show first
+    "tone": "",  # instructions describing the user's voice, sent to the writer
+    "llm_provider": "ollama",  # LLM for the user's writing: posts, synopses
+    "llm_model": None,
+    "gemini_model": None,
+    "max_episodes_per_feed": 10,
+    "daily_run_time": "",  # "HH:MM", empty = no daily run
+    "daily_run_linkedin": False,
+    "daily_run_export": False,
+}
+_SHARED_FALLBACK_KEYS = (
+    "llm_provider",
+    "llm_model",
+    "gemini_model",
+    "max_episodes_per_feed",
+)
+
+
+def user_settings(username: Optional[str]) -> dict:
+    """The shared settings overlaid with ``username``'s own settings.
+
+    Without a username (CLI, config-file imports) only the shared settings
+    and the defaults apply.
+    """
+    shared = load_config().get("settings") or {}
+    settings = {k: v for k, v in USER_SETTING_DEFAULTS.items() if v is not None}
+    settings.update(
+        {
+            k: v
+            for k, v in shared.items()
+            if k not in USER_SETTING_DEFAULTS or k in _SHARED_FALLBACK_KEYS
+        }
+    )
+    user = get_db().get_user(username) if username else None
+    if user:
+        settings.update(
+            {
+                k: v
+                for k, v in user["settings"].items()
+                if k in USER_SETTING_DEFAULTS and v is not None
+            }
+        )
+    return settings
+
+
+def content_dir(base: str, username: Optional[str]) -> Path:
+    """Folder for a user's generated files (posts, exports): ``base/<user>``.
+    Without a username, ``base`` itself (CLI output)."""
+    return Path(base) / username if username else Path(base)

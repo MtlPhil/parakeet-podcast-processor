@@ -3,8 +3,10 @@
 import re
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from p3.api.auth import current_username
+from p3.api.content import post_files, split_languages
 from p3.api.deps import get_db
 from p3.api.job_queue import job_runner
 from p3.api.models import LinkedInCreate, LinkedInOut
@@ -12,7 +14,7 @@ from p3.api.tasks import task_write_linkedin
 
 router = APIRouter(prefix="/api/linkedin", tags=["linkedin"])
 
-LINKEDIN_DIR = Path("linkedin_posts")
+POSTS_DIR = "linkedin_posts"
 
 
 def _parse_linkedin_file(path: Path) -> dict:
@@ -45,29 +47,25 @@ def _parse_linkedin_file(path: Path) -> dict:
         "filename": path.name,
         "episode_title": meta.get("source_episode"),
         "podcast_title": meta.get("source_podcast"),
-        "content": text.strip(),
+        **dict(zip(("content", "content_fr"), split_languages(text))),
     }
 
 
 @router.get("", response_model=list[LinkedInOut])
-def list_linkedin_posts():
-    """List all generated LinkedIn posts (without full content)."""
-    if not LINKEDIN_DIR.exists():
-        return []
+def list_linkedin_posts(username: str = Depends(current_username)):
+    """List the user's LinkedIn posts (without full content)."""
     posts = []
-    for path in sorted(LINKEDIN_DIR.glob("*.md"), reverse=True):
+    for path in post_files(POSTS_DIR, username):
         info = _parse_linkedin_file(path)
-        info["content"] = None  # omit full content in list view
+        info["content"] = info["content_fr"] = None  # omitted in list view
         posts.append(info)
     return posts
 
 
 @router.get("/{slug}", response_model=LinkedInOut)
-def get_linkedin_post(slug: str):
-    """Get a single LinkedIn post by slug."""
-    if not LINKEDIN_DIR.exists():
-        raise HTTPException(404, "No LinkedIn posts found")
-    for path in LINKEDIN_DIR.glob("*.md"):
+def get_linkedin_post(slug: str, username: str = Depends(current_username)):
+    """Get one of the user's LinkedIn posts by slug."""
+    for path in post_files(POSTS_DIR, username):
         info = _parse_linkedin_file(path)
         if info["slug"] == slug:
             return info
@@ -75,17 +73,28 @@ def get_linkedin_post(slug: str):
 
 
 @router.post("", response_model=dict)
-def create_linkedin_post(body: LinkedInCreate):
-    """Generate a new LinkedIn post (English + Quebec French) from an episode."""
+def create_linkedin_post(
+    body: LinkedInCreate, username: str = Depends(current_username)
+):
+    """Generate a new LinkedIn post (English + Quebec French) from an episode
+    in the user's library, in their tone."""
     db = get_db()
     episode = db.get_episode_by_id(body.episode_id)
-    if not episode:
+    if not episode or not db.user_has_episode(username, body.episode_id):
         raise HTTPException(404, "Episode not found")
 
     job_id = db.create_job(
-        "write_linkedin", episode_id=body.episode_id, podcast_id=episode["podcast_id"]
+        "write_linkedin",
+        episode_id=body.episode_id,
+        podcast_id=episode["podcast_id"],
+        username=username,
     )
     job_runner.enqueue(
-        task_write_linkedin, job_id, body.episode_id, body.provider, body.model
+        task_write_linkedin,
+        job_id,
+        body.episode_id,
+        body.provider,
+        body.model,
+        username,
     )
     return {"job_id": job_id}

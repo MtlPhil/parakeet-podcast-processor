@@ -1,11 +1,19 @@
-"""Settings management routes."""
+"""Shared settings (config/feeds.yaml): admins only.
 
-from fastapi import APIRouter
+These cover work done once per episode for everyone: transcription, audio
+format, the LLM that cleans and summarizes. Each user's own settings are
+under /api/me/settings.
+"""
 
+from fastapi import APIRouter, Depends
+
+from p3.api.auth import require_admin
 from p3.api.deps import load_config, save_config
 from p3.api.models import SettingsOut, SettingsUpdate
 
-router = APIRouter(prefix="/api/settings", tags=["settings"])
+router = APIRouter(
+    prefix="/api/settings", tags=["settings"], dependencies=[Depends(require_admin)]
+)
 
 
 @router.get("", response_model=SettingsOut)

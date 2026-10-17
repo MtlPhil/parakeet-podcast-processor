@@ -60,11 +60,22 @@ P³ ships as both a command-line tool (`p3`) and a web app (FastAPI + React).
     revise loop. A separate "strict AP English teacher" persona scores each
     draft until it reaches a target score (91/100 by default, up to 3 rounds).
   - *LinkedIn posts* for a single episode in English and in Quebec French.
+  - Every digest, synopsis and post exists in English and Quebec French.
+    Each user picks the language shown first and can switch on any page.
   - *Social snippets* (Twitter/LinkedIn) generated from a finished blog post.
 - **Exports.** Daily digests as Markdown, JSON or email-ready HTML, plus
   per-episode transcripts as Markdown (single file or a zip per podcast).
 - **Web app.** Dashboard, podcast and episode pages, transcript and summary
-  views, content generation, settings, and live job progress.
+  views, search across transcripts and summaries, bulk add (paste URLs or
+  import an OPML file), content generation, settings, and live job progress.
+- **Several users.** Sign-in through Authelia behind a reverse proxy. Each
+  user has their own podcasts, episodes, posts, writing tone and settings;
+  an episode two users follow is downloaded and processed once.
+- **Daily run.** Each user can pick a time at which their podcasts are
+  fetched and new episodes transcribed and summarized, optionally followed by
+  LinkedIn drafts and a digest export.
+- **Disk cleanup.** An episode's audio is deleted once it is digested; the
+  transcript and summary are kept.
 - **Safe background processing.** Heavy work runs through a single serial job
   queue, so only one transcription or LLM job uses the machine at a time.
 
@@ -147,12 +158,16 @@ cd ..
 
 ## Configuration
 
-All settings live in `config/feeds.yaml`. The file is gitignored, so your feed
-list stays local. The web app's **Settings** page edits the same file.
+Shared settings live in `config/feeds.yaml`. The file is gitignored, so your
+feed list stays local. Admins edit the same settings on the web app's
+**Settings** page; each user's own settings (language, writing tone, writing
+LLM, episodes per feed, daily run) are stored in the database and edited on
+the same page.
 
-The `feeds` list is what `p3 fetch` downloads. Podcasts added through the web
-app's **Add Podcast** page are stored in the database only and are not written
-back to this file.
+The library in the database is the one source list. Feeds in the `feeds` list
+are imported into it once, for the owner (the first admin), by `p3 fetch` or
+the owner's daily run, and are then fetched like any other podcast. Removing a
+podcast in the web app keeps it removed even if it is still in the file.
 
 ```yaml
 feeds:
@@ -203,7 +218,7 @@ Global options: `--config PATH`, `--db PATH`, `-v` (debug logging), `-q`
 | Command | Description |
 |---|---|
 | `p3 init` | Create directories, config and database; check prerequisites |
-| `p3 fetch [--max-episodes N] [--dry-run]` | Download new episodes from every feed in `config/feeds.yaml` (RSS or YouTube) |
+| `p3 fetch [--max-episodes N] [--dry-run]` | Import new feeds from `config/feeds.yaml`, then download new episodes for every podcast in the library (each user's, for that user) |
 | `p3 transcribe [--episode-id ID] [--model NAME]` | Transcribe all `downloaded` episodes, or one |
 | `p3 digest [--episode-id ID] [--provider P] [--model M]` | Clean and summarize all `transcribed` episodes, or one |
 | `p3 export [--date YYYY-MM-DD] [--format markdown\|json\|html] [--output PATH]` | Export the digest for a date (default: today) to `exports/` |
@@ -231,9 +246,13 @@ the same work from the web app.
 For development, run the API and the Vite dev server side by side:
 
 ```bash
-uvicorn p3.api.main:app --reload     # API on http://127.0.0.1:8000
-cd frontend && npm run dev           # UI on http://localhost:5173 (proxies /api)
+P3_DEV_USER=me uvicorn p3.api.main:app --reload   # API on http://127.0.0.1:8000
+cd frontend && npm run dev                        # UI on http://localhost:5173 (proxies /api)
 ```
+
+Without a reverse proxy there is no signed-in user, so `P3_DEV_USER` names the
+user to act as (see [Deployment](#deployment)). The first user ever is an
+admin and takes over everything already in the library.
 
 The app's pages:
 
@@ -248,31 +267,76 @@ The app's pages:
   long-form synopsis, and download the transcript.
 - **Content**: generate LinkedIn posts (pick a podcast, then an episode) or
   themed blog posts from a day's digests. Browse everything generated so far.
-- **Settings**: edit provider, models and download options.
+- **Search**: find episodes by words in their title, summary or transcript,
+  with the matching transcript lines and timestamps.
+- **Settings**: your language, writing tone (sent to the writer with every
+  post), writing LLM, episodes per feed and daily run. Admins also see the
+  shared transcription and summarizing settings.
+- **Admin** (admins only): users and their roles; free disk space; translate
+  digests made before French versions existed.
 
 Interactive API docs are available at `http://127.0.0.1:8000/docs`.
 
 ## Deployment
 
-P³ is designed as a single-user tool that runs on your own Mac. In production,
-one `uvicorn` process serves both the API and the built frontend.
+P³ runs on your own Mac. In production, one `uvicorn` process serves both the
+API and the built frontend.
 
 ```bash
 cd frontend && npm run build && cd ..
 uvicorn p3.api.main:app --host 127.0.0.1 --port 8000
-# open http://127.0.0.1:8000
 ```
 
 Run it from the repository root. Data, config and output paths are relative to
 the working directory.
 
-> **Security:** the API has no authentication, and anyone who can reach it can
-> change settings, start jobs and delete podcasts. State-changing requests
-> from other websites' pages are rejected by an Origin check, but that is not
-> a substitute for authentication. Keep it bound to `127.0.0.1`.
-> For access from other devices, put it behind something that authenticates,
-> such as a VPN like Tailscale or a reverse proxy with auth. Do not expose
-> port 8000 directly.
+### Users and sign-in (Authelia)
+
+P³ does not handle passwords. It expects a reverse proxy in front of it that
+signs users in with [Authelia](https://www.authelia.com/)'s forward-auth and
+passes the user in the `Remote-User` header (plus `Remote-Name` and
+`Remote-Email`). Requests without that header are refused.
+
+- **The header is trusted.** Keep P³ bound to `127.0.0.1` (or a network only
+  the proxy can reach) so nobody can send the header themselves, and make the
+  proxy overwrite any copy a client sends; Traefik's `authResponseHeaders`
+  does.
+- **Roles.** The first user to sign in is an admin and takes over everything
+  already in the library. Admins see the shared settings and the Admin page,
+  where they can make other users admins.
+- **Separate libraries, shared processing.** Each user sees only the podcasts
+  they follow and the episodes they have. Deleting an episode removes it from
+  that user's library only; their fetches won't bring it back unless they
+  pick it again. A podcast's audio and data are deleted once nobody follows
+  it.
+
+A Traefik example in its file-provider format (adapt the hostname and the
+Authelia address to your setup). P³ runs on the host, not in a container, so
+the service points at `host.docker.internal` when Traefik runs in Docker:
+
+```yaml
+http:
+  middlewares:
+    authelia:
+      forwardAuth:
+        address: "http://authelia:9091/api/authz/forward-auth"
+        trustForwardHeader: true
+        authResponseHeaders: ["Remote-User", "Remote-Name", "Remote-Email", "Remote-Groups"]
+  routers:
+    p3:
+      rule: "Host(`p3.example.com`)"
+      middlewares: ["authelia"]
+      service: p3
+  services:
+    p3:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:8000"
+```
+
+For local development without a proxy, set `P3_DEV_USER` to the username to
+act as; it is used only when the header is absent. Never set it on a server
+others can reach.
 
 ### Running as a background service (launchd)
 
@@ -328,8 +392,8 @@ The same security caveat applies.
 ### Scheduling the CLI
 
 Without the web app, the pipeline can run on a schedule with cron or launchd.
-This only works while the web server is stopped (see the database lock above),
-and only fetches the feeds listed in `config/feeds.yaml`:
+This only works while the web server is stopped (see the database lock above).
+The web app's per-user daily run (Settings) is usually the better option:
 
 ```cron
 0 6 * * * cd /path/to/parakeet-podcast-processor && .venv/bin/p3 -q fetch && .venv/bin/p3 -q transcribe && .venv/bin/p3 -q digest && .venv/bin/p3 -q export
@@ -365,14 +429,21 @@ tests/                pytest suite (no external services required)
 
 DuckDB file at `data/p3.duckdb`:
 
-- `podcasts`: sources. Title, canonical URL in `rss_url` (unique), category,
-  and `source_type`: `rss`, `youtube_channel` or `youtube_video`
+- `podcasts`: sources, shared by everyone who follows them. Title, canonical
+  URL in `rss_url` (unique), category, and `source_type`: `rss`,
+  `youtube_channel` or `youtube_video`
 - `episodes`: title, publish date, audio or YouTube watch URL (unique), local
   file path, status
 - `transcripts`: one row per segment with start/end timestamps and text
 - `summaries`: short summary, long-form synopsis, and JSON lists of topics,
-  themes, quotes and companies, keyed by episode and digest date
-- `jobs`: background job type, status, progress, message, error, and timestamps
+  themes, quotes and companies, keyed by episode and digest date, plus Quebec
+  French versions (`*_fr`) of the summary, synopsis, topics and themes
+- `jobs`: background job type, status, progress, message, error, timestamps,
+  the user who started it, and the daily run it belongs to
+- `users`: username, name, email, role (`admin` or `user`) and own settings
+- `user_podcasts`, `user_episodes`, `user_hidden_episodes`: who follows which
+  podcast, who has which episode, and which episodes a user deleted
+- `app_state`: small key-value store (daily run dates, imported config feeds)
 
 Rows are returned as dicts keyed by column name. Schema changes are applied
 with idempotent `CREATE … IF NOT EXISTS` / `ADD COLUMN IF NOT EXISTS`
@@ -406,9 +477,12 @@ balanced-brace matching. List fields are coerced to plain strings.
 |---|---|
 | Normalized audio | `data/audio/` |
 | Database | `data/p3.duckdb` |
-| Digests and transcript exports | `exports/` |
-| Blog posts (Markdown + YAML front matter) | `blog_posts/` |
-| LinkedIn posts (English + Quebec French) | `linkedin_posts/` |
+| Digests and transcript exports | `exports/<user>/` (CLI: `exports/`) |
+| Blog posts, English + Quebec French (Markdown + YAML front matter) | `blog_posts/<user>/` (CLI: `blog_posts/`) |
+| LinkedIn posts (English + Quebec French) | `linkedin_posts/<user>/` |
+
+Files at the top of these folders, from before users existed, belong to the
+owner.
 
 ## Development
 

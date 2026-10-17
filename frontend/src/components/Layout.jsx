@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
+import { useMe } from '../hooks/useMe';
 
 const NAV_ITEMS = [
   { to: '/', label: 'Dashboard' },
   { to: '/podcasts', label: 'Podcasts' },
+  { to: '/search', label: 'Search' },
   { to: '/add', label: 'Add Podcast' },
   { to: '/blogs', label: 'Content' },
   { to: '/settings', label: 'Settings' },
@@ -14,10 +16,14 @@ const linkClass = ({ isActive }) =>
     isActive ? 'bg-gray-800 text-white border-l-2 lg:border-l-0 lg:border-r-2 border-blue-400' : ''
   }`;
 
+const ADMIN_ITEM = { to: '/admin', label: 'Admin' };
+
 export default function Layout() {
   const [open, setOpen] = useState(false);
+  const { me } = useMe();
+  const items = me?.role === 'admin' ? [...NAV_ITEMS, ADMIN_ITEM] : NAV_ITEMS;
 
-  const navLinks = NAV_ITEMS.map(({ to, label }) => (
+  const navLinks = items.map(({ to, label }) => (
     <NavLink
       key={to}
       to={to}
@@ -67,6 +73,12 @@ export default function Layout() {
           <p className="text-xs text-gray-500">Podcast Processor</p>
         </div>
         <nav className="flex-1 py-4">{navLinks}</nav>
+        {me && (
+          <div className="px-4 py-3 border-t border-gray-700 text-xs text-gray-400">
+            <p className="text-gray-200 truncate">{me.display_name || me.username}</p>
+            <p>{me.role === 'admin' ? 'Admin' : 'User'}</p>
+          </div>
+        )}
       </aside>
 
       {/* Main content */}
