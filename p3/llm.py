@@ -17,7 +17,11 @@ SUPPORTED_PROVIDERS = ("ollama", "openai", "gemini")
 
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
 DEFAULT_OLLAMA_MODEL = "llama3.2:latest"
-DEFAULT_GEMINI_MODEL = "gemini-flash-3.6"
+DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
+
+# Context window requested from Ollama: the longest cleaned/truncated
+# transcript (~100k characters) is about 25k tokens, plus the prompt.
+_OLLAMA_NUM_CTX = 32768
 
 # Optional on-disk location for the Gemini API key (gitignored). The
 # GEMINI_API_KEY environment variable takes precedence.
@@ -108,12 +112,17 @@ class LLMClient:
                 {"role": "user", "content": user},
             ],
             keep_alive=self.keep_alive,
+            # Reasoning models would spend the output cap on hidden thoughts.
+            think=False,
             options={
                 # Hard cap on output length so a small model caught in a
                 # repetition loop cannot generate until the context is full.
                 "num_predict": max_tokens,
                 # Slightly above Ollama's 1.1 default to discourage such loops.
                 "repeat_penalty": 1.3,
+                # Ollama's default window is smaller than a long transcript
+                # prompt; an overflow silently drops the instructions at its start.
+                "num_ctx": _OLLAMA_NUM_CTX,
             },
         )
         return response["message"]["content"].strip()
@@ -163,6 +172,9 @@ class LLMClient:
                     "generationConfig": {
                         "maxOutputTokens": max_tokens,
                         "temperature": 0.2,
+                        # Thinking tokens count against maxOutputTokens and
+                        # can leave the reply empty or cut off.
+                        "thinkingConfig": {"thinkingBudget": 0},
                     },
                 },
             )

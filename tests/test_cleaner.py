@@ -363,12 +363,36 @@ class TestTranslation:
         assert "Quebec French" in calls[0]
 
     def test_list_must_keep_its_length(self, monkeypatch):
-        cleaner, _ = self._cleaner(
-            monkeypatch, lambda prompt: '```json\n{"items": ["un", "deux"]}\n```'
+        cleaner, calls = self._cleaner(
+            monkeypatch,
+            lambda prompt: "1. L'adoption de l'IA\n\n- Leadership d'équipe\n",
         )
-        assert cleaner.translate_list(["one", "two"]) == ["un", "deux"]
+        assert cleaner.translate_list(["AI adoption", "Team\nleadership"]) == [
+            "L'adoption de l'IA",
+            "Leadership d'équipe",
+        ]
+        # Items are sent one per line, newlines inside an item flattened.
+        assert calls[0].endswith("AI adoption\nTeam leadership")
         assert cleaner.translate_list(["one", "two", "three"]) is None
         assert cleaner.translate_list([]) == []
+
+    def test_structured_summary_retries_unparseable_json(self, monkeypatch):
+        replies = iter(['{"key_topics": ["a" "b"]}', '{"key_topics": ["AI"]}'])
+        cleaner, calls = self._cleaner(monkeypatch, lambda prompt: next(replies))
+        monkeypatch.setattr(type(cleaner.llm), "is_configured", True)
+        assert cleaner._generate_structured_summary("text")["key_topics"] == ["AI"]
+        assert len(calls) == 2
+
+    def test_list_falls_back_to_one_item_at_a_time(self, monkeypatch):
+        # The batch reply drops a line; single-item requests succeed.
+        cleaner, calls = self._cleaner(
+            monkeypatch,
+            lambda prompt: (
+                "FR a\nFR b" if prompt.endswith("a\nb\nc") else "FR " + prompt[-1]
+            ),
+        )
+        assert cleaner.translate_list(["a", "b", "c"]) == ["FR a", "FR b", "FR c"]
+        assert len(calls) == 4
 
     def test_failure_returns_none(self, monkeypatch):
         def boom(prompt):
@@ -393,8 +417,8 @@ class TestTranslation:
         cleaner = TranscriptCleaner(db=db, llm_provider="ollama")
 
         def fake_chat(system, user, max_tokens=2000):
-            if '"items"' in user:
-                return '{"items": ["FR item"]}'
+            if "one translated line per line" in user:
+                return "FR item"
             return "FR text"
 
         monkeypatch.setattr(cleaner, "_chat", fake_chat)

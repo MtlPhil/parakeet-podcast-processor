@@ -120,8 +120,8 @@ function MySettings() {
         />
       </Field>
 
-      <Field label="Daily run time" htmlFor="daily-run-time" help="Each day at this time, fetch your podcasts, then transcribe and summarize new episodes. Runs on wake if the Mac was asleep. Clear to turn it off.">
-        <input id="daily-run-time" type="time" value={own.daily_run_time || ''} onChange={(e) => set('daily_run_time', e.target.value)} className={inputClass} />
+      <Field label="Daily run time" htmlFor="daily-run-time" help="Each day at this time (4:00 unless you change it), fetch your podcasts, then transcribe and summarize new episodes. Runs on wake if the Mac was asleep. Clear to turn it off.">
+        <input id="daily-run-time" type="time" value={own.daily_run_time ?? effective.daily_run_time ?? ''} onChange={(e) => set('daily_run_time', e.target.value)} className={inputClass} />
       </Field>
 
       <Checkbox id="daily-run-linkedin" checked={own.daily_run_linkedin || false} onChange={(v) => set('daily_run_linkedin', v)}>

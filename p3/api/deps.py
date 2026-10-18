@@ -58,7 +58,7 @@ USER_SETTING_DEFAULTS: dict[str, Any] = {
     "llm_model": None,
     "gemini_model": None,
     "max_episodes_per_feed": 10,
-    "daily_run_time": "",  # "HH:MM", empty = no daily run
+    "daily_run_time": "04:00",  # "HH:MM"; set to "" to turn the daily run off
     "daily_run_linkedin": False,
     "daily_run_export": False,
 }

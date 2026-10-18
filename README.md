@@ -71,9 +71,9 @@ P³ ships as both a command-line tool (`p3`) and a web app (FastAPI + React).
 - **Several users.** Sign-in through Authelia behind a reverse proxy. Each
   user has their own podcasts, episodes, posts, writing tone and settings;
   an episode two users follow is downloaded and processed once.
-- **Daily run.** Each user can pick a time at which their podcasts are
-  fetched and new episodes transcribed and summarized, optionally followed by
-  LinkedIn drafts and a digest export.
+- **Daily run.** Every day at 4:00 (each user can change the time or turn it
+  off), the user's podcasts are fetched and new episodes transcribed and
+  summarized, optionally followed by LinkedIn drafts and a digest export.
 - **Disk cleanup.** An episode's audio is deleted once it is digested; the
   transcript and summary are kept.
 - **Safe background processing.** Heavy work runs through a single serial job
@@ -191,7 +191,7 @@ settings:
   llm_provider: ollama              # ollama | openai | gemini
   llm_model: "llama3.2:latest"      # model for ollama/openai
   ollama_base_url: "http://localhost:11434"
-  gemini_model: "gemini-flash-3.6"  # model used when the provider is gemini
+  gemini_model: "gemini-3.8-flash"  # model used when the provider is gemini
 
   export_format: [markdown, json]   # defaults for `p3 export`
 ```

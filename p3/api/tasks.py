@@ -70,6 +70,7 @@ def _make_writer(
         llm_model=llm_model,
         ollama_base_url=settings.get("ollama_base_url", DEFAULT_OLLAMA_URL),
         tone=settings.get("tone") or "",
+        language=settings.get("language") or "en",
         **kwargs,
     )
 

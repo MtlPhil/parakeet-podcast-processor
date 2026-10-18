@@ -81,9 +81,11 @@ _TRANSLATE_PROMPT = f"""Translate this text into {_QUEBEC_FRENCH}. Keep names of
 Text:
 """
 
-_TRANSLATE_LIST_PROMPT = f"""Translate each item of this list of short phrases into {_QUEBEC_FRENCH}. Keep names unchanged. Return JSON only, in the form {{"items": ["...", "..."]}}, with the same number of items in the same order.
+# Plain lines rather than JSON: small local models often break JSON quoting
+# when the text itself contains apostrophes, which French is full of.
+_TRANSLATE_LIST_PROMPT = f"""Translate each line below, a short phrase, into {_QUEBEC_FRENCH}. Keep names unchanged. Return exactly one translated line per line, in the same order, with no numbering, bullets or commentary.
 
-List:
+Lines:
 """
 
 # Longer texts are translated a few paragraphs at a time, for the same
@@ -553,17 +555,32 @@ class TranscriptCleaner:
             return []
         try:
             response = self._chat(
-                "You are a professional English to Quebec French translator. "
-                "Return valid JSON only.",
-                _TRANSLATE_LIST_PROMPT + json.dumps(items, ensure_ascii=False),
+                "You are a professional English to Quebec French translator.",
+                _TRANSLATE_LIST_PROMPT + "\n".join(" ".join(i.split()) for i in items),
                 max_tokens=800,
             )
         except Exception as e:
             logger.warning("List translation failed: %s", e)
             return None
-        result = _extract_json(response)
-        translated = _coerce_str_list(result.get("items")) if result else []
-        return translated if len(translated) == len(items) else None
+        lines = [
+            re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", line).strip()
+            for line in response.replace("```", "").splitlines()
+        ]
+        translated = [line for line in lines if line]
+        if len(translated) != len(items):
+            logger.warning(
+                "List translation returned %d lines for %d items",
+                len(translated),
+                len(items),
+            )
+            if len(items) == 1:
+                return None
+            # Small models merge or drop lines; one item at a time can't.
+            singles = [self.translate_list([item]) for item in items]
+            if any(single is None for single in singles):
+                return None
+            return [single[0] for single in singles if single]
+        return translated
 
     def _generate_short_summary(self, text: str) -> Optional[str]:
         """Generate the short (~300 word) summary as its own call — see
@@ -587,12 +604,17 @@ class TranscriptCleaner:
         truncated = _truncate_transcript(text)
 
         try:
-            response = self._chat(
-                "You are an expert at analyzing podcast content. Return valid JSON only.",
-                _SUMMARY_PROMPT + truncated,
-                max_tokens=1000,
-            )
-            result = _extract_json(response)
+            # Small models sometimes emit broken JSON; a second sample usually parses.
+            result = None
+            for _ in range(2):
+                response = self._chat(
+                    "You are an expert at analyzing podcast content. Return valid JSON only.",
+                    _SUMMARY_PROMPT + truncated,
+                    max_tokens=1000,
+                )
+                result = _extract_json(response)
+                if result is not None:
+                    break
             if result is None:
                 logger.warning(
                     "Could not parse JSON from LLM response, falling back to basic extraction"

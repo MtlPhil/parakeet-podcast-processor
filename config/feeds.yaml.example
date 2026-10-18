@@ -28,7 +28,7 @@ settings:
   ollama_base_url: "http://localhost:11434"
   # Model used when the provider is gemini (key: GEMINI_API_KEY or
   # config/gemini_api_key.txt). OpenAI reads OPENAI_API_KEY.
-  gemini_model: "gemini-flash-3.6"
+  gemini_model: "gemini-3.8-flash"
 
   # Each user's daily run time, writing tone, language and writing LLM are
   # personal settings, set on the web app's Settings page. The LLM settings

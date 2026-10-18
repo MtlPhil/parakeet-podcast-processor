@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .database import P3Database
+from .exporter import localized
 from .llm import DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_URL, LLMClient
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,26 @@ _MAX_SLUG_LENGTH = 80
 
 # Heading that starts the French half of a saved post (LinkedIn and blog).
 FRENCH_HEADING = "## Français (Québec)"
+
+# Common function words that tell French from English; see _detect_language.
+_FRENCH_WORDS = frozenset(
+    "le la les des de du une et est que qui dans pour pas sur au aux ce cette "
+    "nous vous avec sont mais".split()
+)
+_ENGLISH_WORDS = frozenset(
+    "the and of to is that for with are this it was not but from by be".split()
+)
+
+
+def _detect_language(text: str) -> Optional[str]:
+    """ "fr" or "en" by counting common function words, or None when the text
+    is too short to tell."""
+    words = re.findall(r"[a-zà-ÿ']+", text.lower())
+    french = sum(w in _FRENCH_WORDS for w in words)
+    english = sum(w in _ENGLISH_WORDS for w in words)
+    if french + english < 3:
+        return None
+    return "fr" if french > english else "en"
 
 
 class BlogWriter:
@@ -32,11 +53,14 @@ class BlogWriter:
         target_grade: float = 91.0,
         ollama_base_url: str = DEFAULT_OLLAMA_URL,
         tone: str = "",
+        language: str = "en",
     ):
         """``tone`` is the author's own description of their voice, added to
-        every writing prompt."""
+        every writing prompt. ``language`` ("en" or "fr") is the language
+        posts are written in; the other language is translated from it."""
         self.db = db
         self.tone = tone.strip()
+        self.language = "fr" if language == "fr" else "en"
         self.llm_model = llm_model
         self.target_grade = target_grade
         self.max_iterations = 3
@@ -74,7 +98,7 @@ class BlogWriter:
 
         # Generate initial blog post
         initial_prompt = self._build_writing_prompt(topic, context, context_posts)
-        current_post = self._generate_with_llm(initial_prompt)
+        current_post = self._generate_in_language(initial_prompt, self.language)
 
         iterations = []
 
@@ -98,23 +122,35 @@ class BlogWriter:
                 improvement_prompt = self._build_improvement_prompt(
                     current_post, grade_result["feedback"]
                 )
-                current_post = self._generate_with_llm(improvement_prompt)
+                current_post = self._generate_in_language(
+                    improvement_prompt, self.language
+                )
 
         slug = self._generate_slug(topic)
 
         # Use first summary for metadata, but all summaries contributed to context
         primary = summaries[0]
 
+        # The post was written in the user's language; the other one is
+        # translated from it so the two always say the same thing.
+        if self.language == "fr":
+            post_en = self._translate_to_english(current_post, "blog post")
+            post_fr = current_post
+            topic_en = self._translate_to_english(topic, "blog post title")
+        else:
+            post_en = current_post
+            post_fr = self._adapt_to_quebec_french(current_post, "article de blogue")
+            topic_en = topic
+        topic_fr = self._adapt_to_quebec_french(topic, "titre d'article")
+
         return {
-            "final_post": current_post,
-            "final_post_fr": self._adapt_to_quebec_french(
-                current_post, "article de blogue"
-            ),
-            "topic_fr": self._adapt_to_quebec_french(topic, "titre d'article"),
+            "final_post": post_en,
+            "final_post_fr": post_fr,
+            "topic_fr": topic_fr,
             "final_grade": iterations[-1]["grade"],
             "final_score": iterations[-1]["score"],
             "iterations": iterations,
-            "topic": topic,
+            "topic": topic_en,
             "slug": slug,
             "metadata": {
                 "episode_title": primary.get("episode_title", ""),
@@ -133,6 +169,7 @@ class BlogWriter:
         """Build combined context from multiple podcast summaries."""
         sections = []
         for i, s in enumerate(summaries, 1):
+            s = localized(s, self.language)
             episode_title = s.get("episode_title", "")
             podcast_title = s.get("podcast_title", "")
             summary = s.get("full_summary", "")
@@ -184,7 +221,7 @@ Style Guidelines:
             f"{style_guidelines}\n"
             f"Topic: {topic}\n\n"
             f"Source Material:\n{context}\n"
-            f"{context_section}{self._tone_section()}\n"
+            f"{context_section}{self._tone_section()}{self._language_section()}\n"
             "Write a compelling blog post that:\n"
             "1. Opens with a strong hook that draws readers in\n"
             "2. Presents insights from the podcast content\n"
@@ -206,7 +243,7 @@ Style Guidelines:
             "- Strong hook and conclusion\n"
             "- Smooth paragraph transitions\n"
             "- Actionable takeaways\n"
-            f"{self._tone_section()}\n"
+            f"{self._tone_section()}{self._language_section()}\n"
             "Focus especially on addressing the specific issues mentioned in the feedback."
         )
 
@@ -219,21 +256,53 @@ Style Guidelines:
             f"the default tone):\n{self.tone}\n"
         )
 
+    def _language_section(self) -> str:
+        """Instruction to write in Quebec French, or '' for English."""
+        if self.language != "fr":
+            return ""
+        return (
+            "\nLanguage: write the entire piece in Quebec French (français "
+            "québécois, not the French of France: Quebec vocabulary, turns of "
+            "phrase and register). Translate any quotes from the sources into "
+            "French.\n"
+        )
+
     def _adapt_to_quebec_french(self, text: str, kind: str) -> str:
-        """Translate and adapt English text (a post of type ``kind``, in
-        French) to Quebec French, keeping the author's tone."""
+        """Translate and adapt text (a post of type ``kind``, in French) to
+        Quebec French, keeping the author's tone. Text already in Quebec
+        French comes back unchanged."""
         tone = f"\nTon de l'auteur (à respecter) :\n{self.tone}\n" if self.tone else ""
         prompt = (
             f"Traduis et adapte le texte suivant ({kind}) en français québécois "
             "(pas le français de France : utilise le vocabulaire, les tournures et "
             "le registre du Québec). Garde le même sens, le même ton et une "
-            f"longueur similaire.\n{tone}\n"
-            f"Texte original (anglais) :\n{text}\n\n"
+            f"longueur similaire. Si le texte est déjà en français québécois, "
+            f"retourne-le tel quel.\n{tone}\n"
+            f"Texte original :\n{text}\n\n"
             "Retourne uniquement le texte, sans commentaire."
         )
-        return self._generate_with_llm(
+        return self._generate_in_language(
             prompt,
+            "fr",
             system="Tu es un rédacteur professionnel qui écrit en français québécois.",
+        ).strip()
+
+    def _translate_to_english(self, text: str, kind: str) -> str:
+        """Translate a ``kind`` of text (e.g. "blog post") from Quebec French
+        to natural English, keeping the author's tone. Text already in
+        English comes back unchanged."""
+        tone = f"\nThe author's tone (keep it):\n{self.tone}\n" if self.tone else ""
+        prompt = (
+            f"Translate the following {kind} into natural English, keeping the "
+            "same meaning, tone and length. If it is already in English, return "
+            f"it unchanged.\n{tone}\n"
+            f"Text:\n{text}\n\n"
+            "Return only the text, no commentary."
+        )
+        return self._generate_in_language(
+            prompt,
+            "en",
+            system="You are a professional translator who writes natural English.",
         ).strip()
 
     # ------------------------------------------------------------------
@@ -257,6 +326,7 @@ Style Guidelines:
             "- Conclusion Strength (20 points): Does it tie back and leave lasting impact?\n"
             "- Overall Engagement (bonus/penalty): Would readers stay engaged throughout?\n\n"
             f"Blog Post to Grade:\n{blog_post}\n\n"
+            f"{self._grading_language_note()}"
             "Format your response EXACTLY as:\n"
             "GRADE: [Letter Grade]\n"
             "SCORE: [Numerical Score]\n"
@@ -271,6 +341,16 @@ Style Guidelines:
         )
 
         return self._parse_grade(response)
+
+    def _grading_language_note(self) -> str:
+        """Tells the grader a French draft is judged as French writing."""
+        if self.language != "fr":
+            return ""
+        return (
+            "The post is written in Quebec French: judge it as a piece of French "
+            "writing (grammar, idiom, Quebec register). Keep the GRADE, SCORE and "
+            "FEEDBACK labels in English.\n\n"
+        )
 
     def _parse_grade(self, response: str) -> Dict[str, Any]:
         """Parse grade, score, and feedback from grader response.
@@ -319,6 +399,22 @@ Style Guidelines:
             return self.llm.chat(system, prompt, max_tokens=max_tokens)
         except Exception as e:
             raise RuntimeError(f"LLM generation failed: {e}") from e
+
+    def _generate_in_language(self, prompt: str, language: str, **kwargs) -> str:
+        """Like _generate_with_llm, but retries once if the reply comes back in
+        the wrong language (small and large models alike sometimes drift)."""
+        text = self._generate_with_llm(prompt, **kwargs)
+        if _detect_language(text) in (language, None):
+            return text
+        logger.warning("Reply was not in %r, retrying once", language)
+        reminder = {
+            "fr": "\n\nIMPORTANT : réponds uniquement en français québécois.",
+            "en": "\n\nIMPORTANT: reply in English only.",
+        }[language]
+        text = self._generate_with_llm(prompt + reminder, **kwargs)
+        if _detect_language(text) not in (language, None):
+            logger.warning("Reply is still not in %r", language)
+        return text
 
     # ------------------------------------------------------------------
     # Output
@@ -395,8 +491,8 @@ model: {blog_result['metadata']['model_used']}
         """Generate a LinkedIn post from one episode's summary, in English
         and Quebec French.
 
-        A single generation per language with no grading loop. The French
-        version is adapted from the English draft rather than written
+        A single generation with no grading loop, in the writer's language.
+        The other language is translated from that draft rather than written
         independently, so the two stay consistent.
         """
         context = self._build_context([summary])
@@ -414,16 +510,22 @@ model: {blog_result['metadata']['model_used']}
             "- Share the most interesting insight or argument, not a generic teaser\n"
             "- End with a short takeaway or a question inviting engagement\n"
             "- At most 3 relevant hashtags at the end, no hashtag spam\n"
-            f"{self._tone_section()}\n"
+            f"{self._tone_section()}{self._language_section()}\n"
             "Return only the post text."
         )
-        english_post = self._generate_with_llm(
+        post = self._generate_in_language(
             english_prompt,
+            self.language,
             system="You are a professional writer creating LinkedIn posts that "
             "summarize podcast insights for a business audience.",
         ).strip()
 
-        french_post = self._adapt_to_quebec_french(english_post, "billet LinkedIn")
+        if self.language == "fr":
+            french_post = post
+            english_post = self._translate_to_english(post, "LinkedIn post")
+        else:
+            english_post = post
+            french_post = self._adapt_to_quebec_french(post, "billet LinkedIn")
 
         slug = self._generate_slug(f"{podcast_title}-{episode_title}")
 

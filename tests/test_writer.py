@@ -161,3 +161,113 @@ class TestToneAndLanguages:
         assert french.startswith("# Titre\n\nBillet") and french.endswith("- Grade")
 
         assert split_languages("Old post") == ("Old post", None)
+
+
+FRENCH_TEXT = (
+    "Le marché est dans une phase où les équipes ne sont pas prêtes pour la suite."
+)
+ENGLISH_TEXT = (
+    "The market is in a phase that the teams are not ready for, but it is fine."
+)
+
+
+def _fake_llm(writer, calls):
+    """Replace the LLM: French for writing prompts, English for translations,
+    a passing grade for grading."""
+
+    def fake(prompt, system="", max_tokens=0):
+        calls.append(prompt)
+        if "AP English teacher" in system:
+            return "GRADE: A\nSCORE: 95\nFEEDBACK: Fine."
+        if prompt.startswith("Translate the following"):
+            return ENGLISH_TEXT
+        return FRENCH_TEXT
+
+    writer._generate_with_llm = fake
+
+
+class TestDetectLanguage:
+    def test_detects_french_and_english(self):
+        from p3.writer import _detect_language
+
+        assert _detect_language(FRENCH_TEXT) == "fr"
+        assert _detect_language(ENGLISH_TEXT) == "en"
+        assert _detect_language("Titre court") is None
+
+
+class TestWrongLanguageRetry:
+    def test_retries_once_with_a_reminder(self):
+        writer = BlogWriter(db=None, language="fr")
+        replies = iter([ENGLISH_TEXT, FRENCH_TEXT])
+        prompts = []
+        writer._generate_with_llm = lambda prompt, **kw: (
+            prompts.append(prompt) or next(replies)
+        )
+        assert writer._generate_in_language("Écris.", "fr") == FRENCH_TEXT
+        assert len(prompts) == 2 and "IMPORTANT" in prompts[1]
+
+    def test_correct_language_is_not_retried(self):
+        writer = BlogWriter(db=None)
+        prompts = []
+        writer._generate_with_llm = lambda prompt, **kw: (
+            prompts.append(prompt) or ENGLISH_TEXT
+        )
+        writer._generate_in_language("Write.", "en")
+        assert len(prompts) == 1
+
+
+class TestFrenchWriter:
+    summary = {
+        "episode_title": "Ep",
+        "podcast_title": "Pod",
+        "full_summary": "English summary",
+        "full_summary_fr": "Résumé français",
+        "key_topics": ["growth"],
+        "key_topics_fr": ["croissance"],
+        "themes": ["scale"],
+        "quotes": ["Keep it"],
+        "startups": [],
+    }
+
+    def test_context_uses_french_digest_fields(self):
+        context = BlogWriter(db=None, language="fr")._build_context([self.summary])
+        assert "Résumé français" in context and "croissance" in context
+        assert "English summary" not in context
+        english = BlogWriter(db=None)._build_context([self.summary])
+        assert "English summary" in english
+
+    def test_blog_is_written_in_french_and_translated_to_english(self):
+        writer = BlogWriter(db=None, language="fr")
+        calls = []
+        _fake_llm(writer, calls)
+        result = writer.generate_blog_post_from_digest("Mon sujet", [self.summary])
+        assert result["final_post_fr"] == FRENCH_TEXT
+        assert result["final_post"] == ENGLISH_TEXT
+        assert result["topic"] == ENGLISH_TEXT
+        assert "Quebec French" in calls[0] and "Résumé français" in calls[0]
+        grading = [c for c in calls if "Blog Post to Grade" in c]
+        assert "judge it as a piece of French" in grading[0]
+
+    def test_english_writer_still_adapts_to_french(self):
+        writer = BlogWriter(db=None)
+        calls = []
+        writer._generate_with_llm = lambda prompt, system="", max_tokens=0: (
+            calls.append(prompt)
+            or (
+                "GRADE: A\nSCORE: 95\nFEEDBACK: Fine."
+                if "AP English teacher" in system
+                else (FRENCH_TEXT if prompt.startswith("Traduis") else ENGLISH_TEXT)
+            )
+        )
+        result = writer.generate_blog_post_from_digest("My topic", [self.summary])
+        assert result["final_post"] == ENGLISH_TEXT
+        assert result["final_post_fr"] == FRENCH_TEXT
+        assert result["topic"] == "My topic"
+        assert "Quebec French" not in calls[0]
+
+    def test_linkedin_is_written_in_french_and_translated_to_english(self):
+        writer = BlogWriter(db=None, language="fr")
+        _fake_llm(writer, [])
+        result = writer.generate_linkedin_post(self.summary)
+        assert result["french_quebec"] == FRENCH_TEXT
+        assert result["english"] == ENGLISH_TEXT

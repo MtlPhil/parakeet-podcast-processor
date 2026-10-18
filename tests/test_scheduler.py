@@ -54,21 +54,22 @@ class TestParseRunTime:
 
 
 class TestRunIfDue:
-    def test_only_users_who_set_a_time(self, env):
+    def test_defaults_to_4am_and_can_be_turned_off(self, env):
         db, enqueued = env
-        _user(db, "ann", daily_run_time="06:00")
-        _user(db, "bob")
-        assert run_if_due(datetime(2026, 10, 17, 12, 0)) == ["ann"]
+        _user(db, "ann")
+        _user(db, "bob", daily_run_time="")
+        assert run_if_due(datetime(2026, 10, 17, 3, 59)) == []
+        assert run_if_due(datetime(2026, 10, 17, 4, 0)) == ["ann"]
         assert _names(enqueued) == ["daily_queue_fetches"]
         assert enqueued[0][1][1] == "ann"
 
     def test_shared_config_time_is_ignored(self, env):
-        # A run time in the shared config must not start runs for users
-        # who never asked for one.
+        # The run time is personal: a value in the shared config changes
+        # nobody's run.
         db, enqueued = env
         deps.save_config({"feeds": [], "settings": {"daily_run_time": "06:00"}})
         _user(db, "ann")
-        assert run_if_due(datetime(2026, 10, 17, 12, 0)) == []
+        assert run_if_due(datetime(2026, 10, 17, 5, 0)) == ["ann"]
 
     def test_each_user_at_their_own_time(self, env):
         db, enqueued = env
