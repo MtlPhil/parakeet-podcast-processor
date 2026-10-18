@@ -169,6 +169,36 @@ class TestDailyRunSteps:
         assert db.get_state(run_key("finished_id", ann)) == "run-1"
         assert "run-1" not in tasks.active_run_ids
 
+    def test_finish_emails_the_report_only_when_asked(self, env, monkeypatch):
+        from p3 import mailer
+
+        db, _ = env
+        sent = []
+        monkeypatch.setattr(mailer, "send_email", lambda *a: sent.append(a))
+        ann = _user(db, "ann")
+        tasks.daily_finish("run-1", ann)
+        assert sent == []
+
+        db.update_user_settings(ann, {"daily_run_email": True, "email": "a@b.c"})
+        tasks.daily_finish("run-1", ann)
+        assert [call[1] for call in sent] == ["a@b.c"]
+
+    def test_a_mail_failure_is_recorded_and_does_not_raise(self, env, monkeypatch):
+        from p3 import mailer
+
+        db, _ = env
+
+        def boom(*args):
+            raise RuntimeError("smtp down")
+
+        monkeypatch.setattr(mailer, "send_email", boom)
+        ann = _user(db, "ann", daily_run_email=True, email="a@b.c")
+
+        tasks.daily_finish("run-1", ann)
+
+        assert db.get_state(run_key("finished_id", ann)) == "run-1"
+        assert db.get_state(run_key("email_error", ann)) == "smtp down"
+
     def test_content_step_drafts_linkedin_for_completed_pipelines(self, env):
         db, enqueued = env
         ann = _user(db, "ann", daily_run_linkedin=True)

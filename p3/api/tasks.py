@@ -154,11 +154,17 @@ def task_fetch(
         )
         count = downloader.process_feed(podcast["rss_url"], episode_guids)
 
+        message = f"Downloaded {count} new episodes"
+        if downloader.skipped:
+            message += f" ({len(downloader.skipped)} skipped: deleted earlier)"
+        # Problems don't fail the job (the rest of the run goes on), but they
+        # are kept in ``error`` so the dashboard and the daily email show them.
         db.update_job(
             job_id,
             status="completed",
             progress=1.0,
-            message=f"Downloaded {count} new episodes",
+            message=message,
+            error="\n".join(downloader.problems) or None,
         )
     except Exception as e:
         logger.exception("Fetch task failed")
@@ -769,10 +775,35 @@ def daily_queue_content(run_id: str, username: str):
 
 
 def daily_finish(run_id: str, username: str):
-    """Daily run step: mark the run finished."""
-    get_db().set_state(run_key("finished_id", username), run_id)
+    """Daily run step: mark the run finished, then email the user the run's
+    report if they asked for it. A mail problem never affects the run; it is
+    logged and kept in ``app_state`` under ``email_error``."""
+    db = get_db()
+    db.set_state(run_key("finished_id", username), run_id)
     active_run_ids.discard(run_id)
     logger.info("Daily run finished for %s", username)
+
+    settings = user_settings(username)
+    if not settings.get("daily_run_email"):
+        return
+    try:
+        from p3.mailer import build_email, collect_run_report, send_email
+
+        user = db.get_user(username) or {}
+        to = settings.get("email") or user.get("email")
+        if not to:
+            raise RuntimeError("no email address set for this user")
+        language = settings.get("language") or "en"
+        report = collect_run_report(db, run_id, language)
+        subject, text, html = build_email(
+            report, datetime.now().strftime("%Y-%m-%d"), language
+        )
+        send_email(settings, to, subject, text, html)
+        db.set_state(run_key("email_error", username), "")
+        logger.info("Daily report emailed to %s", to)
+    except Exception as e:
+        logger.exception("Could not email the daily report")
+        db.set_state(run_key("email_error", username), str(e))
 
 
 def task_full_pipeline(job_id: str, episode_id: int):

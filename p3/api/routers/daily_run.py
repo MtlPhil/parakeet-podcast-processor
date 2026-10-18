@@ -57,10 +57,13 @@ def get_last_daily_run(username: str = Depends(current_username)):
                 "job_type": j["job_type"],
                 "podcast_title": j["podcast_title"],
                 "episode_title": j["episode_title"],
+                "status": j["status"],
                 "error": j["error"],
             }
             for j in jobs
-            if j["status"] == "failed"
+            # A completed job can still carry problems (e.g. a feed that
+            # could not be read); they are reported without failing the run.
+            if j["status"] == "failed" or j["error"]
         ],
         "export_message": export_message,
     }

@@ -13,6 +13,7 @@ venv/
 # Local configuration and secrets (see config/feeds.yaml.example)
 config/feeds.yaml
 config/gemini_api_key.txt
+config/smtp_password.txt
 
 # Runtime data and generated output
 data/

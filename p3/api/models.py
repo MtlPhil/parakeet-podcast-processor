@@ -159,6 +159,7 @@ class DailyRunFailure(BaseModel):
     job_type: str
     podcast_title: Optional[str] = None
     episode_title: Optional[str] = None
+    status: str = "failed"
     error: Optional[str] = None
 
 
@@ -291,6 +292,8 @@ class UserSettings(BaseModel):
     daily_run_time: Optional[str] = None
     daily_run_linkedin: Optional[bool] = None
     daily_run_export: Optional[bool] = None
+    daily_run_email: Optional[bool] = None
+    email: Optional[str] = None
 
 
 class MeOut(BaseModel):

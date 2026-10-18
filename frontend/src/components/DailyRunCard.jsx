@@ -46,12 +46,13 @@ export default function DailyRunCard({ run }) {
       {run.failures.length > 0 && (
         <details className="mt-2">
           <summary className="text-sm text-red-600 cursor-pointer">
-            {run.failures.length} failed job{run.failures.length === 1 ? '' : 's'}
+            {run.failures.length} problem{run.failures.length === 1 ? '' : 's'}
           </summary>
           <ul className="mt-1 space-y-1 text-sm">
             {run.failures.map((f) => (
               <li key={f.job_id} className="text-gray-600">
                 <span className="font-medium">{f.job_type}</span>
+                {f.status !== 'failed' && ' (completed with problems)'}
                 {' '}{f.podcast_title}{f.episode_title && ` — ${f.episode_title}`}
                 {f.error && <span className="block text-xs text-red-600 break-words">{f.error}</span>}
               </li>

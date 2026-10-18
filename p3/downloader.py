@@ -116,6 +116,12 @@ class PodcastDownloader:
         self.max_episodes = max_episodes
         self.audio_format = audio_format
         self.progress_callback = progress_callback
+        # What went wrong during this fetch, one readable line each. A failure
+        # never stops the rest of the work; callers surface these afterwards.
+        self.problems: List[str] = []
+        # Episodes left alone on purpose (the user deleted them earlier).
+        self.skipped: List[str] = []
+        self.last_download_error = ""
 
     def add_feed(
         self,
@@ -136,7 +142,7 @@ class PodcastDownloader:
             self.db.subscribe(self.username, podcast_id)
         return podcast_id
 
-    def _claim_existing(self, url: str, hand_picked: bool) -> bool:
+    def _claim_existing(self, url: str, hand_picked: bool, label: str = "") -> bool:
         """For an episode already in the database (possibly fetched for
         another user), link it to the fetching user instead of downloading
         it again. Skipped if the user deleted it, unless hand-picked.
@@ -145,6 +151,7 @@ class PodcastDownloader:
         if not self.username or episode_id is None:
             return False
         if not hand_picked and self.db.is_episode_hidden(self.username, episode_id):
+            self.skipped.append(label or url)
             return False
         return self.db.link_episode(self.username, episode_id)
 
@@ -173,6 +180,13 @@ class PodcastDownloader:
         try:
             feed = feedparser.parse(rss_url)
             episodes = []
+
+            if not feed.entries:
+                status = feed.get("status")
+                reason = feed.get("bozo_exception") or (
+                    f"HTTP {status}" if status and status >= 400 else "no episodes"
+                )
+                self.problems.append(f"Could not read the feed {rss_url}: {reason}")
 
             for entry in feed.entries:
                 # Find audio enclosure
@@ -207,6 +221,7 @@ class PodcastDownloader:
 
         except Exception as e:
             logger.error("Error fetching RSS feed %s: %s", rss_url, e)
+            self.problems.append(f"Could not read the feed {rss_url}: {e}")
             return []
 
     def list_preview_episodes(self, url: str, months: int = 12) -> List[Dict]:
@@ -259,6 +274,7 @@ class PodcastDownloader:
 
         except Exception as e:
             logger.error("Error downloading %s: %s", episode_url, e)
+            self.last_download_error = str(e)
             return None
 
         finally:
@@ -369,7 +385,9 @@ class PodcastDownloader:
         for i, ep_data in enumerate(episodes):
             # Already downloaded (maybe for another user): just link it.
             if self.db.episode_exists(ep_data["url"]):
-                if self._claim_existing(ep_data["url"], episode_guids is not None):
+                if self._claim_existing(
+                    ep_data["url"], episode_guids is not None, ep_data["title"]
+                ):
                     downloaded_count += 1
                 continue
 
@@ -387,6 +405,7 @@ class PodcastDownloader:
                 file_path = str(output_path)
             else:
                 logger.info("Downloading: %s", ep_data["title"])
+                self.last_download_error = ""
                 if self.progress_callback:
                     self.progress_callback(i, total, f"Downloading: {ep_data['title']}")
                 file_path = self.download_episode(ep_data["url"], filename)
@@ -408,6 +427,10 @@ class PodcastDownloader:
                     )
             else:
                 logger.warning("Failed to download: %s", ep_data["title"])
+                self.problems.append(
+                    f"Download failed for {ep_data['title']}: "
+                    f"{self.last_download_error or 'audio conversion failed'}"
+                )
                 if self.progress_callback:
                     self.progress_callback(i + 1, total, f"Failed: {ep_data['title']}")
 
@@ -436,6 +459,7 @@ class PodcastDownloader:
                     count = self.process_feed(url)
             except (youtube.YouTubeError, ValueError) as e:
                 logger.error("Feed %s failed: %s", name, e)
+                self.problems.append(f"Feed {name} failed: {e}")
                 count = 0
             results[name] = count
 
@@ -522,7 +546,7 @@ class PodcastDownloader:
         errors: List[str] = []
         for i, (video, label) in enumerate(videos):
             if self.db.episode_exists(video):
-                if self._claim_existing(video, episode_guids is not None):
+                if self._claim_existing(video, episode_guids is not None, label):
                     downloaded += 1
                 continue
             if self.progress_callback:
@@ -532,6 +556,7 @@ class PodcastDownloader:
             except youtube.YouTubeError as e:
                 logger.warning("Failed to download %s: %s", video, e)
                 errors.append(f"{video}: {e}")
+                self.problems.append(f"Download failed for {video}: {e}")
                 if self.progress_callback:
                     self.progress_callback(i + 1, total, f"Failed: {label}")
                 continue

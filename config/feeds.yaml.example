@@ -30,6 +30,14 @@ settings:
   # config/gemini_api_key.txt). OpenAI reads OPENAI_API_KEY.
   gemini_model: "gemini-3.8-flash"
 
+  # Mail server for the daily run's emailed report (each user turns it on and
+  # sets their address in Settings). The password is read from SMTP_PASSWORD
+  # or config/smtp_password.txt. Port 587 uses STARTTLS, 465 implicit TLS.
+  # smtp_host: "smtp.gmail.com"
+  # smtp_port: 587
+  # smtp_user: "you@example.com"
+  # smtp_from: "you@example.com"
+
   # Each user's daily run time, writing tone, language and writing LLM are
   # personal settings, set on the web app's Settings page. The LLM settings
   # above summarize every episode (once, for everyone) and are the default

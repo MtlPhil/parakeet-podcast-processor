@@ -130,6 +130,12 @@ function MySettings() {
       <Checkbox id="daily-run-export" checked={own.daily_run_export || false} onChange={(v) => set('daily_run_export', v)}>
         Daily run: export the day&apos;s digest (Markdown and JSON)
       </Checkbox>
+      <Checkbox id="daily-run-email" checked={own.daily_run_email || false} onChange={(v) => set('daily_run_email', v)}>
+        Daily run: email me the new episodes, their digests by theme, and any errors
+      </Checkbox>
+      <Field label="Email address" htmlFor="user-email" help="Where the daily report is sent. The mail server itself is set by an admin in the config file.">
+        <input id="user-email" type="email" value={own.email ?? ''} onChange={(e) => set('email', e.target.value)} className={inputClass} />
+      </Field>
 
       {error && <p className="text-sm text-red-600">{error}</p>}
       <SaveButton saving={saving} saved={saved} onClick={save} label="Save your settings" />

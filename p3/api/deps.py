@@ -61,6 +61,8 @@ USER_SETTING_DEFAULTS: dict[str, Any] = {
     "daily_run_time": "04:00",  # "HH:MM"; set to "" to turn the daily run off
     "daily_run_linkedin": False,
     "daily_run_export": False,
+    "daily_run_email": False,  # email the run's report (needs smtp_* settings)
+    "email": "",  # where that report goes
 }
 _SHARED_FALLBACK_KEYS = (
     "llm_provider",

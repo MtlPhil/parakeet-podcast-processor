@@ -309,3 +309,63 @@ class TestConfigFeedImport:
         added = [{"name": "C", "url": "http://c"}]
         assert new_config_feeds(db, feeds + added) == added
         db.close()
+
+
+class TestProblemsAreRecorded:
+    """Failures never stop a fetch but must be reported with their reason."""
+
+    def test_unreadable_feed_is_a_problem(self, tmp_path, monkeypatch):
+        import feedparser
+
+        from p3 import downloader
+
+        feed = feedparser.parse("not a feed")
+        monkeypatch.setattr(downloader.feedparser, "parse", lambda url: feed)
+        dl = downloader.PodcastDownloader(db=MagicMock(), data_dir=str(tmp_path))
+
+        assert dl.fetch_episodes("http://example.com/rss") == []
+        assert len(dl.problems) == 1
+        assert "http://example.com/rss" in dl.problems[0]
+
+    def test_failed_download_names_the_episode_and_reason(self, tmp_path, monkeypatch):
+        import feedparser
+
+        from p3 import downloader
+
+        xml = """<?xml version="1.0"?><rss version="2.0"><channel><title>T</title>
+<item><title>A</title><enclosure url="http://x/a.mp3" type="audio/mpeg"/></item>
+</channel></rss>"""
+        feed = feedparser.parse(xml)
+        monkeypatch.setattr(downloader.feedparser, "parse", lambda url: feed)
+
+        def refuse(*args, **kwargs):
+            raise OSError("connection refused")
+
+        monkeypatch.setattr(downloader, "_retry_request", refuse)
+        db = MagicMock()
+        db.get_podcast_by_url.return_value = {"id": 1}
+        db.episode_exists.return_value = False
+        dl = downloader.PodcastDownloader(db=db, data_dir=str(tmp_path))
+
+        assert dl.process_feed("http://example.com/rss") == 0
+        assert dl.problems == ["Download failed for A: connection refused"]
+
+    def test_deleted_episodes_are_skipped_not_problems(self, tmp_path, monkeypatch):
+        import feedparser
+
+        from p3 import downloader
+
+        xml = """<?xml version="1.0"?><rss version="2.0"><channel><title>T</title>
+<item><title>A</title><enclosure url="http://x/a.mp3" type="audio/mpeg"/></item>
+</channel></rss>"""
+        feed = feedparser.parse(xml)
+        monkeypatch.setattr(downloader.feedparser, "parse", lambda url: feed)
+        db = MagicMock()
+        db.get_podcast_by_url.return_value = {"id": 1}
+        db.episode_exists.return_value = True
+        db.is_episode_hidden.return_value = True
+        dl = downloader.PodcastDownloader(db=db, data_dir=str(tmp_path), username="ann")
+
+        assert dl.process_feed("http://example.com/rss") == 0
+        assert dl.skipped == ["A"]
+        assert dl.problems == []
