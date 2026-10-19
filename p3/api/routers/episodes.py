@@ -98,8 +98,7 @@ def delete_episode(episode_id: int, username: str = Depends(current_username)):
     deleted and it is no longer processed."""
     db = get_db()
     user_episode(db, episode_id, username)
-    if db.hide_episode(username, episode_id) == 0:
-        db.remove_audio(episode_id)
+    db.hide_episode(username, episode_id)
     return {"deleted": True}
 
 

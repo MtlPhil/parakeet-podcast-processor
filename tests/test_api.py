@@ -1075,6 +1075,23 @@ class TestMultiUser:
         db.link_episode("bob", eid)
         return pid, eid
 
+    def test_deleted_episodes_list_is_per_user_and_can_be_allowed(self):
+        _, eid = self._shared_podcast()
+
+        assert client.delete(f"/api/episodes/{eid}").status_code == 200
+        [item] = client.get("/api/me/deleted-episodes").json()
+        assert item["title"] == "Ep" and item["podcast_title"] == "Pod"
+        assert client.get("/api/me/deleted-episodes", headers=BOB).json() == []
+
+        body = {"url": "http://example.com/1"}
+        assert (
+            client.post("/api/me/deleted-episodes/allow", json=body, headers=BOB)
+        ).status_code == 404
+        assert (
+            client.post("/api/me/deleted-episodes/allow", json=body).status_code == 200
+        )
+        assert client.get("/api/me/deleted-episodes").json() == []
+
     def test_requests_need_a_user(self, monkeypatch):
         monkeypatch.delenv("P3_DEV_USER")
         assert client.get("/api/podcasts").status_code == 401

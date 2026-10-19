@@ -309,6 +309,17 @@ class MeOut(BaseModel):
     )
 
 
+class DeletedEpisodeOut(BaseModel):
+    url: str
+    title: Optional[str] = None
+    podcast_title: Optional[str] = None
+    deleted_at: Optional[Any] = None
+
+
+class DeletedEpisodeAllow(BaseModel):
+    url: str
+
+
 class UserOut(BaseModel):
     username: str
     display_name: Optional[str] = None

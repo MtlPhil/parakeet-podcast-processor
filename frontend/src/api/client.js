@@ -26,6 +26,10 @@ export const getMe = () => request('/me');
 export const updateMySettings = (settings) =>
   request('/me/settings', { method: 'PUT', body: JSON.stringify(settings) });
 
+export const getDeletedEpisodes = () => request('/me/deleted-episodes');
+export const allowDeletedEpisode = (url) =>
+  request('/me/deleted-episodes/allow', { method: 'POST', body: JSON.stringify({ url }) });
+
 // Admin
 export const getUsers = () => request('/admin/users');
 export const setUserRole = (username, role) =>

@@ -69,9 +69,26 @@ class TestLibraries:
 
         assert db.hide_episode("ann", e1) == 1  # bob still has it
         assert not db.user_has_episode("ann", e1)
-        assert db.is_episode_hidden("ann", e1)
+        url = db.get_episode_by_id(e1)["url"]
+        assert db.is_url_deleted("ann", url)
         assert db.link_episode("ann", e1) is True
-        assert not db.is_episode_hidden("ann", e1)
+        assert not db.is_url_deleted("ann", url)
+
+    def test_deleting_the_last_copy_erases_the_episode_but_remembers_it(self, db):
+        db.ensure_user("ann")
+        pid, (e1, _) = _podcast_with_episodes(db)
+        db.subscribe("ann", pid)
+        db.link_episode("ann", e1)
+        db.add_transcript_segments(
+            e1, [{"start": 0, "end": 1, "text": "hi", "speaker": "", "confidence": 1}]
+        )
+        url = db.get_episode_by_id(e1)["url"]
+
+        assert db.hide_episode("ann", e1) == 0
+
+        assert db.get_episode_by_id(e1) is None
+        assert db.get_transcripts_for_episode(e1) == []
+        assert db.is_url_deleted("ann", url)
 
     def test_unsubscribe_counts_remaining_subscribers(self, db):
         pid, (e1, _) = _podcast_with_episodes(db)
@@ -164,9 +181,10 @@ class TestDownloaderLinking:
         db.hide_episode("ann", eid)
 
         assert ann.process_feed("http://x/rss") == 0
-        assert not db.user_has_episode("ann", eid)
+        assert db.get_episode_id_by_url(url) is None  # erased, not just hidden
         assert ann.process_feed("http://x/rss", episode_guids=[url]) == 1
-        assert db.user_has_episode("ann", eid)
+        assert db.user_has_episode("ann", db.get_episode_id_by_url(url))
+        assert not db.is_url_deleted("ann", url)
 
     def test_add_feed_subscribes_the_user(self, db, tmp_path):
         db.ensure_user("ann")
@@ -175,3 +193,23 @@ class TestDownloaderLinking:
         pid = downloader.add_feed("Pod", "http://x/rss")
         assert db.is_subscribed("bob", pid)
         assert not db.is_subscribed("ann", pid)
+
+
+class TestDeletedEpisodesList:
+    def test_list_records_title_and_can_be_allowed_again(self, db):
+        db.ensure_user("ann")
+        pid, (e1, _) = _podcast_with_episodes(db)
+        db.subscribe("ann", pid)
+        db.link_episode("ann", e1)
+        url = db.get_episode_by_id(e1)["url"]
+
+        db.hide_episode("ann", e1)
+        [item] = db.get_deleted_episodes("ann")
+        assert item["url"] == url
+        assert item["title"] == "Ep 0" and item["podcast_title"] == "Pod"
+        assert item["deleted_at"] is not None
+        assert db.get_deleted_episodes("bob") == []
+
+        assert db.allow_deleted_episode("ann", url) is True
+        assert db.allow_deleted_episode("ann", url) is False
+        assert not db.is_url_deleted("ann", url)

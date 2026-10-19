@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { getSettings, updateMySettings, updateSettings } from '../api/client';
+import { allowDeletedEpisode, getDeletedEpisodes, getSettings, updateMySettings, updateSettings } from '../api/client';
 import { useMe } from '../hooks/useMe';
 
 const inputClass =
@@ -239,12 +239,65 @@ function SharedSettings() {
   );
 }
 
+// Episodes the user deleted. Fetches skip them; "Allow again" lets a later
+// fetch bring one back (it is downloaded and processed anew).
+function DeletedEpisodes() {
+  const [episodes, setEpisodes] = useState(null);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    getDeletedEpisodes().then(setEpisodes).catch((e) => setError(e.message));
+  }, []);
+
+  const allow = async (url) => {
+    setError(null);
+    try {
+      await allowDeletedEpisode(url);
+      setEpisodes((prev) => prev.filter((e) => e.url !== url));
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  return (
+    <details className="text-sm">
+      <summary className="cursor-pointer text-gray-700 font-medium">
+        Deleted episodes{episodes ? ` (${episodes.length})` : ''}
+      </summary>
+      <p className="text-xs text-gray-500 mt-2">
+        Episodes you deleted are not fetched again. Allowing one lets a later fetch bring it
+        back; it is downloaded and processed from scratch.
+      </p>
+      {error && <p className="text-sm text-red-600 mt-2">{error}</p>}
+      {episodes && episodes.length === 0 && <p className="text-gray-500 mt-2">None.</p>}
+      <ul className="mt-2 space-y-2">
+        {(episodes || []).map((e) => (
+          <li key={e.url} className="flex items-start justify-between gap-3">
+            <span className="text-gray-700 break-words min-w-0">
+              {e.title || e.url}
+              <span className="block text-xs text-gray-500">
+                {[e.podcast_title, e.deleted_at && new Date(e.deleted_at).toLocaleDateString()]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </span>
+            </span>
+            <button onClick={() => allow(e.url)} className="shrink-0 text-xs text-blue-600 hover:underline">
+              Allow again
+            </button>
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
 export default function Settings() {
   const { me } = useMe();
   return (
     <div className="max-w-lg space-y-10">
       <h1 className="text-2xl font-bold text-gray-900">Settings</h1>
       <MySettings />
+      <DeletedEpisodes />
       {me.role === 'admin' && <SharedSettings />}
     </div>
   );

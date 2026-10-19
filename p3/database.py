@@ -203,12 +203,34 @@ class P3Database:
             )
         """)
         self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS user_hidden_episodes (
+            CREATE TABLE IF NOT EXISTS user_deleted_episodes (
                 username VARCHAR NOT NULL,
-                episode_id INTEGER NOT NULL,
-                PRIMARY KEY (username, episode_id)
+                url VARCHAR NOT NULL,
+                PRIMARY KEY (username, url)
             )
         """)
+        for column, kind in (
+            ("title", "VARCHAR"),
+            ("podcast_title", "VARCHAR"),
+            ("deleted_at", "TIMESTAMP"),
+        ):
+            self.conn.execute(
+                f"ALTER TABLE user_deleted_episodes ADD COLUMN IF NOT EXISTS "
+                f"{column} {kind}"
+            )
+        # Migration: deletions used to be remembered by episode id, which kept
+        # the whole episode in the database. They are now remembered by URL.
+        has_old = self.conn.execute(
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_name = 'user_hidden_episodes'"
+        ).fetchone()
+        if has_old:
+            self.conn.execute("""
+                INSERT OR IGNORE INTO user_deleted_episodes (username, url, title)
+                SELECT h.username, e.url, e.title FROM user_hidden_episodes h
+                JOIN episodes e ON e.id = h.episode_id
+            """)
+            self.conn.execute("DROP TABLE user_hidden_episodes")
 
         # Small key-value store for app state that must survive restarts
         # (e.g. the date of the last scheduled daily run).
@@ -679,12 +701,16 @@ class P3Database:
         """,
             (podcast_id, podcast_id),
         )
-        for table in ("user_episodes", "user_hidden_episodes"):
-            self.conn.execute(
-                f"DELETE FROM {table} WHERE episode_id IN "
-                "(SELECT id FROM episodes WHERE podcast_id = ?)",
-                (podcast_id,),
-            )
+        self.conn.execute(
+            "DELETE FROM user_deleted_episodes WHERE url IN "
+            "(SELECT url FROM episodes WHERE podcast_id = ?)",
+            (podcast_id,),
+        )
+        self.conn.execute(
+            "DELETE FROM user_episodes WHERE episode_id IN "
+            "(SELECT id FROM episodes WHERE podcast_id = ?)",
+            (podcast_id,),
+        )
         self.conn.execute(
             "DELETE FROM user_podcasts WHERE podcast_id = ?", (podcast_id,)
         )
@@ -1110,7 +1136,8 @@ class P3Database:
         """Add an episode to a user's library, undoing an earlier delete.
         Returns True if it was not there already."""
         self.conn.execute(
-            "DELETE FROM user_hidden_episodes WHERE username = ? AND episode_id = ?",
+            "DELETE FROM user_deleted_episodes WHERE username = ? AND url IN "
+            "(SELECT url FROM episodes WHERE id = ?)",
             (username, episode_id),
         )
         if self.user_has_episode(username, episode_id):
@@ -1123,20 +1150,40 @@ class P3Database:
 
     def hide_episode(self, username: str, episode_id: int) -> int:
         """Delete an episode from a user's library, for good: their fetches
-        skip it from now on, unless they hand-pick it. Returns how many users
-        still have it."""
+        skip it from now on (the URL is remembered), unless they hand-pick it.
+        Once nobody has the episode it is erased with its transcript, summary,
+        jobs and audio. Returns how many users still have it."""
+        row = self.conn.execute(
+            "SELECT e.url, e.title, p.title FROM episodes e "
+            "LEFT JOIN podcasts p ON p.id = e.podcast_id WHERE e.id = ?",
+            (episode_id,),
+        ).fetchone()
         self.conn.execute(
             "DELETE FROM user_episodes WHERE username = ? AND episode_id = ?",
             (username, episode_id),
         )
-        self.conn.execute(
-            "INSERT OR IGNORE INTO user_hidden_episodes (username, episode_id) "
-            "VALUES (?, ?)",
-            (username, episode_id),
-        )
-        return self.conn.execute(
+        if row:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO user_deleted_episodes "
+                "(username, url, title, podcast_title, deleted_at) "
+                "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                (username, *row),
+            )
+        remaining = self.conn.execute(
             "SELECT COUNT(*) FROM user_episodes WHERE episode_id = ?", (episode_id,)
         ).fetchone()[0]
+        if remaining == 0 and row:
+            self.purge_episode(episode_id)
+        return remaining
+
+    def purge_episode(self, episode_id: int):
+        """Erase an episode nobody has, with everything that hangs off it."""
+        self.remove_audio(episode_id)
+        for table in ("transcripts", "summaries", "jobs"):
+            self.conn.execute(
+                f"DELETE FROM {table} WHERE episode_id = ?", (episode_id,)
+            )
+        self.conn.execute("DELETE FROM episodes WHERE id = ?", (episode_id,))
 
     def user_has_episode(self, username: str, episode_id: int) -> bool:
         return (
@@ -1147,12 +1194,33 @@ class P3Database:
             is not None
         )
 
-    def is_episode_hidden(self, username: str, episode_id: int) -> bool:
+    def get_deleted_episodes(self, username: str) -> List[Dict[str, Any]]:
+        """The episodes a user deleted, newest deletion first (those from
+        before dates were kept last)."""
+        cursor = self.conn.execute(
+            "SELECT url, title, podcast_title, deleted_at FROM user_deleted_episodes "
+            "WHERE username = ? ORDER BY deleted_at DESC NULLS LAST, title",
+            (username,),
+        )
+        return self._fetchall_as_dicts(cursor)
+
+    def allow_deleted_episode(self, username: str, url: str) -> bool:
+        """Forget that the user deleted this episode, so fetches may bring it
+        back. Returns False if it was not on their list."""
+        if not self.is_url_deleted(username, url):
+            return False
+        self.conn.execute(
+            "DELETE FROM user_deleted_episodes WHERE username = ? AND url = ?",
+            (username, url),
+        )
+        return True
+
+    def is_url_deleted(self, username: str, url: str) -> bool:
+        """True if the user deleted the episode with this URL from their library."""
         return (
             self.conn.execute(
-                "SELECT 1 FROM user_hidden_episodes "
-                "WHERE username = ? AND episode_id = ?",
-                (username, episode_id),
+                "SELECT 1 FROM user_deleted_episodes WHERE username = ? AND url = ?",
+                (username, url),
             ).fetchone()
             is not None
         )

@@ -363,7 +363,7 @@ class TestProblemsAreRecorded:
         db = MagicMock()
         db.get_podcast_by_url.return_value = {"id": 1}
         db.episode_exists.return_value = True
-        db.is_episode_hidden.return_value = True
+        db.is_url_deleted.return_value = True
         dl = downloader.PodcastDownloader(db=db, data_dir=str(tmp_path), username="ann")
 
         assert dl.process_feed("http://example.com/rss") == 0

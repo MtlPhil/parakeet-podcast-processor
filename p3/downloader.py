@@ -150,10 +150,20 @@ class PodcastDownloader:
         episode_id = self.db.get_episode_id_by_url(url)
         if not self.username or episode_id is None:
             return False
-        if not hand_picked and self.db.is_episode_hidden(self.username, episode_id):
+        if not hand_picked and self.db.is_url_deleted(self.username, url):
             self.skipped.append(label or url)
             return False
         return self.db.link_episode(self.username, episode_id)
+
+    def _was_deleted(self, url: str, label: str, hand_picked: bool) -> bool:
+        """True (and noted) for an episode the user deleted earlier, which a
+        regular fetch must not bring back. Hand-picking one overrides this."""
+        if hand_picked or not self.username:
+            return False
+        if not self.db.is_url_deleted(self.username, url):
+            return False
+        self.skipped.append(label or url)
+        return True
 
     def _link_new(self, episode_id: int):
         if self.username:
@@ -383,6 +393,10 @@ class PodcastDownloader:
         downloaded_count = 0
 
         for i, ep_data in enumerate(episodes):
+            if self._was_deleted(
+                ep_data["url"], ep_data["title"], episode_guids is not None
+            ):
+                continue
             # Already downloaded (maybe for another user): just link it.
             if self.db.episode_exists(ep_data["url"]):
                 if self._claim_existing(
@@ -545,6 +559,8 @@ class PodcastDownloader:
         downloaded = 0
         errors: List[str] = []
         for i, (video, label) in enumerate(videos):
+            if self._was_deleted(video, label, episode_guids is not None):
+                continue
             if self.db.episode_exists(video):
                 if self._claim_existing(video, episode_guids is not None, label):
                     downloaded += 1

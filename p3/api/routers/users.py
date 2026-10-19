@@ -4,7 +4,14 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from p3.api.auth import current_user, require_admin
 from p3.api.deps import get_db, user_settings
-from p3.api.models import MeOut, RoleUpdate, UserOut, UserSettings
+from p3.api.models import (
+    DeletedEpisodeAllow,
+    DeletedEpisodeOut,
+    MeOut,
+    RoleUpdate,
+    UserOut,
+    UserSettings,
+)
 from p3.api.scheduler import parse_run_time
 
 router = APIRouter(prefix="/api", tags=["users"])
@@ -39,6 +46,23 @@ def update_my_settings(body: UserSettings, user: dict = Depends(current_user)):
     updated = db.get_user(user["username"])
     assert updated is not None
     return _me(updated)
+
+
+@router.get("/me/deleted-episodes", response_model=list[DeletedEpisodeOut])
+def list_deleted_episodes(user: dict = Depends(current_user)):
+    """Episodes the user deleted; fetches skip them."""
+    return get_db().get_deleted_episodes(user["username"])
+
+
+@router.post("/me/deleted-episodes/allow", response_model=dict)
+def allow_deleted_episode(
+    body: DeletedEpisodeAllow, user: dict = Depends(current_user)
+):
+    """Take an episode off the deleted list, so a later fetch can bring it
+    back (it is downloaded and processed again, not restored)."""
+    if not get_db().allow_deleted_episode(user["username"], body.url):
+        raise HTTPException(404, "Episode is not on your deleted list")
+    return {"allowed": True}
 
 
 @router.get("/admin/users", response_model=list[UserOut])
