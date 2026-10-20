@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { getPodcasts, deletePodcast } from '../api/client';
 import SourceBadge from '../components/SourceBadge';
+import { TagChips } from '../components/Tags';
 
 export default function PodcastList() {
   const [podcasts, setPodcasts] = useState([]);
@@ -47,9 +48,9 @@ export default function PodcastList() {
               <Link to={`/podcasts/${p.id}`} className="flex-1 min-w-0">
                 <h3 className="font-medium text-gray-900 truncate">{p.title}</h3>
                 <p className="text-sm text-gray-500 truncate">{p.rss_url}</p>
-                <div className="flex gap-3 mt-1 text-xs text-gray-400">
+                <div className="flex flex-wrap gap-3 mt-1 text-xs text-gray-400">
                   <SourceBadge type={p.source_type} />
-                  {p.category && <span className="bg-gray-100 px-2 py-0.5 rounded">{p.category}</span>}
+                  <TagChips value={p.category} className="bg-gray-100 px-2 py-0.5 rounded" />
                   <span>{p.episode_count ?? 0} episodes</span>
                 </div>
               </Link>

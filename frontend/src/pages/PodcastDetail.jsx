@@ -18,6 +18,7 @@ import { useJobPoller } from '../hooks/useJobPoller';
 import StatusBadge from '../components/StatusBadge';
 import JobProgress from '../components/JobProgress';
 import EpisodePicker from '../components/EpisodePicker';
+import { TagChips, TagInput } from '../components/Tags';
 
 export default function PodcastDetail() {
   const { id } = useParams();
@@ -200,11 +201,10 @@ export default function PodcastDetail() {
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">Category</label>
-              <input
+              <label className="block text-xs font-medium text-gray-600 mb-1">Tags</label>
+              <TagInput
                 value={form.category}
-                onChange={(e) => setForm({ ...form, category: e.target.value })}
-                className="w-full border rounded-lg px-3 py-2 text-sm"
+                onChange={(category) => setForm({ ...form, category })}
               />
             </div>
             {error && <p className="text-sm text-red-600">{error}</p>}
@@ -229,13 +229,12 @@ export default function PodcastDetail() {
           <>
             <h1 className="text-2xl font-bold text-gray-900 mt-2">{podcast.title}</h1>
             <ExternalLink href={podcast.rss_url} className="text-sm text-gray-500 break-all" />
-            <div className="flex gap-2 mt-1">
+            <div className="flex flex-wrap gap-2 mt-1">
               <SourceBadge type={podcast.source_type} />
-              {podcast.category && (
-                <span className="inline-block text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded">
-                  {podcast.category}
-                </span>
-              )}
+              <TagChips
+                value={podcast.category}
+                className="inline-block text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded"
+              />
             </div>
           </>
         )}

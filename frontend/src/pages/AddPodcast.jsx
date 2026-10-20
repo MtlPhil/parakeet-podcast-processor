@@ -4,6 +4,7 @@ import { addPodcast, bulkAddPodcasts, previewSource } from '../api/client';
 import { useJobPoller } from '../hooks/useJobPoller';
 import JobProgress from '../components/JobProgress';
 import EpisodePicker from '../components/EpisodePicker';
+import { TagInput } from '../components/Tags';
 
 const DEFAULT_SELECTED = 5;
 
@@ -160,13 +161,11 @@ export default function AddPodcast() {
             </label>
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Category (optional)</label>
-            <input
-              type="text"
+            <label className="block text-sm font-medium text-gray-700 mb-1">Tags (optional)</label>
+            <TagInput
               value={category}
-              onChange={(e) => setCategory(e.target.value)}
+              onChange={setCategory}
               placeholder="Applied to every podcast added"
-              className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
 
@@ -213,13 +212,11 @@ export default function AddPodcast() {
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Category (optional)</label>
-            <input
-              type="text"
+            <label className="block text-sm font-medium text-gray-700 mb-1">Tags (optional)</label>
+            <TagInput
               value={category}
-              onChange={(e) => setCategory(e.target.value)}
+              onChange={setCategory}
               placeholder="e.g. tech, business, ai"
-              className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
 
