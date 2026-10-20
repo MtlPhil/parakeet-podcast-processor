@@ -374,6 +374,12 @@ class TestEpisodes:
         assert resp.status_code == 200
         assert resp.json()["title"] == "Ep 1"
 
+    def test_get_episode_includes_language(self):
+        _, eid = self._seed_episode()
+        assert client.get(f"/api/episodes/{eid}").json()["language"] is None
+        deps.get_db().set_episode_language(eid, "fr")
+        assert client.get(f"/api/episodes/{eid}").json()["language"] == "fr"
+
     def test_get_episode_not_found(self):
         resp = client.get("/api/episodes/999")
         assert resp.status_code == 404

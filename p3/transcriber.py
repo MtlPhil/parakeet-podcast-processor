@@ -1,4 +1,10 @@
-"""Audio transcription using Parakeet MLX (Apple Silicon) or Whisper."""
+"""Audio transcription using Parakeet MLX or Whisper MLX (Apple Silicon).
+
+Each episode's language is detected first. Parakeet transcribes the languages
+it handles reliably (English by default); everything else goes to Whisper,
+which is told the language. Parakeet has no language input: on spontaneous
+non-English speech it drifts into English that reads like a translation.
+"""
 
 import json
 import logging
@@ -6,9 +12,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Optional
-
-import whisper
+from typing import Any, Dict, Iterable, Optional
 
 from .database import P3Database
 
@@ -21,33 +25,81 @@ try:
 except ImportError:
     PARAKEET_AVAILABLE = False
 
+try:
+    import mlx.core as mx
+    import mlx_whisper
+    from mlx_whisper.audio import (
+        N_FRAMES,
+        SAMPLE_RATE,
+        load_audio,
+        log_mel_spectrogram,
+        pad_or_trim,
+    )
+    from mlx_whisper.transcribe import ModelHolder
+
+    WHISPER_AVAILABLE = True
+except ImportError:
+    WHISPER_AVAILABLE = False
+
 DEFAULT_PARAKEET_MODEL = "mlx-community/parakeet-tdt-0.6b-v2"
+
+# Languages Parakeet transcribes (setting: parakeet_languages); every other
+# language goes to Whisper.
+DEFAULT_PARAKEET_LANGUAGES = ("en",)
+
+# Short names for Whisper's MLX conversions on Hugging Face. Any other value
+# of the whisper_model setting is used as a Hugging Face repo as-is.
+WHISPER_MODELS = {
+    "tiny": "mlx-community/whisper-tiny",
+    "base": "mlx-community/whisper-base-mlx",
+    "small": "mlx-community/whisper-small-mlx",
+    "medium": "mlx-community/whisper-medium-mlx",
+    "large": "mlx-community/whisper-large-v3-mlx",
+    "turbo": "mlx-community/whisper-large-v3-turbo",
+}
+DEFAULT_WHISPER_MODEL = "turbo"
 
 # Long episodes are transcribed in fixed-length chunks to bound memory use.
 _CHUNK_SECONDS = 600
+
+# Language detection listens to this many seconds of audio, starting a minute
+# in so that intro music doesn't decide the result.
+_LANGUAGE_PROBE_SECONDS = 30
+_LANGUAGE_PROBE_START = 60
 
 
 class AudioTranscriber:
     def __init__(
         self,
         db: P3Database,
-        whisper_model: str = "base",
+        whisper_model: str = DEFAULT_WHISPER_MODEL,
         use_parakeet: bool = False,
         parakeet_model: str = DEFAULT_PARAKEET_MODEL,
+        parakeet_languages: Optional[Iterable[str]] = None,
     ):
         self.db = db
-        self.whisper_model = whisper_model
+        self.whisper_model = WHISPER_MODELS.get(whisper_model, whisper_model)
         self.use_parakeet = use_parakeet
         self.parakeet_model = parakeet_model
-        # Loaded lazily; both libraries are untyped.
-        self._whisper: Any = None
+        self.parakeet_languages = set(
+            DEFAULT_PARAKEET_LANGUAGES
+            if parakeet_languages is None
+            else parakeet_languages
+        )
+        # Loaded lazily; the library is untyped.
         self._parakeet: Any = None
 
-    def _load_whisper(self):
-        """Lazy load Whisper model."""
-        if self._whisper is None:
-            logger.info("Loading Whisper model: %s", self.whisper_model)
-            self._whisper = whisper.load_model(self.whisper_model)
+    def _load_whisper(self) -> Any:
+        """The Whisper model, loaded through mlx_whisper's own cache in the
+        float16 that mlx_whisper.transcribe uses by default, so language
+        detection and transcription share one copy."""
+        logger.info("Loading Whisper model: %s", self.whisper_model)
+        return ModelHolder.get_model(self.whisper_model, mx.float16)
+
+    def _release_whisper(self):
+        if WHISPER_AVAILABLE:
+            ModelHolder.model = None
+            ModelHolder.model_path = None
 
     def _load_parakeet(self):
         """Lazy load Parakeet MLX model."""
@@ -55,23 +107,57 @@ class AudioTranscriber:
             logger.info("Loading Parakeet model: %s", self.parakeet_model)
             self._parakeet = parakeet_from_pretrained(self.parakeet_model)
 
+    def detect_language(self, audio_path: str) -> Optional[str]:
+        """Detect the spoken language with Whisper's language identification.
+
+        Returns an ISO 639-1 code such as "en" or "fr", or None if detection
+        fails or Whisper isn't installed.
+        """
+        if not WHISPER_AVAILABLE:
+            return None
+        try:
+            model = self._load_whisper()
+            audio = load_audio(audio_path)
+            start = _LANGUAGE_PROBE_START * SAMPLE_RATE
+            if len(audio) > start + _LANGUAGE_PROBE_SECONDS * SAMPLE_RATE:
+                audio = audio[start:]
+            audio = pad_or_trim(audio, _LANGUAGE_PROBE_SECONDS * SAMPLE_RATE)
+            mel = log_mel_spectrogram(audio, n_mels=model.dims.n_mels)
+            mel = pad_or_trim(mel, N_FRAMES, axis=-2).astype(mx.float16)
+            _, probs = model.detect_language(mel)
+            return max(probs, key=probs.get)
+        except Exception as e:
+            logger.warning("Language detection failed: %s", e)
+            return None
+
     def unload_models(self):
         """Release loaded models to free memory."""
-        self._whisper = None
+        self._release_whisper()
         self._parakeet = None
-        if PARAKEET_AVAILABLE:
-            import mlx.core as mx
-
+        if WHISPER_AVAILABLE:
             mx.clear_cache()
+        elif PARAKEET_AVAILABLE:
+            import mlx.core
+
+            mlx.core.clear_cache()
         logger.info("Unloaded transcription models")
 
-    def transcribe_with_whisper(self, audio_path: str) -> Optional[Dict[str, Any]]:
-        """Transcribe audio using OpenAI Whisper."""
-        self._load_whisper()
+    def transcribe_with_whisper(
+        self, audio_path: str, language: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Transcribe audio using Whisper (MLX), in ``language`` if given;
+        otherwise Whisper detects it from the first 30 seconds."""
+        if not WHISPER_AVAILABLE:
+            logger.error("Whisper is unavailable: mlx-whisper is not installed")
+            return None
 
         try:
-            result = self._whisper.transcribe(
-                audio_path, word_timestamps=True, verbose=False
+            result = mlx_whisper.transcribe(
+                audio_path,
+                path_or_hf_repo=self.whisper_model,
+                language=language,
+                word_timestamps=True,
+                verbose=None,
             )
 
             segments = []
@@ -101,11 +187,15 @@ class AudioTranscriber:
             logger.error("Whisper transcription failed: %s", e)
             return None
 
-    def transcribe_with_parakeet(self, audio_path: str) -> Optional[Dict[str, Any]]:
-        """Transcribe audio using Nvidia Parakeet MLX."""
+    def transcribe_with_parakeet(
+        self, audio_path: str, language: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Transcribe audio using Nvidia Parakeet MLX. ``language`` is the
+        language detected beforehand; Parakeet can't be told it, it is only
+        reported back (and passed to Whisper if Parakeet fails)."""
         if not PARAKEET_AVAILABLE:
             logger.warning("Parakeet MLX not available, falling back to Whisper")
-            return self.transcribe_with_whisper(audio_path)
+            return self.transcribe_with_whisper(audio_path, language)
 
         self._load_parakeet()
 
@@ -133,7 +223,7 @@ class AudioTranscriber:
                 )
             except subprocess.CalledProcessError as e:
                 logger.error("Audio splitting failed: %s", e)
-                return self.transcribe_with_whisper(audio_path)
+                return self.transcribe_with_whisper(audio_path, language)
 
             chunks = sorted(Path(temp_dir).glob("*.wav"))
             logger.info("Split audio into %d chunk(s)", len(chunks))
@@ -164,7 +254,7 @@ class AudioTranscriber:
 
             return {
                 "segments": segments,
-                "language": "en",  # parakeet-mlx does not report the detected language
+                "language": language,
                 "text": " ".join(text_parts),
                 "provider": "parakeet-mlx",
             }
@@ -173,7 +263,7 @@ class AudioTranscriber:
             logger.error(
                 "Parakeet transcription failed, falling back to Whisper: %s", e
             )
-            return self.transcribe_with_whisper(audio_path)
+            return self.transcribe_with_whisper(audio_path, language)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -199,17 +289,23 @@ class AudioTranscriber:
 
         logger.info("Transcribing: %s", episode["title"])
 
-        # Choose transcription method
-        if self.use_parakeet:
-            result = self.transcribe_with_parakeet(episode["file_path"])
+        # Pick the engine by language: Parakeet only for the languages it
+        # handles; Whisper for the rest, told the language. If detection
+        # failed, Whisper detects it itself rather than risk Parakeet.
+        language = self.detect_language(episode["file_path"])
+        logger.info("Detected language: %s", language)
+        if self.use_parakeet and language in self.parakeet_languages:
+            self._release_whisper()  # only one model in memory at a time
+            result = self.transcribe_with_parakeet(episode["file_path"], language)
         else:
-            result = self.transcribe_with_whisper(episode["file_path"])
+            result = self.transcribe_with_whisper(episode["file_path"], language)
 
         if not result:
             return False
 
         # Store transcript segments in database
         self.db.add_transcript_segments(episode_id, result["segments"])
+        self.db.set_episode_language(episode_id, result.get("language"))
 
         # Update episode status
         self.db.update_episode_status(episode_id, "transcribed")

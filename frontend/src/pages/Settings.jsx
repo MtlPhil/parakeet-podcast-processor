@@ -203,17 +203,18 @@ function SharedSettings() {
       <Field label="Ollama URL" htmlFor="ollama-url">
         <input id="ollama-url" type="text" value={s.ollama_base_url || ''} onChange={(e) => set('ollama_base_url', e.target.value)} placeholder="http://localhost:11434" className={inputClass} />
       </Field>
-      <Field label="Whisper model" htmlFor="whisper">
-        <select id="whisper" value={s.whisper_model || 'base'} onChange={(e) => set('whisper_model', e.target.value)} className={inputClass}>
-          <option value="tiny">Tiny (fastest)</option>
-          <option value="base">Base</option>
-          <option value="small">Small</option>
+      <Field label="Whisper model (non-English episodes)" htmlFor="whisper">
+        <select id="whisper" value={s.whisper_model || 'turbo'} onChange={(e) => set('whisper_model', e.target.value)} className={inputClass}>
+          <option value="turbo">Large v3 Turbo (recommended)</option>
+          <option value="large">Large v3 (slower)</option>
           <option value="medium">Medium</option>
-          <option value="large">Large (most accurate)</option>
+          <option value="small">Small</option>
+          <option value="base">Base</option>
+          <option value="tiny">Tiny (fastest, least accurate)</option>
         </select>
       </Field>
       <Checkbox id="parakeet" checked={s.parakeet_enabled || false} onChange={(v) => set('parakeet_enabled', v)}>
-        Use Parakeet MLX for transcription (Apple Silicon)
+        Use Parakeet MLX for English episodes (faster; other languages always use Whisper)
       </Checkbox>
       <Field label="Default max episodes per feed" htmlFor="shared-max">
         <input

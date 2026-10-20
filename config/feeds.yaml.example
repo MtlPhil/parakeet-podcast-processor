@@ -17,10 +17,12 @@ settings:
   max_episodes_per_feed: 3     # also caps each YouTube channel fetch
   audio_format: wav            # wav or mp3
 
-  # Transcription: Parakeet MLX on Apple Silicon, Whisper otherwise
+  # Transcription (Apple Silicon): the language is detected per episode;
+  # Parakeet handles parakeet_languages, Whisper (MLX) everything else
   parakeet_enabled: true
   parakeet_model: "mlx-community/parakeet-tdt-0.6b-v2"
-  whisper_model: base          # tiny, base, small, medium, large
+  parakeet_languages: [en]
+  whisper_model: turbo         # turbo, large, medium, small, base, tiny
 
   # LLM used for cleaning, summaries and writing: ollama, openai or gemini
   llm_provider: ollama

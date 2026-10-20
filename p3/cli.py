@@ -23,7 +23,11 @@ from .downloader import (
 )
 from .exporter import DigestExporter
 from .llm import DEFAULT_OLLAMA_URL, SUPPORTED_PROVIDERS, resolve_provider_and_model
-from .transcriber import DEFAULT_PARAKEET_MODEL, AudioTranscriber
+from .transcriber import (
+    DEFAULT_PARAKEET_MODEL,
+    DEFAULT_WHISPER_MODEL,
+    AudioTranscriber,
+)
 from .writer import BlogWriter
 from .youtube import YouTubeError
 
@@ -211,7 +215,7 @@ def transcribe(ctx, model, episode_id):
     db = ctx.obj["db"]
 
     settings = config.get("settings", {})
-    whisper_model = model or settings.get("whisper_model", "base")
+    whisper_model = model or settings.get("whisper_model", DEFAULT_WHISPER_MODEL)
     use_parakeet = settings.get("parakeet_enabled", False)
 
     transcriber = AudioTranscriber(
@@ -219,6 +223,7 @@ def transcribe(ctx, model, episode_id):
         whisper_model=whisper_model,
         use_parakeet=use_parakeet,
         parakeet_model=settings.get("parakeet_model", DEFAULT_PARAKEET_MODEL),
+        parakeet_languages=settings.get("parakeet_languages"),
     )
 
     if episode_id:

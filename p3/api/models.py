@@ -89,6 +89,7 @@ class EpisodeOut(BaseModel):
     file_path: Optional[str] = None
     duration_seconds: Optional[int] = None
     status: str
+    language: Optional[str] = None
     created_at: Optional[Any] = None
     podcast_title: Optional[str] = None
 

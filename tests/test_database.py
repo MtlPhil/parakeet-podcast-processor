@@ -615,3 +615,46 @@ class TestRemoveAudio:
         assert pending_audio.exists()
         assert db.get_episode_by_id(pending)["file_path"] == str(pending_audio)
         db.close()
+
+
+class TestEpisodeLanguage:
+    def test_language_is_unset_until_detected(self, db):
+        pid = db.add_podcast("Pod", "http://example.com/rss")
+        eid = db.add_episode(pid, "Ep", datetime.now(), "http://example.com/ep.mp3")
+        assert db.get_episode_by_id(eid)["language"] is None
+
+    def test_set_episode_language(self, db):
+        pid = db.add_podcast("Pod", "http://example.com/rss")
+        eid = db.add_episode(pid, "Ep", datetime.now(), "http://example.com/ep.mp3")
+        db.set_episode_language(eid, "fr")
+        assert db.get_episode_by_id(eid)["language"] == "fr"
+        db.set_episode_language(eid, None)
+        assert db.get_episode_by_id(eid)["language"] is None
+
+    def test_column_is_added_to_an_existing_database(self, tmp_path):
+        import duckdb
+
+        path = str(tmp_path / "old.duckdb")
+        old = duckdb.connect(path)
+        old.execute("CREATE SEQUENCE podcast_id_seq START 1")
+        old.execute(
+            "CREATE TABLE podcasts (id INTEGER PRIMARY KEY DEFAULT "
+            "nextval('podcast_id_seq'), title VARCHAR NOT NULL, "
+            "rss_url VARCHAR UNIQUE NOT NULL, category VARCHAR, "
+            "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+        )
+        old.execute("CREATE SEQUENCE episode_id_seq START 1")
+        old.execute(
+            "CREATE TABLE episodes (id INTEGER PRIMARY KEY DEFAULT "
+            "nextval('episode_id_seq'), podcast_id INTEGER REFERENCES "
+            "podcasts(id), title VARCHAR NOT NULL, date TIMESTAMP, "
+            "url VARCHAR UNIQUE NOT NULL, file_path VARCHAR, "
+            "duration_seconds INTEGER, status VARCHAR DEFAULT 'downloaded', "
+            "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+        )
+        old.close()
+        database = P3Database(path)
+        info = database.conn.execute("PRAGMA table_info('episodes')").fetchall()
+        columns = [row[1] for row in info]
+        assert "language" in columns
+        database.close()

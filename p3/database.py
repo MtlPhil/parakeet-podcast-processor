@@ -99,6 +99,12 @@ class P3Database:
             )
         """)
 
+        # Migration: language detected from the audio when it was transcribed
+        # (ISO 639-1 code such as 'en' or 'fr'); NULL until then.
+        self.conn.execute(
+            "ALTER TABLE episodes ADD COLUMN IF NOT EXISTS language VARCHAR"
+        )
+
         self.conn.execute("""
             CREATE SEQUENCE IF NOT EXISTS transcript_id_seq START 1
         """)
@@ -432,6 +438,12 @@ class P3Database:
         """Update episode processing status."""
         self.conn.execute(
             "UPDATE episodes SET status = ? WHERE id = ?", (status, episode_id)
+        )
+
+    def set_episode_language(self, episode_id: int, language: Optional[str]):
+        """Record the language detected in an episode's audio."""
+        self.conn.execute(
+            "UPDATE episodes SET language = ? WHERE id = ?", (language, episode_id)
         )
 
     def remove_audio(self, episode_id: int) -> int:

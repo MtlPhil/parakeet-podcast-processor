@@ -43,9 +43,13 @@ P³ ships as both a command-line tool (`p3`) and a web app (FastAPI + React).
   other episode; YouTube captions are not used. Shorts and livestreams (live,
   upcoming and archived streams) are skipped. Premieres are kept once they
   have aired.
-- **Local transcription.** Parakeet MLX on Apple Silicon, with automatic fallback
-  to OpenAI Whisper. Long episodes are transcribed in 10-minute chunks to keep
-  memory use bounded.
+- **Local transcription.** Each episode's language is detected first and
+  stored. English goes to Parakeet MLX; every other language goes to Whisper
+  (MLX, large-v3-turbo by default), which is told the language. Parakeet has
+  no language input and drifts into English on spontaneous non-English speech,
+  so it is only used for the languages listed in `parakeet_languages`. Long
+  Parakeet episodes are transcribed in 10-minute chunks to keep memory use
+  bounded.
 - **Transcript cleaning.** Filler words are stripped with a regex. The LLM then
   polishes the transcript and removes ads and sponsor reads. Chunks are split at
   natural pauses in the audio, which tends to hand an ad break to the model as a
@@ -184,9 +188,11 @@ settings:
   max_episodes_per_feed: 3          # also caps each YouTube channel fetch
   audio_format: wav                 # wav or mp3
 
-  parakeet_enabled: true            # false → Whisper
+  parakeet_enabled: true            # false → Whisper for every language
   parakeet_model: "mlx-community/parakeet-tdt-0.6b-v2"
-  whisper_model: base               # tiny | base | small | medium | large
+  parakeet_languages: [en]          # languages Parakeet handles; others → Whisper
+  whisper_model: turbo              # turbo | large | medium | small | base | tiny,
+                                    # or a Hugging Face repo of an MLX Whisper model
 
   llm_provider: ollama              # ollama | openai | gemini
   llm_model: "llama3.2:latest"      # model for ollama/openai

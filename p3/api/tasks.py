@@ -28,13 +28,18 @@ def _get_settings() -> dict:
 
 
 def _make_transcriber(db, settings: dict):
-    from p3.transcriber import DEFAULT_PARAKEET_MODEL, AudioTranscriber
+    from p3.transcriber import (
+        DEFAULT_PARAKEET_MODEL,
+        DEFAULT_WHISPER_MODEL,
+        AudioTranscriber,
+    )
 
     return AudioTranscriber(
         db=db,
-        whisper_model=settings.get("whisper_model", "base"),
+        whisper_model=settings.get("whisper_model", DEFAULT_WHISPER_MODEL),
         use_parakeet=settings.get("parakeet_enabled", False),
         parakeet_model=settings.get("parakeet_model", DEFAULT_PARAKEET_MODEL),
+        parakeet_languages=settings.get("parakeet_languages"),
     )
 
 
