@@ -196,6 +196,19 @@ class P3Database:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # Built-in sign-in (P3_AUTH=local, see p3/api/auth.py): a password
+        # hash per user, and sessions keyed by the SHA-256 of their token.
+        self.conn.execute(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR"
+        )
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                token_hash VARCHAR PRIMARY KEY,
+                username VARCHAR NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at TIMESTAMP NOT NULL
+            )
+        """)
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS user_podcasts (
                 username VARCHAR NOT NULL,
@@ -1099,6 +1112,7 @@ class P3Database:
         )
         if row is not None:
             row["settings"] = json.loads(row["settings"] or "{}")
+            row.pop("password_hash", None)
         return row
 
     def get_all_users(self) -> List[Dict[str, Any]]:
@@ -1108,7 +1122,47 @@ class P3Database:
         )
         for row in rows:
             row["settings"] = json.loads(row["settings"] or "{}")
+            row.pop("password_hash", None)
         return rows
+
+    def count_users(self) -> int:
+        return self.conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+
+    def get_password_hash(self, username: str) -> Optional[str]:
+        row = self.conn.execute(
+            "SELECT password_hash FROM users WHERE username = ?", (username,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def set_password_hash(self, username: str, password_hash: str):
+        self.conn.execute(
+            "UPDATE users SET password_hash = ? WHERE username = ?",
+            (password_hash, username),
+        )
+
+    def create_session(self, token_hash: str, username: str, expires_at: datetime):
+        self.conn.execute(
+            "INSERT INTO sessions (token_hash, username, expires_at) VALUES (?, ?, ?)",
+            (token_hash, username, expires_at),
+        )
+
+    def get_session_username(self, token_hash: str, now: datetime) -> Optional[str]:
+        """The user a session belongs to, or None if unknown or expired."""
+        row = self.conn.execute(
+            "SELECT username FROM sessions WHERE token_hash = ? AND expires_at > ?",
+            (token_hash, now),
+        ).fetchone()
+        return row[0] if row else None
+
+    def delete_session(self, token_hash: str):
+        self.conn.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+
+    def delete_user_sessions(self, username: str, keep: Optional[str] = None):
+        """Sign a user out everywhere, except the session ``keep``."""
+        self.conn.execute(
+            "DELETE FROM sessions WHERE username = ? AND token_hash != ?",
+            (username, keep or ""),
+        )
 
     def get_owner(self) -> Optional[str]:
         """The first admin: the user the CLI and config-file feeds act as."""

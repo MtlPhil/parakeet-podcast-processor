@@ -26,6 +26,8 @@ _OLLAMA_NUM_CTX = 32768
 # Optional on-disk location for the Gemini API key (gitignored). The
 # GEMINI_API_KEY environment variable takes precedence.
 GEMINI_API_KEY_FILE = Path("config/gemini_api_key.txt")
+# Same for OpenAI: OPENAI_API_KEY takes precedence over this file.
+OPENAI_API_KEY_FILE = Path("config/openai_api_key.txt")
 
 _REQUEST_TIMEOUT = 120.0
 
@@ -33,7 +35,10 @@ _REQUEST_TIMEOUT = 120.0
 def load_api_key(provider: str) -> Optional[str]:
     """Look up the API key for a hosted provider, or None if unset."""
     if provider == "openai":
-        return os.getenv("OPENAI_API_KEY")
+        key = os.getenv("OPENAI_API_KEY")
+        if not key and OPENAI_API_KEY_FILE.exists():
+            key = OPENAI_API_KEY_FILE.read_text().strip()
+        return key or None
     if provider == "gemini":
         key = os.getenv("GEMINI_API_KEY")
         if not key and GEMINI_API_KEY_FILE.exists():

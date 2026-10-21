@@ -1,0 +1,15 @@
+#!/bin/zsh
+# Starts the P3 web app for a Mac install (see install.sh). launchd runs
+# this and restarts it whenever it exits. Settings come from
+# config/server.env, which the setup wizard writes:
+#   P3_HOST  127.0.0.1 (this Mac only) or 0.0.0.0 (the local network too)
+#   P3_PORT  the port, 8000 unless the installer picked another
+set -e
+cd "${0:A:h}/.."
+P3_HOST=127.0.0.1
+P3_PORT=8000
+[[ -f config/server.env ]] && source config/server.env
+export P3_AUTH=local P3_MANAGED=1 P3_PORT
+# ffmpeg and deno installed alongside the app
+export PATH="$PWD/tools/bin:$PATH"
+exec .venv/bin/uvicorn p3.api.main:app --host "$P3_HOST" --port "$P3_PORT"
