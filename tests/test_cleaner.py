@@ -231,7 +231,7 @@ class TestSplitSegmentsByGaps:
             _seg("Now an ad break starts.", 10.0, 12.0),
             _seg("End of the ad break.", 12.1, 14.0),
         ]
-        chunks = _split_segments_by_gaps(segments, min_gap=0.5, min_chars=0)
+        chunks = _split_segments_by_gaps(segments, min_gap=0.5, min_chars=0, pack_chars=0)
         assert len(chunks) == 2
         assert "topic one" in chunks[0]
         assert "ad break" in chunks[1]
@@ -242,7 +242,7 @@ class TestSplitSegmentsByGaps:
             _seg("Second part.", 2.05, 4.0),
             _seg("Third part.", 4.05, 6.0),
         ]
-        chunks = _split_segments_by_gaps(segments, min_gap=0.5, min_chars=0)
+        chunks = _split_segments_by_gaps(segments, min_gap=0.5, min_chars=0, pack_chars=0)
         assert len(chunks) == 1
         assert "First part" in chunks[0]
         assert "Third part" in chunks[0]
@@ -261,19 +261,36 @@ class TestSplitSegmentsByGaps:
                 22.0,
             ),
         ]
-        chunks = _split_segments_by_gaps(segments, min_gap=0.5, min_chars=20)
+        chunks = _split_segments_by_gaps(segments, min_gap=0.5, min_chars=20, pack_chars=0)
         assert len(chunks) == 2
         assert "Hi." in chunks[0] or "Hi." in chunks[1]
 
     def test_long_gap_free_run_still_splits_on_max_chars(self):
         long_text = "Sentence number one. " * 500
         segments = [_seg(long_text, 0.0, 100.0)]
-        chunks = _split_segments_by_gaps(segments, max_chars=1000, min_chars=0)
+        chunks = _split_segments_by_gaps(segments, max_chars=1000, min_chars=0, pack_chars=0)
         assert len(chunks) > 1
         assert all(len(c) <= 1000 or " " not in c for c in chunks)
 
     def test_empty_segments_returns_empty_list(self):
         assert _split_segments_by_gaps([]) == []
+
+    def test_whisper_style_pauses_are_packed_into_few_chunks(self):
+        """Whisper leaves a pause after most sentences; those pieces are
+        packed up to pack_chars instead of each becoming an LLM call."""
+        sentence = "Voici une phrase complète au sujet du diabète de type un. "
+        segments = [_seg(sentence * 10, i * 10.0, i * 10.0 + 9.0) for i in range(60)]
+        chunks = _split_segments_by_gaps(segments, min_gap=0.5, max_chars=6000)
+        unpacked = _split_segments_by_gaps(segments, min_gap=0.5, max_chars=6000, pack_chars=0)
+        assert len(unpacked) == 60
+        assert len(chunks) <= 7
+        assert all(len(c) <= 6000 for c in chunks)
+        assert " ".join(chunks).split() == " ".join(unpacked).split()
+
+    def test_packing_never_exceeds_pack_chars(self):
+        segments = [_seg("x" * 900 + ".", i * 5.0, i * 5.0 + 4.0) for i in range(10)]
+        chunks = _split_segments_by_gaps(segments, min_gap=0.5, pack_chars=2000)
+        assert [len(c) for c in chunks] == [1803, 1803, 1803, 1803, 1803]
 
 
 class TestTruncateChunks:

@@ -210,6 +210,7 @@ def _split_segments_by_gaps(
     min_gap: float = _TOPIC_GAP_SECONDS,
     max_chars: int = _CLEAN_CHUNK_CHARS,
     min_chars: int = _MIN_CHUNK_CHARS,
+    pack_chars: int = _CLEAN_CHUNK_CHARS,
 ) -> List[str]:
     """Split transcript segments into chunks at natural conversation
     breaks, using the gap between one segment's end and the next's start.
@@ -223,6 +224,12 @@ def _split_segments_by_gaps(
     qualifying gap) is further split on sentence boundaries; any chunk
     under min_chars is merged into a neighbor so a one-line aside doesn't
     become its own LLM call.
+
+    Consecutive chunks are then packed together up to pack_chars (0 turns
+    this off). Each LLM call has a fixed cost, and Whisper leaves a pause
+    of min_gap or more after most sentences (Parakeet's segments run back
+    to back), so without packing a Whisper transcript became ~110 calls of
+    ~600 characters where a Parakeet one of the same length takes ~15.
     """
     if not segments:
         return []
@@ -250,6 +257,15 @@ def _split_segments_by_gaps(
     if len(merged) > 1 and len(merged[0]) < min_chars:
         merged[1] = f"{merged[0]} {merged[1]}"
         merged = merged[1:]
+
+    if pack_chars:
+        packed: List[str] = []
+        for chunk in merged:
+            if packed and len(packed[-1]) + 1 + len(chunk) <= pack_chars:
+                packed[-1] = f"{packed[-1]} {chunk}"
+            else:
+                packed.append(chunk)
+        merged = packed
 
     final_chunks = []
     for chunk in merged:
