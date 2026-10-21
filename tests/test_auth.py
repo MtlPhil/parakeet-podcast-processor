@@ -28,9 +28,7 @@ def env(tmp_path, monkeypatch):
     from p3.api.routers import auth as auth_routes
 
     monkeypatch.setattr(auth_routes, "_FAILED_LOGIN_DELAY", 0)
-    secrets = {
-        name: tmp_path / f"{name}.txt" for name in setup_routes._SECRET_FILES
-    }
+    secrets = {name: tmp_path / f"{name}.txt" for name in setup_routes._SECRET_FILES}
     monkeypatch.setattr(setup_routes, "_SECRET_FILES", secrets)
     monkeypatch.setattr(setup_routes, "SERVER_ENV", tmp_path / "server.env")
     yield tmp_path
@@ -83,8 +81,18 @@ class TestFirstRun:
 
     def test_rejects_short_password_and_bad_username(self, env):
         c = _client()
-        assert c.post("/api/auth/setup", json={"username": "ann", "password": "short"}).status_code == 400
-        assert c.post("/api/auth/setup", json={"username": "../x", "password": PASSWORD}).status_code == 400
+        assert (
+            c.post(
+                "/api/auth/setup", json={"username": "ann", "password": "short"}
+            ).status_code
+            == 400
+        )
+        assert (
+            c.post(
+                "/api/auth/setup", json={"username": "../x", "password": PASSWORD}
+            ).status_code
+            == 400
+        )
         assert c.get("/api/auth/status").json()["setup_needed"] is True
 
     def test_proxy_header_and_dev_user_are_ignored(self, env):
@@ -98,9 +106,24 @@ class TestSignIn:
     def test_login_logout(self, env):
         _setup_admin(_client())
         c = _client()
-        assert c.post("/api/auth/login", json={"username": "ann", "password": "nope nope"}).status_code == 401
-        assert c.post("/api/auth/login", json={"username": "ghost", "password": PASSWORD}).status_code == 401
-        assert c.post("/api/auth/login", json={"username": "ann", "password": PASSWORD}).status_code == 200
+        assert (
+            c.post(
+                "/api/auth/login", json={"username": "ann", "password": "nope nope"}
+            ).status_code
+            == 401
+        )
+        assert (
+            c.post(
+                "/api/auth/login", json={"username": "ghost", "password": PASSWORD}
+            ).status_code
+            == 401
+        )
+        assert (
+            c.post(
+                "/api/auth/login", json={"username": "ann", "password": PASSWORD}
+            ).status_code
+            == 200
+        )
         assert c.get("/api/me").status_code == 200
         c.post("/api/auth/logout")
         assert c.get("/api/me").status_code == 401
@@ -124,7 +147,13 @@ class TestSignIn:
         assert a.get("/api/me").status_code == 200
         assert b.get("/api/me").status_code == 401
         c = _client()
-        assert c.post("/api/auth/login", json={"username": "ann", "password": "new password 1"}).status_code == 200
+        assert (
+            c.post(
+                "/api/auth/login",
+                json={"username": "ann", "password": "new password 1"},
+            ).status_code
+            == 200
+        )
 
 
 class TestAdminAccounts:
@@ -141,16 +170,22 @@ class TestAdminAccounts:
             json={"username": "cat", "password": PASSWORD, "role": "admin"},
         )
         assert resp.json()["role"] == "admin"
-        assert admin.post(
-            "/api/admin/users", json={"username": "bob", "password": PASSWORD}
-        ).status_code == 409
+        assert (
+            admin.post(
+                "/api/admin/users", json={"username": "bob", "password": PASSWORD}
+            ).status_code
+            == 409
+        )
 
         bob = _client()
         bob.post("/api/auth/login", json={"username": "bob", "password": PASSWORD})
         assert bob.get("/api/me").json()["role"] == "user"
-        assert bob.post(
-            "/api/admin/users", json={"username": "dan", "password": PASSWORD}
-        ).status_code == 403
+        assert (
+            bob.post(
+                "/api/admin/users", json={"username": "dan", "password": PASSWORD}
+            ).status_code
+            == 403
+        )
 
     def test_admin_resets_a_password(self, env):
         admin = _client()
@@ -158,38 +193,68 @@ class TestAdminAccounts:
         admin.post("/api/admin/users", json={"username": "bob", "password": PASSWORD})
         bob = _client()
         bob.post("/api/auth/login", json={"username": "bob", "password": PASSWORD})
-        assert admin.put(
-            "/api/admin/users/bob/password", json={"password": "reset pass 2"}
-        ).status_code == 200
+        assert (
+            admin.put(
+                "/api/admin/users/bob/password", json={"password": "reset pass 2"}
+            ).status_code
+            == 200
+        )
         assert bob.get("/api/me").status_code == 401
-        assert _client().post("/api/auth/login", json={"username": "bob", "password": "reset pass 2"}).status_code == 200
+        assert (
+            _client()
+            .post(
+                "/api/auth/login", json={"username": "bob", "password": "reset pass 2"}
+            )
+            .status_code
+            == 200
+        )
 
 
 class TestProxyModeUnchanged:
     def test_header_still_signs_in_and_local_routes_refuse(self, env, monkeypatch):
         monkeypatch.setenv("P3_AUTH", "proxy")
         c = _client()
-        assert c.get("/api/me", headers={"Remote-User": "pat"}).json()["username"] == "pat"
+        assert (
+            c.get("/api/me", headers={"Remote-User": "pat"}).json()["username"] == "pat"
+        )
         assert c.get("/api/auth/status").json()["mode"] == "proxy"
-        assert c.post("/api/auth/setup", json={"username": "x1", "password": PASSWORD}).status_code == 400
+        assert (
+            c.post(
+                "/api/auth/setup", json={"username": "x1", "password": PASSWORD}
+            ).status_code
+            == 400
+        )
 
 
 class TestWizardEndpoints:
     def test_progress(self, env):
         admin = _client()
         _setup_admin(admin)
-        assert admin.get("/api/setup/progress").json() == {"done": False, "shared_done": False}
-        assert admin.post("/api/setup/progress").json() == {"done": True, "shared_done": True}
+        assert admin.get("/api/setup/progress").json() == {
+            "done": False,
+            "shared_done": False,
+        }
+        assert admin.post("/api/setup/progress").json() == {
+            "done": True,
+            "shared_done": True,
+        }
         admin.post("/api/admin/users", json={"username": "bob", "password": PASSWORD})
         bob = _client()
         bob.post("/api/auth/login", json={"username": "bob", "password": PASSWORD})
-        assert bob.get("/api/setup/progress").json() == {"done": False, "shared_done": True}
+        assert bob.get("/api/setup/progress").json() == {
+            "done": False,
+            "shared_done": True,
+        }
 
     def test_secrets_are_written_privately_and_never_returned(self, env):
         admin = _client()
         _setup_admin(admin)
         resp = admin.put("/api/setup/secrets", json={"gemini_api_key": " abc123 "})
-        assert resp.json() == {"gemini_api_key": True, "openai_api_key": False, "smtp_password": False}
+        assert resp.json() == {
+            "gemini_api_key": True,
+            "openai_api_key": False,
+            "smtp_password": False,
+        }
         path = env / "gemini_api_key.txt"
         assert path.read_text().strip() == "abc123"
         assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
@@ -215,7 +280,11 @@ class TestWizardEndpoints:
         admin.post("/api/admin/users", json={"username": "bob", "password": PASSWORD})
         bob = _client()
         bob.post("/api/auth/login", json={"username": "bob", "password": PASSWORD})
-        for method, path in (("get", "/api/setup/secrets"), ("get", "/api/setup/network"), ("get", "/api/setup/ollama")):
+        for method, path in (
+            ("get", "/api/setup/secrets"),
+            ("get", "/api/setup/network"),
+            ("get", "/api/setup/ollama"),
+        ):
             assert getattr(bob, method)(path).status_code == 403
 
 
@@ -226,7 +295,11 @@ class TestEmailProblems:
         s = {"smtp_host": "smtp.example.com", "smtp_port": 587}
         problem = setup_routes.email_problem
         assert "password" in problem(RuntimeError("No SMTP password found: set ..."), s)
-        assert "mail server first" in problem(RuntimeError("smtp_host is not set in ..."), s)
-        assert "didn't accept" in problem(smtplib.SMTPAuthenticationError(535, b"bad"), s)
+        assert "mail server first" in problem(
+            RuntimeError("smtp_host is not set in ..."), s
+        )
+        assert "didn't accept" in problem(
+            smtplib.SMTPAuthenticationError(535, b"bad"), s
+        )
         assert "smtp.example.com on port 587" in problem(ConnectionRefusedError(), s)
         assert problem(ValueError("odd"), s) == "Could not send: odd"

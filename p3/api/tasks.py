@@ -742,7 +742,9 @@ def resume_daily_run(
         return None
     if max_age is not None:
         try:
-            started = datetime.fromisoformat(db.get_state(run_key("started_at", username)))
+            started = datetime.fromisoformat(
+                db.get_state(run_key("started_at", username))
+            )
         except (TypeError, ValueError):
             return None
         if datetime.now() - started > max_age:
@@ -764,7 +766,9 @@ def resume_daily_run(
         if not db.get_podcast_by_id(pid):
             continue
         refetched.add(pid)
-        job_id = db.create_job("fetch", podcast_id=pid, run_id=run_id, username=username)
+        job_id = db.create_job(
+            "fetch", podcast_id=pid, run_id=run_id, username=username
+        )
         job_runner.enqueue_priority(task_fetch, job_id, pid, None, None, username)
 
     job_runner.enqueue_priority(daily_queue_pipelines, run_id, username)
@@ -807,9 +811,7 @@ def daily_queue_pipelines(run_id: str, username: str):
     db = get_db()
     since = _run_since(db, run_id)
     episodes = db.get_episodes_added_since(since, username) if since else []
-    job_ids = queue_step_jobs(
-        db, episodes, "pipeline", run_id, username, priority=True
-    )
+    job_ids = queue_step_jobs(db, episodes, "pipeline", run_id, username, priority=True)
     logger.info("Daily run: queued %d new episode(s) for processing", len(job_ids))
     job_runner.enqueue_priority(daily_queue_content, run_id, username)
 

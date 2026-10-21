@@ -13,7 +13,6 @@ from p3.api.tasks import (
     task_full_pipeline,
     task_transcribe,
 )
-
 from p3.database import INTERRUPTED_ERROR
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])

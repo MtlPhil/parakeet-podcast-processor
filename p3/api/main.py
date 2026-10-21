@@ -37,6 +37,11 @@ from p3.api.scheduler import daily_scheduler
 from p3.api.tasks import resume_interrupted_runs
 
 
+class _P3LogHandler(logging.StreamHandler):
+    """The stderr handler configure_logging adds; its type marks it as
+    already added."""
+
+
 def configure_logging() -> None:
     """Send the app's own log messages (the ``p3.*`` loggers) to stderr at
     INFO, timestamped. Uvicorn only sets up its own loggers, so without this
@@ -44,10 +49,9 @@ def configure_logging() -> None:
     "report emailed" and the like were lost. Level from ``P3_LOG_LEVEL``.
     Idempotent."""
     p3_logger = logging.getLogger("p3")
-    if any(getattr(h, "_p3_handler", False) for h in p3_logger.handlers):
+    if any(isinstance(h, _P3LogHandler) for h in p3_logger.handlers):
         return
-    handler = logging.StreamHandler()
-    handler._p3_handler = True
+    handler = _P3LogHandler()
     handler.setFormatter(
         logging.Formatter(
             "%(asctime)s %(levelname)s %(name)s: %(message)s", "%Y-%m-%d %H:%M:%S"
@@ -86,7 +90,9 @@ async def lifespan(app: FastAPI):
     try:
         resumed = resume_interrupted_runs(db, max_age=timedelta(days=2))
         if resumed:
-            logger.warning("Resumed interrupted daily run(s) for: %s", ", ".join(resumed))
+            logger.warning(
+                "Resumed interrupted daily run(s) for: %s", ", ".join(resumed)
+            )
     except Exception:
         logger.exception("Could not resume the interrupted daily run")
     daily_scheduler.start()

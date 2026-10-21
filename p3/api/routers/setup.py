@@ -190,7 +190,9 @@ def email_problem(error: Exception, settings: dict) -> str:
             "The mail server didn't accept the account and password. With Gmail, "
             "use an app password, not your normal password."
         )
-    if isinstance(error, (OSError, smtplib.SMTPConnectError, smtplib.SMTPServerDisconnected)):
+    if isinstance(
+        error, (OSError, smtplib.SMTPConnectError, smtplib.SMTPServerDisconnected)
+    ):
         host = settings.get("smtp_host")
         port = settings.get("smtp_port") or 587
         return f"Couldn't reach the mail server {host} on port {port}. Check both, and that this Mac is online."
@@ -243,7 +245,9 @@ def lan_addresses(port: int) -> list[str]:
     try:
         name = subprocess.run(
             ["scutil", "--get", "LocalHostName"],
-            capture_output=True, text=True, timeout=3,
+            capture_output=True,
+            text=True,
+            timeout=3,
         ).stdout.strip()
         if name:
             urls.append(f"http://{name}.local:{port}")

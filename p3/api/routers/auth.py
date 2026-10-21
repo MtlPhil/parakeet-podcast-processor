@@ -80,7 +80,9 @@ def _create_account(body: AccountIn, role: Optional[str]) -> dict:
     if db.get_user(username):
         raise HTTPException(409, "That username is taken")
     user = db.ensure_user(
-        username, (body.display_name or "").strip() or None, (body.email or "").strip() or None
+        username,
+        (body.display_name or "").strip() or None,
+        (body.email or "").strip() or None,
     )
     if role and user["role"] != role:
         db.set_user_role(username, role)
@@ -111,7 +113,9 @@ def status(request: Request):
 
 
 @router.post(
-    "/api/auth/setup", response_model=UserOut, dependencies=[Depends(require_local_mode)]
+    "/api/auth/setup",
+    response_model=UserOut,
+    dependencies=[Depends(require_local_mode)],
 )
 def create_first_admin(body: AccountIn, response: Response):
     """First run only: create the admin account and sign it in."""
@@ -124,7 +128,9 @@ def create_first_admin(body: AccountIn, response: Response):
 
 
 @router.post(
-    "/api/auth/login", response_model=UserOut, dependencies=[Depends(require_local_mode)]
+    "/api/auth/login",
+    response_model=UserOut,
+    dependencies=[Depends(require_local_mode)],
 )
 def login(body: LoginIn, response: Response):
     db = get_db()
@@ -152,7 +158,9 @@ def change_my_password(
 ):
     """Change your own password; your other sessions are signed out."""
     db = get_db()
-    if not verify_password(body.current_password, db.get_password_hash(user["username"])):
+    if not verify_password(
+        body.current_password, db.get_password_hash(user["username"])
+    ):
         time.sleep(_FAILED_LOGIN_DELAY)
         raise HTTPException(400, "Current password is wrong")
     check_new_password(body.new_password)

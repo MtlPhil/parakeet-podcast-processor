@@ -46,7 +46,8 @@ _AD_RULE = (
     "Base everything on the hosts' actual discussion."
 )
 
-_SUMMARY_PROMPT = """Analyze this podcast transcript and extract structured information in JSON format:
+_SUMMARY_PROMPT = (
+    """Analyze this podcast transcript and extract structured information in JSON format:
 
 {
   "key_topics": ["topic1", "topic2", ...],
@@ -61,31 +62,42 @@ Guidelines:
 - quotes: Memorable, insightful quotes (2-3 max)
 - startups: Any companies, startups, or brands mentioned
 
-""" + _AD_RULE + """
+"""
+    + _AD_RULE
+    + """
 
 Transcript:
 """
+)
 
 # Short (~300 word) overview for a quick read. The long-form study notes
 # (_SECTION_NOTES_PROMPT) complement it rather than replace it.
-_SHORT_SUMMARY_PROMPT = """Write a summary of this podcast episode in about 300 words. This is not a marketing blurb or episode synopsis (the kind of thing you'd find on the podcast's website); skip scene-setting like "In this episode, X sits down with Y to discuss...". Go straight into substance: what the episode covers, the main arguments or claims made, and the concrete takeaways. Return only the summary text, no headings or commentary.
+_SHORT_SUMMARY_PROMPT = (
+    """Write a summary of this podcast episode in about 300 words. This is not a marketing blurb or episode synopsis (the kind of thing you'd find on the podcast's website); skip scene-setting like "In this episode, X sits down with Y to discuss...". Go straight into substance: what the episode covers, the main arguments or claims made, and the concrete takeaways. Return only the summary text, no headings or commentary.
 
-""" + _AD_RULE + """
+"""
+    + _AD_RULE
+    + """
 
 Transcript:
 """
+)
 
 # Study notes for one section of a transcript (see _generate_long_summary).
 # Small local models compress a whole-episode request into a paragraph or
 # two no matter how the length is specified. Asking for notes on one section
 # at a time keeps the output proportional to the source and gives even
 # coverage of every part of the episode.
-_SECTION_NOTES_PROMPT = """This is one part of a longer podcast transcript (not the whole episode). Write detailed study notes covering what happens in THIS PART — not a brief overview, and don't write as if summarizing a whole episode. For every distinct point or argument raised here, explain: what was claimed, the reasoning or evidence behind it, and any specific examples, numbers, or names mentioned. Write in full paragraphs, at least 150 words. Skip small talk and filler, but do not skip substantive content. Do not add framing like "This section discusses..." or "In this part..." — start directly with the content itself, as if continuing an ongoing set of notes.
+_SECTION_NOTES_PROMPT = (
+    """This is one part of a longer podcast transcript (not the whole episode). Write detailed study notes covering what happens in THIS PART — not a brief overview, and don't write as if summarizing a whole episode. For every distinct point or argument raised here, explain: what was claimed, the reasoning or evidence behind it, and any specific examples, numbers, or names mentioned. Write in full paragraphs, at least 150 words. Skip small talk and filler, but do not skip substantive content. Do not add framing like "This section discusses..." or "In this part..." — start directly with the content itself, as if continuing an ongoing set of notes.
 
-""" + _AD_RULE + """
+"""
+    + _AD_RULE
+    + """
 
 Transcript part:
 """
+)
 
 # Every digest also exists in Quebec French. Spelled out because models
 # default to France French, which reads as foreign to a Quebec audience.

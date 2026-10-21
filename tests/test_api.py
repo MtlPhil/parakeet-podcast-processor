@@ -1312,14 +1312,14 @@ def test_web_app_logs_info_messages(capsys, monkeypatch):
     """The p3.* loggers reach stderr (the launchd log) at INFO, once."""
     import logging
 
-    from p3.api.main import configure_logging
+    from p3.api.main import _P3LogHandler, configure_logging
 
     p3_logger = logging.getLogger("p3")
     # Rebind to this test's captured stderr; restored afterwards.
     monkeypatch.setattr(
         p3_logger,
         "handlers",
-        [h for h in p3_logger.handlers if not getattr(h, "_p3_handler", False)],
+        [h for h in p3_logger.handlers if not isinstance(h, _P3LogHandler)],
     )
     configure_logging()
     configure_logging()

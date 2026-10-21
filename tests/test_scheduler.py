@@ -141,7 +141,13 @@ class TestDailyRunSteps:
         ann = _user(db, "ann")
         pid = db.add_podcast("Pod", "http://example.com/rss")
         ids = {}
-        for name in ("backlog", "processed_backlog", "new", "new_processed", "other_user"):
+        for name in (
+            "backlog",
+            "processed_backlog",
+            "new",
+            "new_processed",
+            "other_user",
+        ):
             ids[name] = db.add_episode(
                 pid, name, datetime(2026, 10, 1), f"http://example.com/{name}"
             )
@@ -165,7 +171,9 @@ class TestDailyRunSteps:
         db, _ = env
         lanes = []
         monkeypatch.setattr(
-            job_queue.job_runner, "enqueue", lambda fn, *a: lanes.append(("normal", fn.__name__))
+            job_queue.job_runner,
+            "enqueue",
+            lambda fn, *a: lanes.append(("normal", fn.__name__)),
         )
         monkeypatch.setattr(
             job_queue.job_runner,
@@ -178,7 +186,9 @@ class TestDailyRunSteps:
         )
         ann = _user(db, "ann")
         pid = db.add_podcast("Pod", "http://example.com/rss")
-        backlog = db.add_episode(pid, "b", datetime(2026, 10, 1), "http://example.com/b")
+        backlog = db.add_episode(
+            pid, "b", datetime(2026, 10, 1), "http://example.com/b"
+        )
         busy = db.add_episode(pid, "c", datetime(2026, 10, 1), "http://example.com/c")
         db.link_episode(ann, backlog)
         db.link_episode(ann, busy)
@@ -188,9 +198,7 @@ class TestDailyRunSteps:
 
         assert order == ["email"]
         assert lanes == [("normal", "task_full_pipeline")]
-        (job,) = [
-            j for j in db.get_active_jobs(ann) if j["episode_id"] == backlog
-        ]
+        (job,) = [j for j in db.get_active_jobs(ann) if j["episode_id"] == backlog]
         assert job["run_id"] is None
 
     def test_content_step_is_opt_in_and_marks_the_run_finished(self, env):
@@ -287,7 +295,9 @@ class TestResumeInterruptedRun:
         tasks.active_run_ids.discard(run_id)  # the process "died"
         fetch = db.create_job("fetch", podcast_id=pid, run_id=run_id, username=user)
         pipe = db.create_job("full_pipeline", run_id=run_id, username=user)
-        db.conn.execute("UPDATE jobs SET status='running' WHERE id IN (?, ?)", (fetch, pipe))
+        db.conn.execute(
+            "UPDATE jobs SET status='running' WHERE id IN (?, ?)", (fetch, pipe)
+        )
         db.fail_stale_jobs()
         enqueued.clear()
         return db, enqueued, user, run_id, pid
