@@ -1,0 +1,20 @@
+#!/bin/bash
+# Removes P3: stops it, removes its background service and, if you say so,
+# deletes the install folder with your library, accounts and settings.
+set -euo pipefail
+P3_HOME="$(cd "$(dirname "$0")/.." && pwd)"
+P3_LABEL=com.parakeet.p3
+[[ -f "$P3_HOME/config/install.env" ]] && source "$P3_HOME/config/install.env"
+PLIST="$HOME/Library/LaunchAgents/$P3_LABEL.plist"
+
+launchctl bootout "gui/$(id -u)/$P3_LABEL" 2>/dev/null || true
+rm -f "$PLIST"
+echo "P3 is stopped and won't start again."
+printf 'Also delete %s, including your podcasts, summaries and accounts? [y/N] ' "$P3_HOME"
+read -r answer < /dev/tty || answer=""
+if [[ "$answer" == [yY]* ]]; then
+  rm -rf "$P3_HOME"
+  echo "Deleted."
+else
+  echo "Kept $P3_HOME. Delete it yourself whenever you like."
+fi

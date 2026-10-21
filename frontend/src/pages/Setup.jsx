@@ -481,7 +481,7 @@ function PodcastsStep(nav) {
       title="Add your podcasts"
       intro="Paste a podcast's link (Apple Podcasts, an RSS feed, or YouTube). P3 starts getting episodes right away; you can keep adding more here or later."
       skipLabel="I'll add podcasts later"
-      saveLabel="Continue"
+      saveLabel="Next"
       onSave={async () => nav.onNext()}
     >
       <AddPodcast embedded />

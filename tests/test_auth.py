@@ -217,3 +217,16 @@ class TestWizardEndpoints:
         bob.post("/api/auth/login", json={"username": "bob", "password": PASSWORD})
         for method, path in (("get", "/api/setup/secrets"), ("get", "/api/setup/network"), ("get", "/api/setup/ollama")):
             assert getattr(bob, method)(path).status_code == 403
+
+
+class TestEmailProblems:
+    def test_messages_people_can_act_on(self):
+        import smtplib
+
+        s = {"smtp_host": "smtp.example.com", "smtp_port": 587}
+        problem = setup_routes.email_problem
+        assert "password" in problem(RuntimeError("No SMTP password found: set ..."), s)
+        assert "mail server first" in problem(RuntimeError("smtp_host is not set in ..."), s)
+        assert "didn't accept" in problem(smtplib.SMTPAuthenticationError(535, b"bad"), s)
+        assert "smtp.example.com on port 587" in problem(ConnectionRefusedError(), s)
+        assert problem(ValueError("odd"), s) == "Could not send: odd"

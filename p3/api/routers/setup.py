@@ -11,6 +11,7 @@ restarts the server through launchd when it runs under that launcher
 
 import os
 import signal
+import smtplib
 import socket
 import subprocess
 import threading
@@ -170,8 +171,30 @@ def test_email(body: TestEmailIn, user: dict = Depends(current_user)):
             "<p>Email from P3 works. Daily digests will arrive like this.</p>",
         )
     except Exception as e:
-        raise HTTPException(400, f"Could not send: {e}")
+        raise HTTPException(400, email_problem(e, settings))
     return {"sent": True, "to": to}
+
+
+def email_problem(error: Exception, settings: dict) -> str:
+    """A sending failure in words a non-technical person can act on."""
+    text = str(error)
+    if "smtp_host is not set" in text:
+        return "Fill in the mail server first."
+    if "No SMTP password" in text:
+        return (
+            "Enter the email account's password first. With Gmail, that's an "
+            "app password, not your normal password."
+        )
+    if isinstance(error, smtplib.SMTPAuthenticationError):
+        return (
+            "The mail server didn't accept the account and password. With Gmail, "
+            "use an app password, not your normal password."
+        )
+    if isinstance(error, (OSError, smtplib.SMTPConnectError, smtplib.SMTPServerDisconnected)):
+        host = settings.get("smtp_host")
+        port = settings.get("smtp_port") or 587
+        return f"Couldn't reach the mail server {host} on port {port}. Check both, and that this Mac is online."
+    return f"Could not send: {text}"
 
 
 # ----------------------------------------------------------------- network
