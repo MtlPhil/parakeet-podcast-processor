@@ -1,6 +1,12 @@
 import { useState } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
 import { useMe } from '../hooks/useMe';
+import { logout } from '../api/client';
+
+const signOut = async () => {
+  await logout().catch(() => {});
+  window.location.assign('/');
+};
 
 const NAV_ITEMS = [
   { to: '/', label: 'Dashboard' },
@@ -20,7 +26,7 @@ const ADMIN_ITEM = { to: '/admin', label: 'Admin' };
 
 export default function Layout() {
   const [open, setOpen] = useState(false);
-  const { me } = useMe();
+  const { me, authMode } = useMe();
   const items = me?.role === 'admin' ? [...NAV_ITEMS, ADMIN_ITEM] : NAV_ITEMS;
 
   const navLinks = items.map(({ to, label }) => (
@@ -63,6 +69,11 @@ export default function Layout() {
       {open && (
         <nav className="lg:hidden bg-gray-900 text-gray-300 pb-2 border-b border-gray-700">
           {navLinks}
+          {authMode === 'local' && (
+            <button onClick={signOut} className="block px-4 py-2 text-sm text-gray-400 hover:text-white">
+              Sign out
+            </button>
+          )}
         </nav>
       )}
 
@@ -77,6 +88,11 @@ export default function Layout() {
           <div className="px-4 py-3 border-t border-gray-700 text-xs text-gray-400">
             <p className="text-gray-200 truncate">{me.display_name || me.username}</p>
             <p>{me.role === 'admin' ? 'Admin' : 'User'}</p>
+            {authMode === 'local' && (
+              <button onClick={signOut} className="mt-2 text-gray-400 hover:text-white underline">
+                Sign out
+              </button>
+            )}
           </div>
         )}
       </aside>

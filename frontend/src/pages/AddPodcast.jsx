@@ -21,7 +21,7 @@ const opmlUrls = (xml) =>
   [...new DOMParser().parseFromString(xml, 'text/xml').querySelectorAll('outline[xmlUrl]')]
     .map((el) => el.getAttribute('xmlUrl'));
 
-export default function AddPodcast() {
+export default function AddPodcast({ embedded = false }) {
   const [mode, setMode] = useState('single');
   const [bulkText, setBulkText] = useState('');
   const [url, setUrl] = useState('');
@@ -117,7 +117,7 @@ export default function AddPodcast() {
 
   return (
     <div className="max-w-lg">
-      <h1 className="text-2xl font-bold text-gray-900 mb-6">Add Podcast</h1>
+      {!embedded && <h1 className="text-2xl font-bold text-gray-900 mb-6">Add Podcast</h1>}
 
       {!preview && !job && (
         <div className="flex gap-1 mb-4 border-b">
@@ -275,7 +275,7 @@ export default function AddPodcast() {
       {job && (
         <div className="mt-6">
           <JobProgress job={job} />
-          {done && (
+          {done && !embedded && (
             <button
               onClick={() => navigate('/podcasts')}
               className="mt-4 w-full px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-medium"

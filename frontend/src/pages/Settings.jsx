@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { allowDeletedEpisode, getDeletedEpisodes, getSettings, updateMySettings, updateSettings } from '../api/client';
+import { Link } from 'react-router-dom';
+import { allowDeletedEpisode, changeMyPassword, getDeletedEpisodes, getSettings, updateMySettings, updateSettings } from '../api/client';
 import { useMe } from '../hooks/useMe';
 
 const inputClass =
@@ -292,12 +293,55 @@ function DeletedEpisodes() {
   );
 }
 
+// Own password, on installs with P3's own accounts.
+function MyPassword() {
+  const [form, setForm] = useState({ current: '', next: '', confirm: '' });
+  const [state, setState] = useState({});
+  const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
+
+  const save = async () => {
+    if (form.next !== form.confirm) {
+      setState({ error: 'The two new passwords are different.' });
+      return;
+    }
+    setState({ saving: true });
+    try {
+      await changeMyPassword(form.current, form.next);
+      setForm({ current: '', next: '', confirm: '' });
+      setState({ saved: true });
+    } catch (e) {
+      setState({ error: e.message });
+    }
+  };
+
+  return (
+    <section className="space-y-4">
+      <h2 className="text-lg font-semibold text-gray-800">Password</h2>
+      <Field label="Current password" htmlFor="pw-current">
+        <input id="pw-current" type="password" autoComplete="current-password" value={form.current} onChange={set('current')} className={inputClass} />
+      </Field>
+      <Field label="New password" htmlFor="pw-new" help="At least 8 characters. You stay signed in here; other devices are signed out.">
+        <input id="pw-new" type="password" autoComplete="new-password" value={form.next} onChange={set('next')} className={inputClass} />
+      </Field>
+      <Field label="New password again" htmlFor="pw-confirm">
+        <input id="pw-confirm" type="password" autoComplete="new-password" value={form.confirm} onChange={set('confirm')} className={inputClass} />
+      </Field>
+      {state.error && <p className="text-sm text-red-600">{state.error}</p>}
+      <SaveButton saving={state.saving} saved={state.saved} onClick={save} label="Change password" />
+    </section>
+  );
+}
+
 export default function Settings() {
-  const { me } = useMe();
+  const { me, authMode } = useMe();
   return (
     <div className="max-w-lg space-y-10">
-      <h1 className="text-2xl font-bold text-gray-900">Settings</h1>
+      <div>
+        <h1 className="text-2xl font-bold text-gray-900">Settings</h1>
+        <Link to="/setup" className="text-sm text-blue-600 underline">Open the setup wizard</Link>
+      </div>
       <MySettings />
+      {authMode === 'local' && <MyPassword />}
       <DeletedEpisodes />
       {me.role === 'admin' && <SharedSettings />}
     </div>

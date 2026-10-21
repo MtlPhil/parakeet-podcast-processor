@@ -165,3 +165,35 @@ export const getDailyRun = () => request('/daily-run');
 export const getSettings = () => request('/settings');
 export const updateSettings = (data) =>
   request('/settings', { method: 'PUT', body: JSON.stringify(data) });
+
+// Sign-in (installs without a reverse proxy) and the setup wizard
+export const getAuthStatus = () => request('/auth/status');
+export const createFirstAdmin = (account) =>
+  request('/auth/setup', { method: 'POST', body: JSON.stringify(account) });
+export const login = (username, password) =>
+  request('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) });
+export const logout = () => request('/auth/logout', { method: 'POST' });
+export const changeMyPassword = (current_password, new_password) =>
+  request('/me/password', {
+    method: 'POST',
+    body: JSON.stringify({ current_password, new_password }),
+  });
+export const createUser = (user) =>
+  request('/admin/users', { method: 'POST', body: JSON.stringify(user) });
+export const resetPassword = (username, password) =>
+  request(`/admin/users/${encodeURIComponent(username)}/password`, {
+    method: 'PUT',
+    body: JSON.stringify({ password }),
+  });
+
+export const getSetupProgress = () => request('/setup/progress');
+export const finishSetup = () => request('/setup/progress', { method: 'POST' });
+export const getSecrets = () => request('/setup/secrets');
+export const setSecrets = (secrets) =>
+  request('/setup/secrets', { method: 'PUT', body: JSON.stringify(secrets) });
+export const checkOllama = () => request('/setup/ollama');
+export const sendTestEmail = (to) =>
+  request('/setup/test-email', { method: 'POST', body: JSON.stringify({ to }) });
+export const getNetwork = () => request('/setup/network');
+export const setNetwork = (lan, force = false) =>
+  request('/setup/network', { method: 'PUT', body: JSON.stringify({ lan, force }) });
