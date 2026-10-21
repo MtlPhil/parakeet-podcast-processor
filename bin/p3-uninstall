@@ -6,12 +6,22 @@ P3_HOME="$(cd "$(dirname "$0")/.." && pwd)"
 P3_LABEL=com.parakeet.p3
 [[ -f "$P3_HOME/config/install.env" ]] && source "$P3_HOME/config/install.env"
 PLIST="$HOME/Library/LaunchAgents/$P3_LABEL.plist"
+SERVICE="gui/$(id -u)/$P3_LABEL"
 
-launchctl bootout "gui/$(id -u)/$P3_LABEL" 2>/dev/null || true
+launchctl bootout "$SERVICE" 2>/dev/null || true
 rm -f "$PLIST"
+# bootout returns before P3 has finished shutting down
+for _ in $(seq 1 20); do
+  launchctl print "$SERVICE" >/dev/null 2>&1 || break
+  sleep 0.5
+done
 echo "P3 is stopped and won't start again."
-printf 'Also delete %s, including your podcasts, summaries and accounts? [y/N] ' "$P3_HOME"
-read -r answer < /dev/tty || answer=""
+
+answer=""
+if [[ -r /dev/tty ]] && { true < /dev/tty; } 2>/dev/null; then
+  printf 'Also delete %s, including your podcasts, summaries and accounts? [y/N] ' "$P3_HOME" > /dev/tty
+  read -r answer < /dev/tty || answer=""
+fi
 if [[ "$answer" == [yY]* ]]; then
   rm -rf "$P3_HOME"
   echo "Deleted."
