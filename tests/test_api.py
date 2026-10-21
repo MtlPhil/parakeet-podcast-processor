@@ -1306,3 +1306,24 @@ class TestMultiUser:
         assert (post["content"], post["content_fr"]) == ("Hello", "Bonjour")
         assert [p["slug"] for p in client.get("/api/linkedin").json()] == ["old"]
         assert client.get("/api/linkedin/pod-ep").status_code == 404
+
+
+def test_web_app_logs_info_messages(capsys, monkeypatch):
+    """The p3.* loggers reach stderr (the launchd log) at INFO, once."""
+    import logging
+
+    from p3.api.main import configure_logging
+
+    p3_logger = logging.getLogger("p3")
+    # Rebind to this test's captured stderr; restored afterwards.
+    monkeypatch.setattr(
+        p3_logger,
+        "handlers",
+        [h for h in p3_logger.handlers if not getattr(h, "_p3_handler", False)],
+    )
+    configure_logging()
+    configure_logging()
+    logging.getLogger("p3.api.tasks").info("daily report emailed (test)")
+    err = capsys.readouterr().err
+    assert err.count("daily report emailed (test)") == 1
+    assert "INFO p3.api.tasks:" in err

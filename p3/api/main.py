@@ -1,6 +1,7 @@
 """FastAPI application for P³ web interface."""
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from pathlib import Path
@@ -33,6 +34,28 @@ from p3.api.routers import (
 from p3.api.scheduler import daily_scheduler
 from p3.api.tasks import resume_interrupted_runs
 
+
+def configure_logging() -> None:
+    """Send the app's own log messages (the ``p3.*`` loggers) to stderr at
+    INFO, timestamped. Uvicorn only sets up its own loggers, so without this
+    Python's fallback prints warnings and errors only: daily-run progress,
+    "report emailed" and the like were lost. Level from ``P3_LOG_LEVEL``.
+    Idempotent."""
+    p3_logger = logging.getLogger("p3")
+    if any(getattr(h, "_p3_handler", False) for h in p3_logger.handlers):
+        return
+    handler = logging.StreamHandler()
+    handler._p3_handler = True
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s: %(message)s", "%Y-%m-%d %H:%M:%S"
+        )
+    )
+    p3_logger.addHandler(handler)
+    p3_logger.setLevel(os.environ.get("P3_LOG_LEVEL", "INFO").upper())
+
+
+configure_logging()
 logger = logging.getLogger(__name__)
 
 
