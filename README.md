@@ -50,10 +50,10 @@ P³ ships as both a command-line tool (`p3`) and a web app (FastAPI + React).
   so it is only used for the languages listed in `parakeet_languages`. Long
   Parakeet episodes are transcribed in 10-minute chunks to keep memory use
   bounded.
-- **Transcript cleaning.** Filler words are stripped with a regex. The LLM then
-  polishes the transcript and removes ads and sponsor reads. Chunks are split at
-  natural pauses in the audio, which tends to hand an ad break to the model as a
-  self-contained block.
+- **Transcript cleaning.** Filler words are stripped with a regex. The summary
+  prompts then tell the LLM to ignore ads and sponsor reads. The transcript is
+  not rewritten by the LLM first: that took most of each episode's processing
+  time and let sponsors through more often than the prompt rule does.
 - **Structured digests.** Each episode gets a ~300-word summary plus lists of
   key topics, themes, notable quotes and companies mentioned. If no LLM is
   available, a keyword-frequency fallback fills them in.
@@ -492,8 +492,8 @@ by a previous process are marked as failed on startup, and they can be retried.
 bounded in two ways:
 
 - **Input.** Transcripts are cut to about 100k characters, keeping the start and
-  end. Cleaning and synopsis work on chunks rather than the whole transcript,
-  because small local models tend to compress long inputs heavily.
+  end. The synopsis works section by section rather than on the whole
+  transcript, because small local models tend to compress long inputs heavily.
 - **Output.** Every request sets a token cap, and Ollama gets a mild repeat
   penalty, so a model caught in a repetition loop cannot run away.
 

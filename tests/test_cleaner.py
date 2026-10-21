@@ -448,3 +448,46 @@ class TestTranslation:
         assert summary["themes_fr"] == ["FR item"]
         assert summary["quotes"] == ["Quote"]  # quotes stay verbatim
         db.close()
+
+
+class TestDigestWithoutRewrite:
+    def test_summary_reads_the_transcript_directly_and_skips_ads(self, tmp_path):
+        """The digest no longer asks the LLM to rewrite the transcript; the
+        prompts that read it carry the ad rule instead."""
+        from p3 import cleaner as cleaner_module
+
+        db = P3Database(str(tmp_path / "test.duckdb"))
+        try:
+            pid = db.add_podcast("Pod", "http://example.com/rss")
+            eid = db.add_episode(pid, "Ep 1", datetime.now(), "http://example.com/ep1.mp3")
+            db.add_transcript_segments(
+                eid,
+                [{"text": "Um, this episode is brought to you by Acme. So, uh, we discuss soil.",
+                  "start": 0.0, "end": 5.0, "speaker": None, "confidence": 1.0}],
+            )
+            c = TranscriptCleaner(db=db, llm_provider="ollama")
+            prompts = []
+
+            def fake_chat(system, user, max_tokens=2000):
+                prompts.append(user)
+                if user.startswith(cleaner_module._SUMMARY_PROMPT):
+                    return '{"key_topics": ["soil"], "themes": ["farming"], "quotes": [], "startups": []}'
+                return "Une ligne"
+
+            c._chat = fake_chat
+            assert c.generate_summary(eid) is not None
+
+            assert not any(p.startswith(cleaner_module._CLEAN_PROMPT) for p in prompts)
+            readers = [p for p in prompts if "Transcript:" in p]
+            assert len(readers) == 2  # structured + short summary
+            for p in readers:
+                assert cleaner_module._AD_RULE in p
+                assert "brought to you by Acme" in p  # raw text; the model skips the ad
+                assert "Um," not in p  # fillers still removed by regex
+        finally:
+            db.close()
+
+    def test_synopsis_prompt_carries_the_ad_rule(self):
+        from p3 import cleaner as cleaner_module
+
+        assert cleaner_module._AD_RULE in cleaner_module._SECTION_NOTES_PROMPT

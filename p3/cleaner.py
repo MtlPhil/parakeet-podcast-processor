@@ -33,6 +33,19 @@ Return only the cleaned text, no additional commentary.
 Transcript:
 """
 
+# Summaries read the transcript as transcribed (fillers removed by regex,
+# no LLM rewrite: rewriting cost two thirds of each episode's LLM time and
+# let sponsor reads through anyway), so every prompt that reads it is told
+# to ignore ads itself.
+_AD_RULE = (
+    "The transcript is raw and may include advertisements and sponsor reads: "
+    'sponsor thank-yous, "this episode is brought to you by...", ad-free or '
+    "Patreon offers, promo codes, discount offers and calls to visit a website. "
+    "Ignore all of that completely: never mention sponsors, advertisers, their "
+    "products or offers, and don't list a company that appears only in an ad. "
+    "Base everything on the hosts' actual discussion."
+)
+
 _SUMMARY_PROMPT = """Analyze this podcast transcript and extract structured information in JSON format:
 
 {
@@ -48,12 +61,16 @@ Guidelines:
 - quotes: Memorable, insightful quotes (2-3 max)
 - startups: Any companies, startups, or brands mentioned
 
+""" + _AD_RULE + """
+
 Transcript:
 """
 
 # Short (~300 word) overview for a quick read. The long-form study notes
 # (_SECTION_NOTES_PROMPT) complement it rather than replace it.
 _SHORT_SUMMARY_PROMPT = """Write a summary of this podcast episode in about 300 words. This is not a marketing blurb or episode synopsis (the kind of thing you'd find on the podcast's website); skip scene-setting like "In this episode, X sits down with Y to discuss...". Go straight into substance: what the episode covers, the main arguments or claims made, and the concrete takeaways. Return only the summary text, no headings or commentary.
+
+""" + _AD_RULE + """
 
 Transcript:
 """
@@ -64,6 +81,8 @@ Transcript:
 # at a time keeps the output proportional to the source and gives even
 # coverage of every part of the episode.
 _SECTION_NOTES_PROMPT = """This is one part of a longer podcast transcript (not the whole episode). Write detailed study notes covering what happens in THIS PART — not a brief overview, and don't write as if summarizing a whole episode. For every distinct point or argument raised here, explain: what was claimed, the reasoning or evidence behind it, and any specific examples, numbers, or names mentioned. Write in full paragraphs, at least 150 words. Skip small talk and filler, but do not skip substantive content. Do not add framing like "This section discusses..." or "In this part..." — start directly with the content itself, as if continuing an ongoing set of notes.
+
+""" + _AD_RULE + """
 
 Transcript part:
 """
@@ -471,8 +490,10 @@ class TranscriptCleaner:
         if not full_text.strip():
             return None
 
-        # Clean the transcript first
-        cleaned_text = self.clean_transcript(full_text, segments=segments)
+        # Fillers removed by regex only. An LLM rewrite of the whole transcript
+        # (clean_transcript) took most of this step's time; the prompts skip
+        # ads themselves (_AD_RULE).
+        cleaned_text = self._basic_clean_text(full_text)
 
         # Generate structured summary using LLM
         summary_data = self._generate_structured_summary(cleaned_text)
@@ -517,7 +538,7 @@ class TranscriptCleaner:
         if not full_text.strip():
             return None
 
-        cleaned_text = self.clean_transcript(full_text, segments=segments)
+        cleaned_text = self._basic_clean_text(full_text)
         synopsis = self._generate_long_summary(cleaned_text)
         if synopsis:
             self.db.update_summary_long_summary(episode_id, synopsis)
