@@ -990,6 +990,24 @@ class P3Database:
         )
         return self._fetchall_as_dicts(cursor)
 
+    def get_episodes_added_since(
+        self, since: datetime, username: str
+    ) -> List[Dict[str, Any]]:
+        """A user's episodes that entered their library at or after
+        ``since`` (database clock), with podcast title."""
+        cursor = self.conn.execute(
+            """
+            SELECT e.*, p.title as podcast_title
+            FROM episodes e
+            JOIN podcasts p ON e.podcast_id = p.id
+            JOIN user_episodes ue ON ue.episode_id = e.id AND ue.username = ?
+            WHERE ue.created_at >= ?
+            ORDER BY e.date DESC
+        """,
+            (username, since),
+        )
+        return self._fetchall_as_dicts(cursor)
+
     def count_episodes_created_since(
         self, since: datetime, username: Optional[str] = None
     ) -> int:

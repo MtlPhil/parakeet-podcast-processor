@@ -22,6 +22,11 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(
         job_queue.job_runner, "enqueue", lambda fn, *a: enqueued.append((fn, a))
     )
+    monkeypatch.setattr(
+        job_queue.job_runner,
+        "enqueue_priority",
+        lambda fn, *a: enqueued.append((fn, a)),
+    )
     yield deps.get_db(), enqueued
     deps.close_db()
 
@@ -131,31 +136,62 @@ class TestDailyRunSteps:
         (job,) = db.get_jobs_by_run("run-1")
         assert job["username"] == ann
 
-    def test_pipeline_step_queues_the_users_unprocessed_episodes(self, env):
+    def test_pipeline_step_queues_only_the_runs_new_episodes(self, env):
         db, enqueued = env
         ann = _user(db, "ann")
         pid = db.add_podcast("Pod", "http://example.com/rss")
         ids = {}
-        for status in ("downloaded", "transcribed", "processed", "other_user"):
-            eid = db.add_episode(
-                pid, status, datetime(2026, 10, 1), f"http://example.com/{status}"
+        for name in ("backlog", "processed_backlog", "new", "new_processed", "other_user"):
+            ids[name] = db.add_episode(
+                pid, name, datetime(2026, 10, 1), f"http://example.com/{name}"
             )
-            if status != "other_user":
-                db.update_episode_status(eid, status)
-                db.link_episode(ann, eid)
-            ids[status] = eid
+        for name in ("backlog", "processed_backlog"):
+            db.link_episode(ann, ids[name])
+        db.conn.execute("UPDATE user_episodes SET created_at = TIMESTAMP '2026-01-01'")
+        db.update_episode_status(ids["processed_backlog"], "processed")
+        db.create_job("fetch", podcast_id=pid, run_id="run-1", username=ann)
+        for name in ("new", "new_processed"):
+            db.link_episode(ann, ids[name])
+        db.update_episode_status(ids["new_processed"], "processed")
 
         tasks.daily_queue_pipelines("run-1", ann)
 
-        assert _names(enqueued) == [
-            "task_full_pipeline",
-            "task_full_pipeline",
-            "daily_queue_content",
+        assert _names(enqueued) == ["task_full_pipeline", "daily_queue_content"]
+        assert enqueued[0][1][1] == ids["new"]
+
+    def test_finish_queues_the_backlog_after_the_report_on_the_normal_lane(
+        self, env, monkeypatch
+    ):
+        db, _ = env
+        lanes = []
+        monkeypatch.setattr(
+            job_queue.job_runner, "enqueue", lambda fn, *a: lanes.append(("normal", fn.__name__))
+        )
+        monkeypatch.setattr(
+            job_queue.job_runner,
+            "enqueue_priority",
+            lambda fn, *a: lanes.append(("priority", fn.__name__)),
+        )
+        order = []
+        monkeypatch.setattr(
+            tasks, "_email_run_report", lambda *a: order.append("email")
+        )
+        ann = _user(db, "ann")
+        pid = db.add_podcast("Pod", "http://example.com/rss")
+        backlog = db.add_episode(pid, "b", datetime(2026, 10, 1), "http://example.com/b")
+        busy = db.add_episode(pid, "c", datetime(2026, 10, 1), "http://example.com/c")
+        db.link_episode(ann, backlog)
+        db.link_episode(ann, busy)
+        db.create_job("full_pipeline", episode_id=busy, podcast_id=pid, username=ann)
+
+        tasks.daily_finish("run-1", ann)
+
+        assert order == ["email"]
+        assert lanes == [("normal", "task_full_pipeline")]
+        (job,) = [
+            j for j in db.get_active_jobs(ann) if j["episode_id"] == backlog
         ]
-        assert {a[1] for _, a in enqueued[:2]} == {
-            ids["downloaded"],
-            ids["transcribed"],
-        }
+        assert job["run_id"] is None
 
     def test_content_step_is_opt_in_and_marks_the_run_finished(self, env):
         db, enqueued = env

@@ -59,3 +59,27 @@ def test_start_is_idempotent():
     runner.start()
     assert runner._thread is first
     runner.stop()
+
+
+def test_priority_lane_runs_before_queued_normal_work():
+    """Daily-run work jumps ahead of normal work waiting in the queue, but
+    never interrupts the task already running."""
+    runner = JobRunner()
+    gate = threading.Event()
+    started = threading.Event()
+    done = threading.Event()
+    order = []
+
+    runner.start()
+    runner.enqueue(lambda: (started.set(), gate.wait(5), order.append("running")))
+    assert started.wait(timeout=5)
+    runner.enqueue(order.append, "normal-1")
+    runner.enqueue(order.append, "normal-2")
+    runner.enqueue_priority(order.append, "daily-1")
+    runner.enqueue_priority(order.append, "daily-2")
+    runner.enqueue(done.set)
+    gate.set()
+
+    assert done.wait(timeout=5)
+    runner.stop()
+    assert order == ["running", "daily-1", "daily-2", "normal-1", "normal-2"]

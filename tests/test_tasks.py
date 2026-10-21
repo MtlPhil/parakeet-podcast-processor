@@ -104,6 +104,11 @@ def _bulk_env(monkeypatch, tmp_path):
     monkeypatch.setattr(
         tasks.job_runner, "enqueue", lambda fn, *a: enqueued.append((fn.__name__, a))
     )
+    monkeypatch.setattr(
+        tasks.job_runner,
+        "enqueue_priority",
+        lambda fn, *a: enqueued.append((fn.__name__, a)),
+    )
 
     def fake_resolve(url):
         if "bad" in url:

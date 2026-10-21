@@ -511,6 +511,9 @@ class TestJobs:
         from p3.api import job_queue
 
         monkeypatch.setattr(job_queue.job_runner, "enqueue", lambda *a, **k: None)
+        monkeypatch.setattr(
+            job_queue.job_runner, "enqueue_priority", lambda *a, **k: None
+        )
         db = deps.get_db()
         pid = db.add_podcast("Pod", "http://example.com/rss")
         jid = db.create_job("fetch", podcast_id=pid)
@@ -531,6 +534,9 @@ class TestJobs:
         from p3.api import job_queue
 
         monkeypatch.setattr(job_queue.job_runner, "enqueue", lambda *a, **k: None)
+        monkeypatch.setattr(
+            job_queue.job_runner, "enqueue_priority", lambda *a, **k: None
+        )
         db = deps.get_db()
         pid = db.add_podcast("Pod", "http://example.com/rss")
         eid = db.add_episode(pid, "Ep", datetime.now(), "http://example.com/e.mp3")
@@ -554,6 +560,9 @@ class TestJobs:
         from p3.api import job_queue
 
         monkeypatch.setattr(job_queue.job_runner, "enqueue", lambda *a, **k: None)
+        monkeypatch.setattr(
+            job_queue.job_runner, "enqueue_priority", lambda *a, **k: None
+        )
         db = deps.get_db()
         pid = db.add_podcast("Pod", "http://example.com/rss")
         eid = db.add_episode(pid, "Ep", datetime.now(), "http://example.com/e.mp3")

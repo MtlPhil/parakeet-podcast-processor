@@ -647,6 +647,7 @@ def queue_step_jobs(
     step: str,
     run_id: Optional[str] = None,
     username: Optional[str] = None,
+    priority: bool = False,
 ) -> list[str]:
     """Create one job per eligible episode for a pipeline step and hand it to
     the serial job runner.
@@ -662,6 +663,7 @@ def queue_step_jobs(
     if step not in plans:
         raise ValueError(f"Unknown step: {step}")
     task_fn, job_type, eligible = plans[step]
+    enqueue = job_runner.enqueue_priority if priority else job_runner.enqueue
 
     job_ids = []
     for ep in episodes:
@@ -674,7 +676,7 @@ def queue_step_jobs(
             run_id=run_id,
             username=username,
         )
-        job_runner.enqueue(task_fn, job_id, ep["id"])
+        enqueue(task_fn, job_id, ep["id"])
         job_ids.append(job_id)
     return job_ids
 
@@ -715,8 +717,8 @@ def queue_daily_run(db, username: str) -> str:
         feeds = new_config_feeds(db, load_config().get("feeds") or [])
         if feeds:
             job_id = db.create_job("import_feeds", run_id=run_id, username=username)
-            job_runner.enqueue(task_import_feeds, job_id, feeds)
-    job_runner.enqueue(daily_queue_fetches, run_id, username)
+            job_runner.enqueue_priority(task_import_feeds, job_id, feeds)
+    job_runner.enqueue_priority(daily_queue_fetches, run_id, username)
     return run_id
 
 
@@ -763,9 +765,9 @@ def resume_daily_run(
             continue
         refetched.add(pid)
         job_id = db.create_job("fetch", podcast_id=pid, run_id=run_id, username=username)
-        job_runner.enqueue(task_fetch, job_id, pid, None, None, username)
+        job_runner.enqueue_priority(task_fetch, job_id, pid, None, None, username)
 
-    job_runner.enqueue(daily_queue_pipelines, run_id, username)
+    job_runner.enqueue_priority(daily_queue_pipelines, run_id, username)
     logger.info("Resuming interrupted daily run %s for %s", run_id, username)
     return run_id
 
@@ -786,19 +788,30 @@ def daily_queue_fetches(run_id: str, username: str):
         job_id = db.create_job(
             "fetch", podcast_id=podcast["id"], run_id=run_id, username=username
         )
-        job_runner.enqueue(task_fetch, job_id, podcast["id"], None, None, username)
-    job_runner.enqueue(daily_queue_pipelines, run_id, username)
+        job_runner.enqueue_priority(
+            task_fetch, job_id, podcast["id"], None, None, username
+        )
+    job_runner.enqueue_priority(daily_queue_pipelines, run_id, username)
+
+
+def _run_since(db, run_id: str):
+    """When the run's first job was created (database clock), or None."""
+    created = [j["created_at"] for j in db.get_jobs_by_run(run_id) if j["created_at"]]
+    return min(created) if created else None
 
 
 def daily_queue_pipelines(run_id: str, username: str):
-    """Daily run step: a full pipeline job for every one of the user's
-    episodes not yet processed, including those the fetches just added."""
+    """Daily run step: a full pipeline job, ahead of all other work, for each
+    episode this run's fetches brought into the user's library. Older
+    unprocessed episodes (the backlog) are left for after the report."""
     db = get_db()
+    since = _run_since(db, run_id)
+    episodes = db.get_episodes_added_since(since, username) if since else []
     job_ids = queue_step_jobs(
-        db, db.get_all_episodes(username), "pipeline", run_id, username
+        db, episodes, "pipeline", run_id, username, priority=True
     )
-    logger.info("Daily run: queued %d episode(s) for processing", len(job_ids))
-    job_runner.enqueue(daily_queue_content, run_id, username)
+    logger.info("Daily run: queued %d new episode(s) for processing", len(job_ids))
+    job_runner.enqueue_priority(daily_queue_content, run_id, username)
 
 
 def daily_queue_content(run_id: str, username: str):
@@ -819,7 +832,7 @@ def daily_queue_content(run_id: str, username: str):
                 run_id=run_id,
                 username=username,
             )
-            job_runner.enqueue(
+            job_runner.enqueue_priority(
                 task_write_linkedin, job_id, job["episode_id"], None, None, username
             )
 
@@ -832,11 +845,11 @@ def daily_queue_content(run_id: str, username: str):
                 if f in ("markdown", "json")
             ] or ["markdown", "json"]
             job_id = db.create_job("export", run_id=run_id, username=username)
-            job_runner.enqueue(
+            job_runner.enqueue_priority(
                 task_export, job_id, today.strftime("%Y-%m-%d"), formats, username
             )
 
-    job_runner.enqueue(daily_finish, run_id, username)
+    job_runner.enqueue_priority(daily_finish, run_id, username)
 
 
 def daily_finish(run_id: str, username: str):
@@ -847,7 +860,25 @@ def daily_finish(run_id: str, username: str):
     db.set_state(run_key("finished_id", username), run_id)
     active_run_ids.discard(run_id)
     logger.info("Daily run finished for %s", username)
+    try:
+        _email_run_report(db, run_id, username)
+    finally:
+        queue_backlog(db, username)
 
+
+def queue_backlog(db, username: str) -> list[str]:
+    """After the report: a normal-lane pipeline job for each of the user's
+    episodes still unprocessed that has no job pending or running already."""
+    busy = {j["episode_id"] for j in db.get_active_jobs(username)}
+    episodes = [e for e in db.get_all_episodes(username) if e["id"] not in busy]
+    job_ids = queue_step_jobs(db, episodes, "pipeline", None, username)
+    if job_ids:
+        logger.info("Queued %d backlog episode(s) for %s", len(job_ids), username)
+    return job_ids
+
+
+def _email_run_report(db, run_id: str, username: str):
+    """Email the run's report if the user asked for it. Never raises."""
     settings = user_settings(username)
     if not settings.get("daily_run_email"):
         return
