@@ -127,6 +127,29 @@ hundred MB each). Plan for several GB of free memory while a model is loaded.
 YouTube changes often break older yt-dlp releases. If YouTube downloads start
 failing, upgrade it first: `pip install -U "yt-dlp[default]"`.
 
+## Install on a Mac (one command)
+
+On a Mac with Apple Silicon (M1 or newer), open Terminal and paste:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MtlPhil/parakeet-podcast-processor/main/install.sh | bash
+```
+
+It needs no Homebrew, Xcode or git: Python, ffmpeg and deno are downloaded
+into `~/Parakeet`, and P3 starts in the background (and at every login). Your
+browser then opens P3's setup: create your account (the first one is the
+admin), then choose a language, the service that writes summaries, the daily
+digest email, whether other devices on your home network can open P3, and
+your first podcasts. Every page can be skipped and reopened from Settings.
+Admins add other people, as admins or users, on the Admin page.
+
+Run the same command again to update; your podcasts, accounts and settings
+are kept. To remove P3, run `~/Parakeet/bin/p3-uninstall`.
+
+This mode uses P3's own sign-in (`P3_AUTH=local`) and is for a Mac on a home
+network, without a reverse proxy. For a server behind Traefik + Authelia,
+use the manual installation below (proxy mode is the default).
+
 ## Installation
 
 ```bash
