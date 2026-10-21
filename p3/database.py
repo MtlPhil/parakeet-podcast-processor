@@ -13,6 +13,10 @@ import duckdb
 logger = logging.getLogger(__name__)
 
 
+# Error recorded on jobs a server restart cut short (see fail_stale_jobs).
+INTERRUPTED_ERROR = "interrupted: server restarted"
+
+
 class P3Database:
     def __init__(self, db_path: str = "data/p3.duckdb"):
         self.db_path = Path(db_path)
@@ -889,6 +893,11 @@ class P3Database:
         params.append(job_id)
         self.conn.execute(f"UPDATE jobs SET {', '.join(parts)} WHERE id = ?", params)
 
+    def delete_jobs(self, job_ids: List[str]) -> None:
+        """Delete jobs by id."""
+        for job_id in job_ids:
+            self.conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+
     def fail_stale_jobs(self) -> int:
         """Mark jobs left 'pending'/'running' by a previous process as failed.
 
@@ -902,7 +911,7 @@ class P3Database:
         if count:
             self.conn.execute(
                 "UPDATE jobs SET status = 'failed', "
-                "error = 'interrupted: server restarted', "
+                f"error = '{INTERRUPTED_ERROR}', "
                 "completed_at = CURRENT_TIMESTAMP "
                 "WHERE status IN ('pending', 'running')"
             )

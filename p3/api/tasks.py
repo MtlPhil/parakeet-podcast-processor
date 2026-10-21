@@ -10,11 +10,12 @@ import logging
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from p3.api.deps import content_dir, get_db, load_config, user_settings
 from p3.api.job_queue import job_runner
+from p3.database import INTERRUPTED_ERROR
 from p3.llm import DEFAULT_OLLAMA_URL, resolve_provider_and_model
 
 logger = logging.getLogger(__name__)
@@ -717,6 +718,65 @@ def queue_daily_run(db, username: str) -> str:
             job_runner.enqueue(task_import_feeds, job_id, feeds)
     job_runner.enqueue(daily_queue_fetches, run_id, username)
     return run_id
+
+
+def resume_daily_run(
+    db, username: str, max_age: Optional[timedelta] = None
+) -> Optional[str]:
+    """Pick up ``username``'s daily run if a restart cut it short, so it
+    still reaches its last step (the emailed digest) instead of leaving
+    the report unsent. Returns the run id, or None if there was nothing
+    to resume.
+
+    The jobs the restart killed are replaced by new jobs tagged with the
+    same run id (so the report counts them), fetches that never finished
+    are repeated, and the chain restarts at the pipeline step, which
+    queues every episode still unprocessed — a no-op for those already
+    done. ``max_age`` ignores a run started longer ago than that."""
+    run_id = db.get_state(run_key("id", username))
+    if not run_id or run_id in active_run_ids:
+        return None
+    if db.get_state(run_key("finished_id", username)) == run_id:
+        return None
+    if max_age is not None:
+        try:
+            started = datetime.fromisoformat(db.get_state(run_key("started_at", username)))
+        except (TypeError, ValueError):
+            return None
+        if datetime.now() - started > max_age:
+            return None
+
+    active_run_ids.add(run_id)
+    killed = [
+        j
+        for j in db.get_jobs_by_run(run_id)
+        if j["status"] == "failed" and j["error"] == INTERRUPTED_ERROR
+    ]
+    db.delete_jobs([j["id"] for j in killed])
+
+    refetched = set()
+    for job in killed:
+        pid = job["podcast_id"]
+        if job["job_type"] != "fetch" or not pid or pid in refetched:
+            continue
+        if not db.get_podcast_by_id(pid):
+            continue
+        refetched.add(pid)
+        job_id = db.create_job("fetch", podcast_id=pid, run_id=run_id, username=username)
+        job_runner.enqueue(task_fetch, job_id, pid, None, None, username)
+
+    job_runner.enqueue(daily_queue_pipelines, run_id, username)
+    logger.info("Resuming interrupted daily run %s for %s", run_id, username)
+    return run_id
+
+
+def resume_interrupted_runs(db, max_age: Optional[timedelta] = None) -> list[str]:
+    """resume_daily_run for every user. Returns the users resumed."""
+    return [
+        user["username"]
+        for user in db.get_all_users()
+        if resume_daily_run(db, user["username"], max_age)
+    ]
 
 
 def daily_queue_fetches(run_id: str, username: str):

@@ -7,11 +7,14 @@ from p3.api.deps import get_db
 from p3.api.job_queue import job_runner
 from p3.api.models import JobOut
 from p3.api.tasks import (
+    resume_daily_run,
     task_digest,
     task_fetch,
     task_full_pipeline,
     task_transcribe,
 )
+
+from p3.database import INTERRUPTED_ERROR
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
@@ -104,6 +107,9 @@ def retry_failed_jobs(username: str = Depends(current_username)):
     db = get_db()
     seen = set()
     job_ids = []
+    # A daily run a restart cut short is resumed as a whole, so it still
+    # finishes and emails its report; plain re-queued jobs would not.
+    resumed = resume_daily_run(db, username)
     for job in db.get_failed_jobs(username):
         key = (job["job_type"], job["episode_id"], job["podcast_id"])
         if key in seen:
@@ -117,7 +123,11 @@ def retry_failed_jobs(username: str = Depends(current_username)):
         job_runner.enqueue(task_fn, new_id, *task_args)
         job_ids.append(new_id)
     db.clear_failed_jobs(username)
-    return {"queued": len(job_ids), "job_ids": job_ids}
+    return {
+        "queued": len(job_ids) + (1 if resumed else 0),
+        "job_ids": job_ids,
+        "resumed_run": resumed,
+    }
 
 
 @router.delete("/failed", response_model=dict)
@@ -155,6 +165,12 @@ def retry_job(job_id: str, username: str = Depends(current_username)):
         raise HTTPException(404, "Job not found")
     if job["status"] != "failed":
         raise HTTPException(400, "Only failed jobs can be retried")
+
+    if job["run_id"] and job["error"] == INTERRUPTED_ERROR:
+        # Cut short with its daily run: resume the run so it still finishes
+        # and emails its report, rather than re-running this job alone.
+        if resume_daily_run(db, username) == job["run_id"]:
+            return {"job_id": None, "resumed_run": job["run_id"]}
 
     plan = _retry_plan(db, job)
     if plan is None:

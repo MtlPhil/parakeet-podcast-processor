@@ -2,6 +2,7 @@
 
 import logging
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -30,6 +31,7 @@ from p3.api.routers import (
     users,
 )
 from p3.api.scheduler import daily_scheduler
+from p3.api.tasks import resume_interrupted_runs
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,14 @@ async def lifespan(app: FastAPI):
         logger.warning("Marked %d interrupted job(s) as failed", stale)
     # Start the serial pipeline worker, then the daily run that feeds it
     job_runner.start()
+    # A daily run the restart cut short is resumed, so its digest still goes
+    # out. Runs older than two days are left alone.
+    try:
+        resumed = resume_interrupted_runs(db, max_age=timedelta(days=2))
+        if resumed:
+            logger.warning("Resumed interrupted daily run(s) for: %s", ", ".join(resumed))
+    except Exception:
+        logger.exception("Could not resume the interrupted daily run")
     daily_scheduler.start()
     logger.info("P3 API started")
     yield

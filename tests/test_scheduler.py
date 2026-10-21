@@ -237,3 +237,51 @@ class TestDailyRunSteps:
         assert _names(enqueued) == ["task_export", "daily_finish"]
         # HTML isn't produced by the export task, so the default formats apply.
         assert enqueued[0][1][2:] == (["markdown", "json"], ann)
+
+
+class TestResumeInterruptedRun:
+    """A restart mid-run must not leave the digest email unsent."""
+
+    def _interrupted_run(self, env):
+        db, enqueued = env
+        user = _user(db, "alice", daily_run_email=True, email="a@example.com")
+        pid = db.add_podcast("Pod", "http://x/feed")
+        db.subscribe(user, pid)
+        run_id = tasks.queue_daily_run(db, user)
+        tasks.active_run_ids.discard(run_id)  # the process "died"
+        fetch = db.create_job("fetch", podcast_id=pid, run_id=run_id, username=user)
+        pipe = db.create_job("full_pipeline", run_id=run_id, username=user)
+        db.conn.execute("UPDATE jobs SET status='running' WHERE id IN (?, ?)", (fetch, pipe))
+        db.fail_stale_jobs()
+        enqueued.clear()
+        return db, enqueued, user, run_id, pid
+
+    def test_resumes_the_run_down_to_the_email(self, env):
+        db, enqueued, user, run_id, pid = self._interrupted_run(env)
+        assert tasks.resume_daily_run(db, user) == run_id
+        names = _names(enqueued)
+        assert names == ["task_fetch", "daily_queue_pipelines"]
+        # killed jobs are replaced under the same run id, not left as errors
+        jobs = db.get_jobs_by_run(run_id)
+        assert [j["status"] for j in jobs] == ["pending"]
+        assert jobs[0]["job_type"] == "fetch"
+        # the chain continues to the finishing step that sends the email
+        tasks.daily_queue_pipelines(run_id, user)
+        tasks.daily_queue_content(run_id, user)
+        assert _names(enqueued)[-1] == "daily_finish"
+
+    def test_nothing_to_resume_when_finished_or_running(self, env):
+        db, enqueued, user, run_id, pid = self._interrupted_run(env)
+        db.set_state(run_key("finished_id", user), run_id)
+        assert tasks.resume_daily_run(db, user) is None
+        db.set_state(run_key("finished_id", user), "")
+        tasks.active_run_ids.add(run_id)
+        assert tasks.resume_daily_run(db, user) is None
+        tasks.active_run_ids.discard(run_id)
+
+    def test_old_runs_are_left_alone(self, env):
+        from datetime import timedelta
+
+        db, enqueued, user, run_id, pid = self._interrupted_run(env)
+        db.set_state(run_key("started_at", user), "2020-01-01T04:00:00")
+        assert tasks.resume_daily_run(db, user, max_age=timedelta(days=2)) is None
