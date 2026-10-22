@@ -854,18 +854,94 @@ def daily_queue_content(run_id: str, username: str):
     job_runner.enqueue_priority(daily_finish, run_id, username)
 
 
+# A run that could read none of its feeds (no network at run time) is tried
+# again later instead of counting as the day's run, and a report email that
+# failed to send is sent again later. Both every RETRY_MINUTES, a few times.
+RETRY_MINUTES = 15
+MAX_RUN_ATTEMPTS = 8
+MAX_EMAIL_ATTEMPTS = 8
+
+
+def attempts_today(db, key: str, today: str) -> int:
+    """Attempt count stored as "YYYY-MM-DD:n"; 0 for another day."""
+    day, _, count = (db.get_state(key) or "").partition(":")
+    return int(count) if day == today and count.isdigit() else 0
+
+
+def _all_fetches_failed(db, run_id: str) -> bool:
+    """True if the run fetched feeds and every one reported a problem: the
+    sign of a network outage rather than one broken feed."""
+    fetches = [j for j in db.get_jobs_by_run(run_id) if j["job_type"] == "fetch"]
+    return bool(fetches) and all(j["error"] for j in fetches)
+
+
 def daily_finish(run_id: str, username: str):
     """Daily run step: mark the run finished, then email the user the run's
-    report if they asked for it. A mail problem never affects the run; it is
-    logged and kept in ``app_state`` under ``email_error``."""
+    report if they asked for it.
+
+    If no feed could be read, the run is retried in RETRY_MINUTES instead
+    (see scheduler.run_if_due), up to MAX_RUN_ATTEMPTS runs a day; the last
+    one reports whatever happened. A report that fails to send is sent
+    again later (retry_report_email). A mail problem never affects the run;
+    it is logged and kept in ``app_state`` under ``email_error``."""
     db = get_db()
     db.set_state(run_key("finished_id", username), run_id)
     active_run_ids.discard(run_id)
+    now = datetime.now()
+    today = now.date().isoformat()
+    if (
+        _all_fetches_failed(db, run_id)
+        and attempts_today(db, run_key("attempts", username), today) < MAX_RUN_ATTEMPTS
+    ):
+        retry_at = now + timedelta(minutes=RETRY_MINUTES)
+        db.set_state(run_key("retry_at", username), retry_at.isoformat("T", "seconds"))
+        logger.warning(
+            "Daily run for %s could not read any feed; trying again at %s",
+            username,
+            retry_at.strftime("%H:%M"),
+        )
+        return
+    db.set_state(run_key("retry_at", username), "")
     logger.info("Daily run finished for %s", username)
     try:
-        _email_run_report(db, run_id, username)
+        if not _email_run_report(db, run_id, username):
+            _schedule_email_retry(db, run_id, username)
     finally:
         queue_backlog(db, username)
+
+
+def _schedule_email_retry(db, run_id: str, username: str):
+    """Send this run's report again in RETRY_MINUTES, or give up after
+    MAX_EMAIL_ATTEMPTS."""
+    now = datetime.now()
+    today = now.date().isoformat()
+    sent_tries = attempts_today(db, run_key("email_attempts", username), today) + 1
+    if sent_tries > MAX_EMAIL_ATTEMPTS:
+        db.set_state(run_key("email_retry", username), "")
+        logger.error("Giving up on emailing the report of run %s", run_id)
+        return
+    retry_at = now + timedelta(minutes=RETRY_MINUTES)
+    db.set_state(run_key("email_attempts", username), f"{today}:{sent_tries}")
+    db.set_state(run_key("email_retry", username), run_id)
+    db.set_state(
+        run_key("email_retry_at", username), retry_at.isoformat("T", "seconds")
+    )
+    logger.warning(
+        "Will try emailing the report again at %s", retry_at.strftime("%H:%M")
+    )
+
+
+def retry_report_email(username: str):
+    """Send a report whose email failed earlier (queued by the scheduler)."""
+    db = get_db()
+    run_id = db.get_state(run_key("email_retry", username))
+    if not run_id:
+        return
+    if _email_run_report(db, run_id, username):
+        db.set_state(run_key("email_retry", username), "")
+        db.set_state(run_key("email_attempts", username), "")
+    else:
+        _schedule_email_retry(db, run_id, username)
 
 
 def queue_backlog(db, username: str) -> list[str]:
@@ -879,11 +955,12 @@ def queue_backlog(db, username: str) -> list[str]:
     return job_ids
 
 
-def _email_run_report(db, run_id: str, username: str):
-    """Email the run's report if the user asked for it. Never raises."""
+def _email_run_report(db, run_id: str, username: str) -> bool:
+    """Email the run's report if the user asked for it. Never raises.
+    Returns False only if sending was attempted and failed."""
     settings = user_settings(username)
     if not settings.get("daily_run_email"):
-        return
+        return True
     try:
         from p3.mailer import build_email, collect_run_report, send_email
 
@@ -899,9 +976,11 @@ def _email_run_report(db, run_id: str, username: str):
         send_email(settings, to, subject, text, html)
         db.set_state(run_key("email_error", username), "")
         logger.info("Daily report emailed to %s", to)
+        return True
     except Exception as e:
         logger.exception("Could not email the daily report")
         db.set_state(run_key("email_error", username), str(e))
+        return False
 
 
 def task_full_pipeline(job_id: str, episode_id: int):

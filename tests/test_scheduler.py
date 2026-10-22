@@ -182,7 +182,7 @@ class TestDailyRunSteps:
         )
         order = []
         monkeypatch.setattr(
-            tasks, "_email_run_report", lambda *a: order.append("email")
+            tasks, "_email_run_report", lambda *a: order.append("email") or True
         )
         ann = _user(db, "ann")
         pid = db.add_podcast("Pod", "http://example.com/rss")
@@ -331,3 +331,122 @@ class TestResumeInterruptedRun:
         db, enqueued, user, run_id, pid = self._interrupted_run(env)
         db.set_state(run_key("started_at", user), "2020-01-01T04:00:00")
         assert tasks.resume_daily_run(db, user, max_age=timedelta(days=2)) is None
+
+
+class TestRetries:
+    """A run that reads no feed is retried; a report that fails to send is
+    sent again."""
+
+    def _failed_fetch_run(
+        self, db, user, run_id, error="Could not read the feed: no network"
+    ):
+        pid = db.add_podcast("Pod", f"http://example.com/{run_id}.rss")
+        job = db.create_job("fetch", podcast_id=pid, run_id=run_id, username=user)
+        db.update_job(job, status="completed", error=error)
+        return pid
+
+    def test_run_that_read_no_feed_is_retried_later_without_email(
+        self, env, monkeypatch
+    ):
+        from p3 import mailer
+
+        db, enqueued = env
+        sent = []
+        monkeypatch.setattr(mailer, "send_email", lambda *a: sent.append(a))
+        ann = _user(db, "ann", daily_run_email=True, email="a@b.c")
+        today = datetime.now().date().isoformat()
+        db.set_state(run_key("last_date", ann), today)
+        db.set_state(run_key("attempts", ann), f"{today}:1")
+        self._failed_fetch_run(db, ann, "run-1")
+
+        tasks.daily_finish("run-1", ann)
+
+        assert sent == []
+        retry_at = datetime.fromisoformat(db.get_state(run_key("retry_at", ann)))
+        assert 14 <= (retry_at - datetime.now()).total_seconds() / 60 <= 15
+
+        # Not yet due: nothing starts. Due: a new run starts, attempt 2.
+        enqueued.clear()
+        assert run_if_due(datetime.now()) == []
+        assert run_if_due(retry_at) == ["ann"]
+        assert db.get_state(run_key("attempts", ann)) == f"{today}:2"
+        assert db.get_state(run_key("retry_at", ann)) == ""
+        assert "daily_queue_fetches" in _names(enqueued)
+
+    def test_one_broken_feed_does_not_trigger_a_retry(self, env, monkeypatch):
+        from p3 import mailer
+
+        db, _ = env
+        sent = []
+        monkeypatch.setattr(mailer, "send_email", lambda *a: sent.append(a))
+        ann = _user(db, "ann", daily_run_email=True, email="a@b.c")
+        self._failed_fetch_run(db, ann, "run-1")
+        ok = db.create_job("fetch", podcast_id=1, run_id="run-1", username=ann)
+        db.update_job(ok, status="completed")
+
+        tasks.daily_finish("run-1", ann)
+
+        assert not db.get_state(run_key("retry_at", ann))
+        assert len(sent) == 1
+
+    def test_last_attempt_reports_instead_of_retrying(self, env, monkeypatch):
+        from p3 import mailer
+
+        db, _ = env
+        sent = []
+        monkeypatch.setattr(mailer, "send_email", lambda *a: sent.append(a))
+        ann = _user(db, "ann", daily_run_email=True, email="a@b.c")
+        today = datetime.now().date().isoformat()
+        db.set_state(run_key("attempts", ann), f"{today}:{tasks.MAX_RUN_ATTEMPTS}")
+        self._failed_fetch_run(db, ann, "run-9")
+
+        tasks.daily_finish("run-9", ann)
+
+        assert not db.get_state(run_key("retry_at", ann))
+        assert len(sent) == 1  # the report lists the problems
+
+    def test_failed_email_is_sent_again_for_the_same_run(self, env, monkeypatch):
+        from p3 import mailer
+
+        db, enqueued = env
+        calls = []
+
+        def flaky(*args):
+            calls.append(args)
+            if len(calls) == 1:
+                raise OSError("no network")
+
+        monkeypatch.setattr(mailer, "send_email", flaky)
+        ann = _user(db, "ann", daily_run_email=True, email="a@b.c")
+
+        tasks.daily_finish("run-1", ann)
+        assert db.get_state(run_key("email_retry", ann)) == "run-1"
+        retry_at = datetime.fromisoformat(db.get_state(run_key("email_retry_at", ann)))
+
+        enqueued.clear()
+        run_if_due(datetime.now())
+        assert "retry_report_email" not in _names(enqueued)
+        run_if_due(retry_at)
+        assert _names(enqueued).count("retry_report_email") == 1
+        run_if_due(retry_at)  # queued once, not every minute
+        assert _names(enqueued).count("retry_report_email") == 1
+
+        tasks.retry_report_email(ann)
+        assert len(calls) == 2
+        assert db.get_state(run_key("email_retry", ann)) == ""
+        assert db.get_state(run_key("email_error", ann)) == ""
+
+    def test_email_retries_give_up_eventually(self, env, monkeypatch):
+        from p3 import mailer
+
+        db, _ = env
+
+        def down(*args):
+            raise OSError("no network")
+
+        monkeypatch.setattr(mailer, "send_email", down)
+        ann = _user(db, "ann", daily_run_email=True, email="a@b.c")
+        tasks.daily_finish("run-1", ann)
+        for _ in range(tasks.MAX_EMAIL_ATTEMPTS):
+            tasks.retry_report_email(ann)
+        assert db.get_state(run_key("email_retry", ann)) == ""

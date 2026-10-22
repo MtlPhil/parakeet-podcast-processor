@@ -15,7 +15,14 @@ from datetime import datetime
 from typing import Optional, Tuple
 
 from p3.api.deps import get_db, user_settings
-from p3.api.tasks import queue_daily_run, run_key
+from p3.api.job_queue import job_runner
+from p3.api.tasks import (
+    active_run_ids,
+    attempts_today,
+    queue_daily_run,
+    retry_report_email,
+    run_key,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,16 +53,51 @@ def run_if_due(now: Optional[datetime] = None) -> list[str]:
     started = []
     for user in db.get_all_users():
         username = user["username"]
+        _retry_email_if_due(db, username, now)
         run_time = parse_run_time(user_settings(username).get("daily_run_time"))
         if run_time is None or (now.hour, now.minute) < run_time:
             continue
         if db.get_state(run_key("last_date", username)) == today:
+            # Already run today, unless it read no feed and is due a retry
+            # (tasks.daily_finish).
+            if not _due(db.get_state(run_key("retry_at", username)), now):
+                continue
+            if db.get_state(run_key("id", username)) in active_run_ids:
+                continue
+            attempt = attempts_today(db, run_key("attempts", username), today) + 1
+            db.set_state(run_key("retry_at", username), "")
+            db.set_state(run_key("attempts", username), f"{today}:{attempt}")
+            queue_daily_run(db, username)
+            logger.info("Daily run retry %d queued for %s", attempt, username)
+            started.append(username)
             continue
         db.set_state(run_key("last_date", username), today)
+        db.set_state(run_key("attempts", username), f"{today}:1")
+        db.set_state(run_key("retry_at", username), "")
         queue_daily_run(db, username)
         logger.info("Daily run queued for %s", username)
         started.append(username)
     return started
+
+
+def _due(when: Optional[str], now: datetime) -> bool:
+    """True if ``when`` (ISO datetime, possibly empty) has passed."""
+    if not when:
+        return False
+    try:
+        return datetime.fromisoformat(when) <= now
+    except ValueError:
+        return False
+
+
+def _retry_email_if_due(db, username: str, now: datetime):
+    """Queue a failed report email's next try once its time has come."""
+    if not db.get_state(run_key("email_retry", username)):
+        return
+    if not _due(db.get_state(run_key("email_retry_at", username)), now):
+        return
+    db.set_state(run_key("email_retry_at", username), "")
+    job_runner.enqueue_priority(retry_report_email, username)
 
 
 class DailyScheduler:
