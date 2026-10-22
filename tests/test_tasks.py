@@ -9,7 +9,11 @@ from p3.api.tasks import _start_heartbeat
 def test_heartbeat_ticks_with_elapsed_message():
     db = MagicMock()
     stop = _start_heartbeat(db, "job1", "Working", interval=0.05)
-    time.sleep(0.17)
+    # Wait for the ticks rather than a fixed time: on a busy CI runner the
+    # heartbeat thread can be scheduled late.
+    deadline = time.monotonic() + 5
+    while db.update_job.call_count < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
     stop()
 
     assert db.update_job.call_count >= 2
