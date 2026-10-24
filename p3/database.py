@@ -6,7 +6,7 @@ import threading
 import uuid
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import duckdb
 
@@ -170,6 +170,14 @@ class P3Database:
 
         # Migration: who started a job (None for the daily run and the CLI)
         self.conn.execute("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS username VARCHAR")
+        # Migration: what a fetch job fetches (a hand-picked selection, as a
+        # JSON list of guids, and/or an episode limit), so a retry repeats it
+        self.conn.execute(
+            "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS episode_guids VARCHAR"
+        )
+        self.conn.execute(
+            "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS max_episodes INTEGER"
+        )
         # Migration: Quebec French versions of the digest, next to English
         for column, kind in (
             ("full_summary_fr", "TEXT"),
@@ -868,18 +876,39 @@ class P3Database:
         podcast_id: Optional[int] = None,
         run_id: Optional[str] = None,
         username: Optional[str] = None,
+        episode_guids: Optional[List[str]] = None,
+        max_episodes: Optional[int] = None,
     ) -> str:
-        """Create a new background job. Returns the job ID."""
+        """Create a new background job. Returns the job ID. A fetch job
+        records what it fetches: ``episode_guids`` (hand-picked) and/or
+        ``max_episodes``, read back by ``job_fetch_args``."""
         job_id = str(uuid.uuid4())
+        guids = json.dumps(episode_guids) if episode_guids is not None else None
         self.conn.execute(
             """
             INSERT INTO jobs
-                (id, episode_id, podcast_id, job_type, status, run_id, username)
-            VALUES (?, ?, ?, ?, 'pending', ?, ?)
+                (id, episode_id, podcast_id, job_type, status, run_id, username,
+                 episode_guids, max_episodes)
+            VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)
         """,
-            (job_id, episode_id, podcast_id, job_type, run_id, username),
+            (
+                job_id,
+                episode_id,
+                podcast_id,
+                job_type,
+                run_id,
+                username,
+                guids,
+                max_episodes,
+            ),
         )
         return job_id
+
+    @staticmethod
+    def job_fetch_args(job: Dict[str, Any]) -> Tuple[Optional[int], Optional[List]]:
+        """(max_episodes, episode_guids) a fetch job was created with."""
+        raw = job.get("episode_guids")
+        return job.get("max_episodes"), json.loads(raw) if raw is not None else None
 
     def update_job(
         self,

@@ -530,6 +530,92 @@ class TestJobs:
         # original stays as history
         assert db.get_job(jid)["status"] == "failed"
 
+    def test_retry_fetch_repeats_the_hand_picked_episodes(self, monkeypatch):
+        from p3.api import job_queue
+        from p3.api.routers import jobs as jobs_router
+
+        enqueued = []
+        monkeypatch.setattr(
+            job_queue.job_runner, "enqueue", lambda *a, **k: enqueued.append(a)
+        )
+        monkeypatch.setattr(
+            job_queue.job_runner, "enqueue_priority", lambda *a, **k: None
+        )
+        db = deps.get_db()
+        pid = db.add_podcast("Chan", "https://www.youtube.com/channel/UC1")
+        picked = db.create_job("fetch", podcast_id=pid, episode_guids=["v1", "v2"])
+        db.update_job(picked, status="failed", error="blocked")
+        # A later plain fetch of the newest episodes completes: it does not
+        # stand in for the picks, so they can still be retried.
+        plain = db.create_job("fetch", podcast_id=pid)
+        db.update_job(plain, status="completed")
+
+        resp = client.post(f"/api/jobs/{picked}/retry")
+
+        assert resp.status_code == 200
+        new_job = db.get_job(resp.json()["job_id"])
+        assert db.job_fetch_args(new_job) == (None, ["v1", "v2"])
+        [(fn, _job_id, _pid, max_eps, guids, _user)] = enqueued
+        assert fn is jobs_router.task_fetch
+        assert (max_eps, guids) == (None, ["v1", "v2"])
+
+    def test_retry_fetch_rejected_once_the_same_picks_succeeded(self, monkeypatch):
+        from p3.api import job_queue
+
+        monkeypatch.setattr(job_queue.job_runner, "enqueue", lambda *a, **k: None)
+        db = deps.get_db()
+        pid = db.add_podcast("Chan", "https://www.youtube.com/channel/UC1")
+        picked = db.create_job("fetch", podcast_id=pid, episode_guids=["v1", "v2"])
+        db.update_job(picked, status="failed")
+        again = db.create_job("fetch", podcast_id=pid, episode_guids=["v2", "v1"])
+        db.update_job(again, status="completed")
+
+        assert client.post(f"/api/jobs/{picked}/retry").status_code == 400
+
+    def test_retry_all_keeps_each_selection_of_a_podcast(self, monkeypatch):
+        from p3.api import job_queue
+
+        enqueued = []
+        monkeypatch.setattr(
+            job_queue.job_runner, "enqueue", lambda *a, **k: enqueued.append(a)
+        )
+        db = deps.get_db()
+        pid = db.add_podcast("Chan", "https://www.youtube.com/channel/UC1")
+        for guids in (["v1"], ["v2", "v3"], ["v3", "v2"]):
+            jid = db.create_job("fetch", podcast_id=pid, episode_guids=guids)
+            db.update_job(jid, status="failed")
+
+        resp = client.post("/api/jobs/retry-failed")
+
+        assert resp.json()["queued"] == 2
+        assert sorted(sorted(a[4]) for a in enqueued) == [["v1"], ["v2", "v3"]]
+
+    def test_add_and_fetch_record_the_picks_on_the_job(self, monkeypatch):
+        from p3 import url_resolver
+        from p3.api import job_queue
+
+        monkeypatch.setattr(job_queue.job_runner, "enqueue", lambda *a, **k: None)
+        monkeypatch.setattr(
+            url_resolver,
+            "resolve_source",
+            lambda url: url_resolver.ResolvedSource(
+                url=url, name="Pod", source_type="rss"
+            ),
+        )
+        db = deps.get_db()
+
+        resp = client.post(
+            "/api/podcasts",
+            json={"url": "http://example.com/rss", "episode_guids": ["a", "b"]},
+        )
+        job = db.get_job(resp.json()["job_id"])
+        assert db.job_fetch_args(job) == (None, ["a", "b"])
+
+        pid = resp.json()["podcast_id"]
+        resp = client.post(f"/api/podcasts/{pid}/fetch", json={"max_episodes": 3})
+        job = db.get_job(resp.json()["job_id"])
+        assert db.job_fetch_args(job) == (3, None)
+
     def test_retry_transcribe_reuses_episode(self, monkeypatch):
         from p3.api import job_queue
 

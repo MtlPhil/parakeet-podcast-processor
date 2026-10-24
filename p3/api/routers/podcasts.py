@@ -205,7 +205,12 @@ def add_podcast(body: PodcastCreate, username: str = Depends(current_username)):
 
     # Queue the initial fetch. If episode_guids was hand-picked from a
     # preview listing, only those are downloaded instead of the top-N.
-    job_id = db.create_job("fetch", podcast_id=podcast_id, username=username)
+    job_id = db.create_job(
+        "fetch",
+        podcast_id=podcast_id,
+        username=username,
+        episode_guids=body.episode_guids,
+    )
     job_runner.enqueue(
         task_fetch, job_id, podcast_id, None, body.episode_guids, username
     )
@@ -241,7 +246,13 @@ def fetch_podcast(
 
     max_eps = body.max_episodes if body else None
     guids = body.episode_guids if body else None
-    job_id = db.create_job("fetch", podcast_id=podcast_id, username=username)
+    job_id = db.create_job(
+        "fetch",
+        podcast_id=podcast_id,
+        username=username,
+        episode_guids=guids,
+        max_episodes=max_eps,
+    )
     job_runner.enqueue(task_fetch, job_id, podcast_id, max_eps, guids, username)
     return {"job_id": job_id}
 

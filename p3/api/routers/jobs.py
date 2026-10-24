@@ -32,16 +32,27 @@ _STEP_STILL_NEEDED = {
 }
 
 
-def _newer_completed_fetch(db, podcast_id, after) -> bool:
-    """True if a later fetch for this podcast has already completed."""
+def _same_fetch(db, a, b) -> bool:
+    """True if two fetch jobs fetch the same thing (same picks, same limit)."""
+    (max_a, guids_a), (max_b, guids_b) = db.job_fetch_args(a), db.job_fetch_args(b)
+    if (guids_a is None) != (guids_b is None):
+        return False
+    return max_a == max_b and set(guids_a or []) == set(guids_b or [])
+
+
+def _newer_completed_fetch(db, job) -> bool:
+    """True if a later fetch of the same podcast and the same selection has
+    already completed. A plain fetch of the newest episodes doesn't stand
+    in for a hand-picked one, nor the other way round."""
     for j in db.get_recent_jobs(limit=200):
         if (
             j["job_type"] == "fetch"
-            and j["podcast_id"] == podcast_id
+            and j["podcast_id"] == job["podcast_id"]
             and j["status"] == "completed"
             and j["created_at"]
-            and after
-            and j["created_at"] > after
+            and job["created_at"]
+            and j["created_at"] > job["created_at"]
+            and _same_fetch(db, j, job)
         ):
             return True
     return False
@@ -57,12 +68,18 @@ def _retry_plan(db, job):
         pid = job["podcast_id"]
         if not pid or not db.get_podcast_by_id(pid):
             return None
-        if _newer_completed_fetch(db, pid, job["created_at"]):
+        if _newer_completed_fetch(db, job):
             return None
+        max_eps, guids = db.job_fetch_args(job)
         return (
             task_fetch,
-            (pid, None, None, job["username"]),
-            {"podcast_id": pid, "username": job["username"]},
+            (pid, max_eps, guids, job["username"]),
+            {
+                "podcast_id": pid,
+                "username": job["username"],
+                "episode_guids": guids,
+                "max_episodes": max_eps,
+            },
         )
 
     if job_type in _EPISODE_TASKS:
@@ -110,7 +127,9 @@ def retry_failed_jobs(username: str = Depends(current_username)):
     # finishes and emails its report; plain re-queued jobs would not.
     resumed = resume_daily_run(db, username)
     for job in db.get_failed_jobs(username):
-        key = (job["job_type"], job["episode_id"], job["podcast_id"])
+        max_eps, guids = db.job_fetch_args(job)
+        picks = frozenset(guids) if guids is not None else None
+        key = (job["job_type"], job["episode_id"], job["podcast_id"], max_eps, picks)
         if key in seen:
             continue
         seen.add(key)
