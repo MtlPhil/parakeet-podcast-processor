@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 SUPPORTED_PROVIDERS = ("ollama", "openai", "gemini")
 
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
-DEFAULT_OLLAMA_MODEL = "llama3.2:latest"
+DEFAULT_OLLAMA_MODEL = "gemma4:12b"
 DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
 
 # Context window requested from Ollama: the longest cleaned/truncated

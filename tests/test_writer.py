@@ -125,7 +125,7 @@ class TestSaveLinkedInPost:
                 "episode_title": "Episode 1",
                 "podcast_title": "Podcast A",
                 "generated_at": "2026-09-12T12:00:00",
-                "model_used": "llama3.2:latest",
+                "model_used": "gemma4:12b",
             },
         }
         file_path = writer.save_linkedin_post(result, output_dir=str(tmp_path))

@@ -24,7 +24,7 @@ class TestResolveProviderAndModel:
     def test_gemini_uses_gemini_model_setting(self):
         settings = {
             "llm_provider": "ollama",
-            "llm_model": "llama3.2:latest",
+            "llm_model": "gemma4:12b",
             "gemini_model": "gemini-test",
         }
         assert resolve_provider_and_model(settings, provider="gemini") == (
@@ -123,9 +123,9 @@ class TestReleaseOllamaModels:
         return install
 
     def test_unloads_every_model_and_waits_until_gone(self, fake):
-        client = fake(loaded=["gemma4:12b", "llama3.2:latest"], polls_until_gone=3)
+        client = fake(loaded=["gemma4:12b", "other-model:latest"], polls_until_gone=3)
         release_ollama_models()
-        assert client.unloaded == ["gemma4:12b", "llama3.2:latest"]
+        assert client.unloaded == ["gemma4:12b", "other-model:latest"]
         assert client.loaded == []
 
     def test_nothing_loaded_sends_no_unload(self, fake):

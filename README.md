@@ -156,7 +156,7 @@ use the manual installation below (proxy mode is the default).
 # 1. System tools
 brew install ffmpeg
 brew install ollama          # or download the app from https://ollama.com
-ollama pull llama3.2         # any chat model works; set it in config
+ollama pull gemma4:12b       # any chat model works; set it in config
 
 # 2. Python package
 git clone https://github.com/<your-account>/parakeet-podcast-processor.git
@@ -219,7 +219,7 @@ settings:
   release_ollama_before_transcription: true  # unload Ollama before transcribing
 
   llm_provider: ollama              # ollama | openai | gemini
-  llm_model: "llama3.2:latest"      # model for ollama/openai
+  llm_model: "gemma4:12b"           # model for ollama/openai
   ollama_base_url: "http://localhost:11434"
   gemini_model: "gemini-3.8-flash"  # model used when the provider is gemini
 

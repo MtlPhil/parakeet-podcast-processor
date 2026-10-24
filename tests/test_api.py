@@ -25,7 +25,7 @@ deps._CONFIG_PATH = os.path.join(_tmp_dir, "feeds.yaml")
 
 # Write a minimal config
 Path(deps._CONFIG_PATH).write_text(
-    "feeds: []\nsettings:\n  llm_provider: ollama\n  llm_model: llama3.2:latest\n"
+    "feeds: []\nsettings:\n  llm_provider: ollama\n  llm_model: gemma4:12b\n"
 )
 
 from p3.api.main import app

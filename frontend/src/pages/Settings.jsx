@@ -196,7 +196,7 @@ function SharedSettings() {
         </select>
       </Field>
       <Field label="Summarizing LLM model" htmlFor="shared-model">
-        <input id="shared-model" type="text" value={s.llm_model || ''} onChange={(e) => set('llm_model', e.target.value)} placeholder="e.g. llama3.2:latest" className={inputClass} />
+        <input id="shared-model" type="text" value={s.llm_model || ''} onChange={(e) => set('llm_model', e.target.value)} placeholder="e.g. gemma4:12b" className={inputClass} />
       </Field>
       <Field label="Gemini model" htmlFor="shared-gemini">
         <input id="shared-gemini" type="text" value={s.gemini_model || ''} onChange={(e) => set('gemini_model', e.target.value)} placeholder="Used when the provider is Gemini" className={inputClass} />

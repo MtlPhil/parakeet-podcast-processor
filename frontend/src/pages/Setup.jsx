@@ -208,7 +208,7 @@ function SummariesStep(nav) {
             ) : (
               <p className="text-sm text-amber-700">
                 Ollama is running but has no models yet. Open Ollama, download a model (for example
-                “llama3.2”), then check again.
+                “gemma4:12b”), then check again.
               </p>
             )
           ) : (

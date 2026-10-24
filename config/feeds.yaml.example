@@ -29,7 +29,7 @@ settings:
 
   # LLM used for cleaning, summaries and writing: ollama, openai or gemini
   llm_provider: ollama
-  llm_model: "llama3.2:latest"
+  llm_model: "gemma4:12b"
   ollama_base_url: "http://localhost:11434"
   # Model used when the provider is gemini (key: GEMINI_API_KEY or
   # config/gemini_api_key.txt). OpenAI reads OPENAI_API_KEY.
