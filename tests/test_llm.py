@@ -1,9 +1,16 @@
 """Tests for the provider-agnostic LLM client helpers (no network calls)."""
 
+from types import SimpleNamespace
+
 import pytest
 
 from p3 import llm
-from p3.llm import LLMClient, load_api_key, resolve_provider_and_model
+from p3.llm import (
+    LLMClient,
+    load_api_key,
+    release_ollama_models,
+    resolve_provider_and_model,
+)
 
 
 class TestResolveProviderAndModel:
@@ -74,3 +81,66 @@ class TestLLMClient:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
             LLMClient(provider="openai").chat("system", "user")
+
+
+class _FakeOllama:
+    """Stands in for ollama.Client: reports ``loaded`` until a model's
+    unload request has been answered by ``polls_until_gone`` more ps() calls."""
+
+    def __init__(self, loaded, polls_until_gone=1, unreachable=False):
+        self.loaded = list(loaded)
+        self.polls_until_gone = polls_until_gone
+        self.unreachable = unreachable
+        self.unloaded = []
+        self._polls_after_unload = 0
+
+    def ps(self):
+        if self.unreachable:
+            raise ConnectionError("Failed to connect to Ollama")
+        if self.unloaded:
+            self._polls_after_unload += 1
+            if self._polls_after_unload > self.polls_until_gone:
+                self.loaded = []
+        return SimpleNamespace(models=[SimpleNamespace(model=m) for m in self.loaded])
+
+    def generate(self, model, keep_alive=None):
+        assert keep_alive == 0
+        self.unloaded.append(model)
+
+
+class TestReleaseOllamaModels:
+    @pytest.fixture
+    def fake(self, monkeypatch):
+        def install(**kwargs):
+            client = _FakeOllama(**kwargs)
+            monkeypatch.setattr(llm, "OLLAMA_AVAILABLE", True)
+            monkeypatch.setattr(
+                llm, "ollama", SimpleNamespace(Client=lambda host: client)
+            )
+            monkeypatch.setattr(llm.time, "sleep", lambda s: None)
+            return client
+
+        return install
+
+    def test_unloads_every_model_and_waits_until_gone(self, fake):
+        client = fake(loaded=["gemma4:12b", "llama3.2:latest"], polls_until_gone=3)
+        release_ollama_models()
+        assert client.unloaded == ["gemma4:12b", "llama3.2:latest"]
+        assert client.loaded == []
+
+    def test_nothing_loaded_sends_no_unload(self, fake):
+        client = fake(loaded=[])
+        release_ollama_models()
+        assert client.unloaded == []
+
+    def test_stopped_ollama_holds_nothing(self, fake):
+        client = fake(loaded=[], unreachable=True)
+        release_ollama_models()
+        assert client.unloaded == []
+
+    def test_raises_when_a_model_stays_loaded(self, fake, monkeypatch):
+        fake(loaded=["gemma4:12b"], polls_until_gone=10**9)
+        clock = iter(range(0, 10**6, 10))
+        monkeypatch.setattr(llm.time, "monotonic", lambda: next(clock))
+        with pytest.raises(RuntimeError, match="gemma4:12b"):
+            release_ollama_models(timeout=60)

@@ -23,6 +23,9 @@ settings:
   parakeet_model: "mlx-community/parakeet-tdt-0.6b-v2"
   parakeet_languages: [en]
   whisper_model: turbo         # turbo, large, medium, small, base, tiny
+  # Unload Ollama's models (and wait until they're gone) before transcribing,
+  # so the LLM and the transcription models never share memory
+  release_ollama_before_transcription: true
 
   # LLM used for cleaning, summaries and writing: ollama, openai or gemini
   llm_provider: ollama

@@ -22,7 +22,12 @@ from .downloader import (
     new_config_feeds,
 )
 from .exporter import DigestExporter
-from .llm import DEFAULT_OLLAMA_URL, SUPPORTED_PROVIDERS, resolve_provider_and_model
+from .llm import (
+    DEFAULT_OLLAMA_URL,
+    SUPPORTED_PROVIDERS,
+    release_ollama_models,
+    resolve_provider_and_model,
+)
 from .transcriber import (
     DEFAULT_PARAKEET_MODEL,
     DEFAULT_WHISPER_MODEL,
@@ -218,6 +223,8 @@ def transcribe(ctx, model, episode_id):
     whisper_model = model or settings.get("whisper_model", DEFAULT_WHISPER_MODEL)
     use_parakeet = settings.get("parakeet_enabled", False)
 
+    if settings.get("release_ollama_before_transcription", True):
+        release_ollama_models(settings.get("ollama_base_url", DEFAULT_OLLAMA_URL))
     transcriber = AudioTranscriber(
         db=db,
         whisper_model=whisper_model,

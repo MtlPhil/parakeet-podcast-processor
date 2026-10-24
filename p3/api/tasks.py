@@ -16,7 +16,11 @@ from typing import Optional
 from p3.api.deps import content_dir, get_db, load_config, user_settings
 from p3.api.job_queue import job_runner
 from p3.database import INTERRUPTED_ERROR
-from p3.llm import DEFAULT_OLLAMA_URL, resolve_provider_and_model
+from p3.llm import (
+    DEFAULT_OLLAMA_URL,
+    release_ollama_models,
+    resolve_provider_and_model,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +46,13 @@ def _make_transcriber(db, settings: dict):
         parakeet_model=settings.get("parakeet_model", DEFAULT_PARAKEET_MODEL),
         parakeet_languages=settings.get("parakeet_languages"),
     )
+
+
+def _release_ollama(settings: dict) -> None:
+    """Free Ollama's memory before transcription models load, unless an admin
+    turned it off."""
+    if settings.get("release_ollama_before_transcription", True):
+        release_ollama_models(settings.get("ollama_base_url", DEFAULT_OLLAMA_URL))
 
 
 def _make_cleaner(
@@ -379,7 +390,9 @@ def task_transcribe(job_id: str, episode_id: int):
             message=f"Loading transcription model for: {title}",
         )
 
-        transcriber = _make_transcriber(db, _get_settings())
+        settings = _get_settings()
+        _release_ollama(settings)
+        transcriber = _make_transcriber(db, settings)
 
         db.update_job(job_id, progress=0.2, message=f"Transcribing: {title}")
         stop_heartbeat = _start_heartbeat(db, job_id, f"Transcribing: {title}")
@@ -1001,6 +1014,7 @@ def task_full_pipeline(job_id: str, episode_id: int):
         # Step 1: Transcribe (if needed)
         if episode["status"] == "downloaded":
             db.update_job(job_id, progress=0.1, message="Transcribing...")
+            _release_ollama(settings)
             transcriber = _make_transcriber(db, settings)
             success = transcriber.transcribe_episode(episode_id)
             transcriber.unload_models()

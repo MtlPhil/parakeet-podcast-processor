@@ -1,6 +1,7 @@
 """Provider-agnostic chat client shared by the summarizer and the writer."""
 
 import os
+import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union
 
@@ -30,6 +31,9 @@ GEMINI_API_KEY_FILE = Path("config/gemini_api_key.txt")
 OPENAI_API_KEY_FILE = Path("config/openai_api_key.txt")
 
 _REQUEST_TIMEOUT = 120.0
+
+# How long release_ollama_models waits for Ollama to free a model's memory.
+_OLLAMA_RELEASE_TIMEOUT = 60.0
 
 
 def load_api_key(provider: str) -> Optional[str]:
@@ -66,6 +70,36 @@ def resolve_provider_and_model(
     else:
         resolved_model = settings.get("llm_model") or DEFAULT_OLLAMA_MODEL
     return resolved_provider, resolved_model
+
+
+def release_ollama_models(
+    base_url: str = DEFAULT_OLLAMA_URL, timeout: float = _OLLAMA_RELEASE_TIMEOUT
+) -> None:
+    """Unload every model Ollama holds and wait until none is left.
+
+    A digest model kept resident for its ``keep_alive`` window and the
+    transcription models don't fit in memory together, so transcription calls
+    this first. Raises RuntimeError rather than return while a model is still
+    loaded. A stopped Ollama holds nothing.
+    """
+    if not OLLAMA_AVAILABLE:
+        return
+    client = ollama.Client(host=base_url)
+    try:
+        loaded = [m.model for m in client.ps().models if m.model]
+    except (ConnectionError, httpx.HTTPError):
+        return
+    for name in loaded:
+        client.generate(model=name, keep_alive=0)
+    deadline = time.monotonic() + timeout
+    while loaded:
+        if time.monotonic() > deadline:
+            raise RuntimeError(
+                f"Ollama still holds {', '.join(loaded)} after {timeout:.0f}s; "
+                "not loading transcription models alongside it"
+            )
+        time.sleep(0.5)
+        loaded = [m.model for m in client.ps().models if m.model]
 
 
 class LLMClient:

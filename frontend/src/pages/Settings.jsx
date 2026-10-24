@@ -217,6 +217,9 @@ function SharedSettings() {
       <Checkbox id="parakeet" checked={s.parakeet_enabled || false} onChange={(v) => set('parakeet_enabled', v)}>
         Use Parakeet MLX for English episodes (faster; other languages always use Whisper)
       </Checkbox>
+      <Checkbox id="release-ollama" checked={s.release_ollama_before_transcription ?? true} onChange={(v) => set('release_ollama_before_transcription', v)}>
+        Unload Ollama models before transcribing (the LLM and the transcription models may not fit in memory together)
+      </Checkbox>
       <Field label="Default max episodes per feed" htmlFor="shared-max">
         <input
           id="shared-max"

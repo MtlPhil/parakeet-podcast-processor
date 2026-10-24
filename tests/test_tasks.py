@@ -162,3 +162,24 @@ def test_bulk_add_fails_when_every_url_fails(monkeypatch, tmp_path):
     assert db.get_job(job)["status"] == "failed"
     assert enqueued == []
     db.close()
+
+
+class TestReleaseOllama:
+    def _released(self, monkeypatch, settings):
+        import p3.api.tasks as tasks
+
+        calls = []
+        monkeypatch.setattr(tasks, "release_ollama_models", calls.append)
+        tasks._release_ollama(settings)
+        return calls
+
+    def test_releases_by_default(self, monkeypatch):
+        assert self._released(monkeypatch, {}) == ["http://localhost:11434"]
+
+    def test_uses_configured_ollama_url(self, monkeypatch):
+        settings = {"ollama_base_url": "http://mac:11434"}
+        assert self._released(monkeypatch, settings) == ["http://mac:11434"]
+
+    def test_admin_can_turn_it_off(self, monkeypatch):
+        settings = {"release_ollama_before_transcription": False}
+        assert self._released(monkeypatch, settings) == []

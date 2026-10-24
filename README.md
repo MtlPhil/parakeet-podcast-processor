@@ -216,6 +216,7 @@ settings:
   parakeet_languages: [en]          # languages Parakeet handles; others → Whisper
   whisper_model: turbo              # turbo | large | medium | small | base | tiny,
                                     # or a Hugging Face repo of an MLX Whisper model
+  release_ollama_before_transcription: true  # unload Ollama before transcribing
 
   llm_provider: ollama              # ollama | openai | gemini
   llm_model: "llama3.2:latest"      # model for ollama/openai
