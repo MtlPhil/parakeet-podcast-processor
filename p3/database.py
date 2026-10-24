@@ -1003,6 +1003,39 @@ class P3Database:
         )
         return self._fetchall_as_dicts(cursor)
 
+    def now(self) -> datetime:
+        """The database clock, as its CURRENT_TIMESTAMP defaults record it."""
+        return self.conn.execute("SELECT CURRENT_TIMESTAMP::TIMESTAMP").fetchone()[0]
+
+    def get_episodes_processed_outside_runs(
+        self, since: Optional[datetime], username: str
+    ) -> List[Dict[str, Any]]:
+        """A user's episodes that a pipeline or digest job outside any daily
+        run (backlog, or started by hand) finished after ``since`` (database
+        clock; the last 24 hours if None), oldest first, with titles."""
+        cursor = self.conn.execute(
+            """
+            SELECT e.id AS episode_id,
+                   e.title AS episode_title,
+                   p.title AS podcast_title,
+                   MAX(j.completed_at) AS completed_at
+            FROM jobs j
+            JOIN episodes e ON e.id = j.episode_id
+            JOIN podcasts p ON p.id = e.podcast_id
+            JOIN user_episodes ue ON ue.episode_id = e.id AND ue.username = ?
+            WHERE j.job_type IN ('full_pipeline', 'digest')
+              AND j.status = 'completed'
+              AND j.run_id IS NULL
+              AND j.completed_at > COALESCE(
+                  CAST(? AS TIMESTAMP), CURRENT_TIMESTAMP::TIMESTAMP - INTERVAL 1 DAY
+              )
+            GROUP BY e.id, e.title, p.title
+            ORDER BY completed_at
+        """,
+            (username, since),
+        )
+        return self._fetchall_as_dicts(cursor)
+
     def get_episodes_added_since(
         self, since: datetime, username: str
     ) -> List[Dict[str, Any]]:

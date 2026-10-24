@@ -227,6 +227,33 @@ class TestDailyRunSteps:
         tasks.daily_finish("run-1", ann)
         assert [call[1] for call in sent] == ["a@b.c"]
 
+    def test_episodes_processed_outside_a_run_are_reported_once(self, env, monkeypatch):
+        from p3 import mailer
+
+        db, _ = env
+        sent = []
+        monkeypatch.setattr(mailer, "send_email", lambda *a: sent.append(a))
+        ann = _user(db, "ann", daily_run_email=True, email="a@b.c")
+        podcast_id = db.add_podcast("Video", "https://example.com/v.rss")
+        episode_id = db.add_episode(podcast_id, "Clip", None, "https://e.com/v", "x")
+        db.link_episode(ann, episode_id)
+        db.add_summary(
+            episode_id=episode_id,
+            full_summary="Summary of Clip",
+            key_topics=[],
+            themes=[],
+            quotes=[],
+            startups=[],
+        )
+        job_id = db.create_job("full_pipeline", episode_id=episode_id, username=ann)
+        db.update_job(job_id, status="completed")
+
+        tasks.daily_finish("run-1", ann)
+        tasks.daily_finish("run-2", ann)
+
+        subjects = [call[2] for call in sent]
+        assert "1 more" in subjects[0] and "more" not in subjects[1]
+
     def test_a_mail_failure_is_recorded_and_does_not_raise(self, env, monkeypatch):
         from p3 import mailer
 

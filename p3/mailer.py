@@ -1,9 +1,11 @@
-"""The daily run's email: new episodes, their digests by theme, and any errors."""
+"""The daily run's email: new episodes, those processed outside a run since the
+last report, their digests by theme, and any errors."""
 
 import logging
 import os
 import smtplib
 import ssl
+from datetime import datetime
 from email.message import EmailMessage
 from html import escape
 from pathlib import Path
@@ -24,6 +26,8 @@ _LABELS = {
         "new": "new",
         "problems": "problems",
         "episodes": "New episodes",
+        "earlier": "Also processed since the last report",
+        "more": "more",
         "digests": "Digests by theme",
         "errors": "Errors",
         "none": "No new episodes today.",
@@ -34,6 +38,8 @@ _LABELS = {
         "new": "nouveau(x)",
         "problems": "problème(s)",
         "episodes": "Nouveaux épisodes",
+        "earlier": "Aussi traités depuis le dernier rapport",
+        "more": "de plus",
         "digests": "Résumés par thème",
         "errors": "Erreurs",
         "none": "Aucun nouvel épisode aujourd'hui.",
@@ -49,10 +55,37 @@ def load_smtp_password() -> Optional[str]:
     return password or None
 
 
-def collect_run_report(db: P3Database, run_id: str, language: str) -> Dict[str, Any]:
+def _report_entry(
+    db: P3Database, episode_id: int, podcast: str, title: str, language: str
+) -> Optional[Dict[str, Any]]:
+    """An episode as the report shows it, with its digest in ``language``;
+    None if it has no digest."""
+    summary = db.get_summary_by_episode(episode_id)
+    if not summary:
+        return None
+    summary = localized(summary, language)
+    return {
+        "podcast": podcast or "",
+        "title": title or "",
+        "themes": summary.get("themes") or [],
+        "summary": summary.get("full_summary") or "",
+    }
+
+
+def collect_run_report(
+    db: P3Database,
+    run_id: str,
+    language: str,
+    username: Optional[str] = None,
+    since: Optional[datetime] = None,
+) -> Dict[str, Any]:
     """What the run produced: its new episodes (with their digest in
-    ``language``) and every error its jobs recorded."""
+    ``language``) and every error its jobs recorded. Given ``username``, also
+    ``earlier``: their episodes processed outside any run after ``since``
+    (see P3Database.get_episodes_processed_outside_runs), which no report
+    has shown yet."""
     episodes: List[Dict[str, Any]] = []
+    earlier: List[Dict[str, Any]] = []
     errors: List[str] = []
     seen = set()
     for job in db.get_jobs_by_run(run_id):
@@ -69,20 +102,25 @@ def collect_run_report(db: P3Database, run_id: str, language: str) -> Dict[str, 
         ):
             continue
         seen.add(episode_id)
-        summary = db.get_summary_by_episode(episode_id)
-        if not summary:
-            continue
-        summary = localized(summary, language)
-        themes = summary.get("themes") or []
-        episodes.append(
-            {
-                "podcast": job["podcast_title"] or "",
-                "title": job["episode_title"] or "",
-                "themes": themes,
-                "summary": summary.get("full_summary") or "",
-            }
+        entry = _report_entry(
+            db, episode_id, job["podcast_title"], job["episode_title"], language
         )
-    return {"episodes": episodes, "errors": errors}
+        if entry:
+            episodes.append(entry)
+    if username:
+        for row in db.get_episodes_processed_outside_runs(since, username):
+            if row["episode_id"] in seen:
+                continue
+            entry = _report_entry(
+                db,
+                row["episode_id"],
+                row["podcast_title"],
+                row["episode_title"],
+                language,
+            )
+            if entry:
+                earlier.append(entry)
+    return {"episodes": episodes, "earlier": earlier, "errors": errors}
 
 
 def group_by_theme(
@@ -104,22 +142,37 @@ def build_email(
     """(subject, plain text, HTML) for a run report."""
     t = _LABELS.get(language, _LABELS["en"])
     episodes, errors = report["episodes"], report["errors"]
-    groups = group_by_theme(episodes, t["other"])
+    earlier = report.get("earlier", [])
+    groups = group_by_theme(episodes + earlier, t["other"])
 
     subject = f"{t['subject']} — {day} ({len(episodes)} {t['new']}"
+    if earlier:
+        subject += f", {len(earlier)} {t['more']}"
     subject += f", {len(errors)} {t['problems']})" if errors else ")"
 
     text = [f"{t['episodes']}", ""]
     html = [f"<h2>{escape(t['episodes'])}</h2>"]
-    if episodes:
+
+    def episode_list(items: List[Dict[str, Any]]):
         html.append("<ul>")
-        for ep in episodes:
+        for ep in items:
             text.append(f"- {ep['podcast']}: {ep['title']}")
             html.append(
                 f"<li><strong>{escape(ep['podcast'])}</strong>: "
                 f"{escape(ep['title'])}</li>"
             )
         html.append("</ul>")
+
+    if episodes:
+        episode_list(episodes)
+    if earlier:
+        if not episodes:
+            text.append(t["none"])
+            html.append(f"<p>{escape(t['none'])}</p>")
+        text += ["", t["earlier"], ""]
+        html.append(f"<h2>{escape(t['earlier'])}</h2>")
+        episode_list(earlier)
+    if episodes or earlier:
         text += ["", t["digests"], ""]
         html.append(f"<h2>{escape(t['digests'])}</h2>")
         for theme, items in groups:

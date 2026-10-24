@@ -982,11 +982,17 @@ def _email_run_report(db, run_id: str, username: str) -> bool:
         if not to:
             raise RuntimeError("no email address set for this user")
         language = settings.get("language") or "en"
-        report = collect_run_report(db, run_id, language)
+        # Episodes processed outside a run are reported once: those finished
+        # since the last report that went out.
+        cutoff = db.now()
+        reported_at = db.get_state(run_key("reported_at", username))
+        since = datetime.fromisoformat(reported_at) if reported_at else None
+        report = collect_run_report(db, run_id, language, username, since)
         subject, text, html = build_email(
             report, datetime.now().strftime("%Y-%m-%d"), language
         )
         send_email(settings, to, subject, text, html)
+        db.set_state(run_key("reported_at", username), cutoff.isoformat())
         db.set_state(run_key("email_error", username), "")
         logger.info("Daily report emailed to %s", to)
         return True
