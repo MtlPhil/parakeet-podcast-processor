@@ -300,7 +300,11 @@ class P3Database:
         four DDL statements (the column default depends on the sequence, so
         it must be detached first), and a process killed mid-way can leave a
         WAL that DuckDB cannot replay. Checking first keeps that window rare.
+        A finished repair is checkpointed at once: DuckDB cannot replay a WAL
+        holding ``SET DEFAULT nextval(...)`` at all, so until the next
+        checkpoint a hard kill would leave a database that does not open.
         """
+        repaired = False
         for table, seq in (
             ("podcasts", "podcast_id_seq"),
             ("episodes", "episode_id_seq"),
@@ -330,6 +334,9 @@ class P3Database:
             self.conn.execute(
                 f"ALTER TABLE {table} ALTER COLUMN id SET DEFAULT nextval('{seq}')"
             )
+            repaired = True
+        if repaired:
+            self.conn.execute("CHECKPOINT")
 
     def add_podcast(
         self,

@@ -502,6 +502,36 @@ class TestSequenceResync:
         assert p3 > p2
         db2.close()
 
+    def test_repair_survives_a_hard_kill(self, tmp_path):
+        """DuckDB cannot replay a WAL holding the repair's SET DEFAULT
+        nextval(...), so a process killed before its next checkpoint left a
+        database that would not open. The repair must be checkpointed."""
+        import shutil
+
+        db_path = tmp_path / "test.duckdb"
+        db = P3Database(str(db_path))
+        db.add_podcast("A", "http://example.com/a")
+        db.add_podcast("B", "http://example.com/b")
+        db.conn.execute("ALTER TABLE podcasts ALTER COLUMN id DROP DEFAULT")
+        db.conn.execute("DROP SEQUENCE IF EXISTS podcast_id_seq")
+        db.conn.execute("CREATE SEQUENCE podcast_id_seq START 1")
+        db.conn.execute(
+            "ALTER TABLE podcasts ALTER COLUMN id SET DEFAULT nextval('podcast_id_seq')"
+        )
+        db.close()
+
+        db2 = P3Database(str(db_path))  # repairs the sequence
+        # A hard kill now: copy the files while the database is still open.
+        killed = tmp_path / "killed"
+        killed.mkdir()
+        for f in tmp_path.glob("test.duckdb*"):
+            shutil.copy(f, killed / f.name)
+        db2.close()
+
+        db3 = P3Database(str(killed / "test.duckdb"))
+        assert db3.add_podcast("C", "http://example.com/c") == 3
+        db3.close()
+
     def test_resync_is_a_noop_on_healthy_sequence(self, tmp_path):
         db_path = str(tmp_path / "test.duckdb")
         db = P3Database(db_path)
