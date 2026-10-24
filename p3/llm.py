@@ -1,5 +1,6 @@
 """Provider-agnostic chat client shared by the summarizer and the writer."""
 
+import logging
 import os
 import time
 from pathlib import Path
@@ -13,6 +14,8 @@ try:
     OLLAMA_AVAILABLE = True
 except ImportError:
     OLLAMA_AVAILABLE = False
+
+logger = logging.getLogger(__name__)
 
 SUPPORTED_PROVIDERS = ("ollama", "openai", "gemini")
 
@@ -31,6 +34,11 @@ GEMINI_API_KEY_FILE = Path("config/gemini_api_key.txt")
 OPENAI_API_KEY_FILE = Path("config/openai_api_key.txt")
 
 _REQUEST_TIMEOUT = 120.0
+
+# Gemini answers 503 (and sometimes 429/5xx or nothing at all) while it is
+# overloaded; such a request is retried after each of these waits (seconds).
+_GEMINI_RETRY_WAITS = (5.0, 15.0, 45.0)
+_GEMINI_RETRY_STATUSES = {429, 500, 502, 503, 504}
 
 # How long release_ollama_models waits for Ollama to free a model's memory.
 _OLLAMA_RELEASE_TIMEOUT = 60.0
@@ -199,24 +207,38 @@ class LLMClient:
             "https://generativelanguage.googleapis.com/v1beta/models/"
             f"{self.model}:generateContent"
         )
-        with httpx.Client(timeout=_REQUEST_TIMEOUT) as client:
-            response = client.post(
-                url,
-                # Sent as a header rather than a query parameter so the key
-                # never appears in request logs.
-                headers={"x-goog-api-key": self.api_key},
-                json={
-                    "systemInstruction": {"parts": [{"text": system}]},
-                    "contents": [{"role": "user", "parts": [{"text": user}]}],
-                    "generationConfig": {
-                        "maxOutputTokens": max_tokens,
-                        "temperature": 0.2,
-                        # Thinking tokens count against maxOutputTokens and
-                        # can leave the reply empty or cut off.
-                        "thinkingConfig": {"thinkingBudget": 0},
-                    },
-                },
+        for wait in (*_GEMINI_RETRY_WAITS, None):
+            try:
+                with httpx.Client(timeout=_REQUEST_TIMEOUT) as client:
+                    response = client.post(
+                        url,
+                        # Sent as a header rather than a query parameter so the
+                        # key never appears in request logs.
+                        headers={"x-goog-api-key": self.api_key},
+                        json={
+                            "systemInstruction": {"parts": [{"text": system}]},
+                            "contents": [{"role": "user", "parts": [{"text": user}]}],
+                            "generationConfig": {
+                                "maxOutputTokens": max_tokens,
+                                "temperature": 0.2,
+                                # Thinking tokens count against maxOutputTokens and
+                                # can leave the reply empty or cut off.
+                                "thinkingConfig": {"thinkingBudget": 0},
+                            },
+                        },
+                    )
+            except httpx.TransportError as e:  # timeouts and dropped connections
+                if wait is None:
+                    raise RuntimeError(f"Gemini API unreachable: {e}") from e
+                logger.warning("Gemini request failed (%s); retrying in %.0fs", e, wait)
+                time.sleep(wait)
+                continue
+            if response.status_code not in _GEMINI_RETRY_STATUSES or wait is None:
+                break
+            logger.warning(
+                "Gemini API returned %d; retrying in %.0fs", response.status_code, wait
             )
+            time.sleep(wait)
         if response.status_code != 200:
             raise RuntimeError(
                 f"Gemini API error: {response.status_code} - {response.text}"

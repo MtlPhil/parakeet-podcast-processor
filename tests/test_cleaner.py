@@ -510,3 +510,58 @@ class TestDigestWithoutRewrite:
         from p3 import cleaner as cleaner_module
 
         assert cleaner_module._AD_RULE in cleaner_module._SECTION_NOTES_PROMPT
+
+
+class TestSynopsisIsAllOrNothing:
+    """A synopsis is stored only when every section and its French version
+    succeed (LLM replaced by a stub, database by a mock)."""
+
+    def _cleaner(self, monkeypatch, reply):
+        from unittest.mock import MagicMock
+
+        from p3.cleaner import TranscriptCleaner
+
+        db = MagicMock()
+        db.get_transcripts_for_episode.return_value = [{"text": "word " * 20000}]
+        cleaner = TranscriptCleaner(db=db, llm_provider="ollama")
+        monkeypatch.setattr(
+            cleaner, "_chat", lambda system, user, max_tokens=2000: reply(user)
+        )
+        return cleaner, db
+
+    def test_complete_synopsis_is_stored_in_both_languages(self, monkeypatch):
+        cleaner, db = self._cleaner(
+            monkeypatch, lambda prompt: "FR" if "Quebec French" in prompt else "notes"
+        )
+        synopsis = cleaner.generate_synopsis(1)
+        assert synopsis.startswith("notes\n\nnotes")
+        db.update_summary_long_summary.assert_called_once_with(1, synopsis)
+        db.update_summary_fields.assert_called_once()
+        assert db.update_summary_fields.call_args.kwargs["long_summary_fr"]
+
+    def test_a_failed_section_fails_and_stores_nothing(self, monkeypatch):
+        sections = []
+
+        def reply(prompt):
+            sections.append(prompt)
+            if len(sections) == 2:
+                raise RuntimeError("Gemini API error: 503")
+            return "notes"
+
+        cleaner, db = self._cleaner(monkeypatch, reply)
+        with pytest.raises(RuntimeError, match=r"Section 2/\d notes failed: .*503"):
+            cleaner.generate_synopsis(1)
+        db.update_summary_long_summary.assert_not_called()
+        db.update_summary_fields.assert_not_called()
+
+    def test_a_failed_translation_fails_and_stores_nothing(self, monkeypatch):
+        def reply(prompt):
+            if "Quebec French" in prompt:
+                raise RuntimeError("timed out")
+            return "notes"
+
+        cleaner, db = self._cleaner(monkeypatch, reply)
+        with pytest.raises(RuntimeError, match="French"):
+            cleaner.generate_synopsis(1)
+        db.update_summary_long_summary.assert_not_called()
+        db.update_summary_fields.assert_not_called()

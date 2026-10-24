@@ -144,3 +144,64 @@ class TestReleaseOllamaModels:
         monkeypatch.setattr(llm.time, "monotonic", lambda: next(clock))
         with pytest.raises(RuntimeError, match="gemma4:12b"):
             release_ollama_models(timeout=60)
+
+
+class TestGeminiRetries:
+    """Gemini's transient failures are retried; the client is a stub."""
+
+    def _client(self, monkeypatch, outcomes):
+        sleeps = []
+        calls = []
+
+        class FakeClient:
+            def __init__(self, timeout):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def post(self, url, headers, json):
+                calls.append(url)
+                outcome = outcomes.pop(0)
+                if isinstance(outcome, Exception):
+                    raise outcome
+                status, text = outcome
+                return SimpleNamespace(
+                    status_code=status,
+                    text=text,
+                    json=lambda: {
+                        "candidates": [{"content": {"parts": [{"text": text}]}}]
+                    },
+                )
+
+        monkeypatch.setattr(llm.httpx, "Client", FakeClient)
+        monkeypatch.setattr(llm.time, "sleep", sleeps.append)
+        client = LLMClient(provider="gemini", model="gemini-test", api_key="k")
+        return client, calls, sleeps
+
+    def test_overload_and_timeout_are_retried(self, monkeypatch):
+        import httpx
+
+        client, calls, sleeps = self._client(
+            monkeypatch,
+            [(503, "overloaded"), httpx.ReadTimeout("timed out"), (200, " notes ")],
+        )
+        assert client.chat("s", "u") == "notes"
+        assert len(calls) == 3
+        assert sleeps == list(llm._GEMINI_RETRY_WAITS[:2])
+
+    def test_gives_up_after_the_last_retry(self, monkeypatch):
+        attempts = len(llm._GEMINI_RETRY_WAITS) + 1
+        client, calls, _ = self._client(monkeypatch, [(503, "overloaded")] * attempts)
+        with pytest.raises(RuntimeError, match="503"):
+            client.chat("s", "u")
+        assert len(calls) == attempts
+
+    def test_a_client_error_is_not_retried(self, monkeypatch):
+        client, calls, sleeps = self._client(monkeypatch, [(400, "bad request")])
+        with pytest.raises(RuntimeError, match="400"):
+            client.chat("s", "u")
+        assert len(calls) == 1 and sleeps == []

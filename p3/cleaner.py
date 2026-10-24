@@ -543,7 +543,11 @@ class TranscriptCleaner:
 
     def generate_synopsis(self, episode_id: int) -> Optional[str]:
         """Generate and store the long-form study-notes synopsis for one
-        episode. Requested on demand; not part of the digest pipeline."""
+        episode, in English and Quebec French. Requested on demand; not part
+        of the digest pipeline. Returns None if there is no transcript.
+
+        All or nothing: if a section or the translation fails, nothing is
+        stored and RuntimeError says what failed."""
         segments = self.db.get_transcripts_for_episode(episode_id)
         full_text = "\n".join(segment["text"] for segment in segments)
 
@@ -552,11 +556,11 @@ class TranscriptCleaner:
 
         cleaned_text = self._basic_clean_text(full_text)
         synopsis = self._generate_long_summary(cleaned_text)
-        if synopsis:
-            self.db.update_summary_long_summary(episode_id, synopsis)
-            self.db.update_summary_fields(
-                episode_id, long_summary_fr=self.translate_text(synopsis)
-            )
+        synopsis_fr = self.translate_text(synopsis)
+        if not synopsis_fr:
+            raise RuntimeError("Translating the synopsis to French failed")
+        self.db.update_summary_long_summary(episode_id, synopsis)
+        self.db.update_summary_fields(episode_id, long_summary_fr=synopsis_fr)
         return synopsis
 
     def translate_digest(self, episode_id: int, synopsis: bool = False) -> bool:
@@ -677,11 +681,13 @@ class TranscriptCleaner:
             logger.error("LLM summarization failed: %s", e)
             return self._basic_extraction(text)
 
-    def _generate_long_summary(self, text: str) -> Optional[str]:
+    def _generate_long_summary(self, text: str) -> str:
         """Generate long-form study notes, one transcript section at a time.
 
         Per-section requests keep the notes proportional to the episode: a
-        longer episode gets more sections and therefore longer notes.
+        longer episode gets more sections and therefore longer notes. Raises
+        RuntimeError if any section fails, rather than return notes with a
+        part of the episode missing.
         """
         truncated = _truncate_transcript(text)
         num_sections = max(3, min(6, len(truncated) // 8000))
@@ -695,12 +701,15 @@ class TranscriptCleaner:
                     _SECTION_NOTES_PROMPT + section,
                     max_tokens=1000,
                 ).strip()
-                if note:
-                    notes.append(note)
             except Exception as e:
-                logger.warning("Section %d/%d notes failed: %s", i, len(sections), e)
+                raise RuntimeError(
+                    f"Section {i}/{len(sections)} notes failed: {e}"
+                ) from e
+            if not note:
+                raise RuntimeError(f"Section {i}/{len(sections)} notes came back empty")
+            notes.append(note)
 
-        return "\n\n".join(notes) if notes else None
+        return "\n\n".join(notes)
 
     def _basic_extraction(self, text: str) -> Dict[str, Any]:
         """Basic keyword extraction as fallback."""
