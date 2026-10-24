@@ -309,20 +309,27 @@ def list_channel_videos(channel: str, limit: int) -> List[Dict[str, Any]]:
 def list_channel_videos_since(
     channel: str, since: datetime, max_scan: int = 500
 ) -> List[Dict[str, Any]]:
-    """Uploads of a channel from ``since`` onward, newest first, with full
-    metadata (including upload date).
+    """Uploads of a channel from ``since`` onward, newest first, with their
+    approximate upload date.
 
-    The channel's Videos tab lists uploads newest-first but without dates,
-    so each candidate is looked up individually to read its upload date.
-    The scan stops at the first upload older than ``since``, and reads at
-    most ``max_scan`` flat entries to bound how far back it looks.
+    One request reads the channel's Videos tab. Its entries carry no exact
+    date, so yt-dlp's ``approximate_date`` derives one from the "3 weeks
+    ago" text shown there; looking each video up instead took a few seconds
+    per video. The date is only as precise as that text (a day for recent
+    uploads, a month or a year for old ones), which is enough to stop the
+    scan at the first upload older than ``since``. Reads at most
+    ``max_scan`` entries. Descriptions are not listed, so they are empty.
     """
     ref = parse_youtube_url(channel)
     if ref.kind != KIND_CHANNEL:
         raise ValueError(f"Not a YouTube channel URL: {channel}")
     info = _extract(
         f"{ref.url}/videos",
-        {"extract_flat": "in_playlist", "playlist_items": f"1:{max_scan}"},
+        {
+            "extract_flat": "in_playlist",
+            "playlist_items": f"1:{max_scan}",
+            "extractor_args": {"youtubetab": {"approximate_date": [""]}},
+        },
     )
     kept: List[Dict[str, Any]] = []
     for entry in _flat_entries(info):
@@ -330,22 +337,15 @@ def list_channel_videos_since(
         if reason:
             logger.info("Skipping %s: %s", entry.get("id"), reason)
             continue
-        try:
-            full = get_video_info(video_url(entry["id"]))
-        except YouTubeError as e:
-            logger.warning("Could not read %s: %s", entry["id"], e)
-            continue
-        if video_rejection(full):
-            continue
-        uploaded = upload_datetime(full)
+        uploaded = upload_datetime(entry)
         if uploaded and uploaded < since:
             break
         kept.append(
             {
                 "id": entry["id"],
-                "title": full.get("title") or entry.get("title") or entry["id"],
+                "title": entry.get("title") or entry["id"],
                 "date": uploaded,
-                "description": full.get("description") or "",
+                "description": "",
             }
         )
     return kept

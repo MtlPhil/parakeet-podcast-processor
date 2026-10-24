@@ -310,75 +310,50 @@ class TestListing:
 
 
 class TestListChannelVideosSince:
-    """Flat channel listings carry no date, so this looks up each candidate
-    individually and stops once it finds an upload older than the cutoff."""
+    """One flat listing of the Videos tab, dated from its "3 weeks ago" text,
+    and no per-video lookups; the scan stops at the first upload older than
+    the cutoff."""
 
-    def _channel_responses(self, entries, **video_infos):
+    def _listing(self, monkeypatch, entries):
         channel = f"https://www.youtube.com/channel/{CHANNEL_ID}"
-        responses = {f"{channel}/videos": {"entries": entries}}
-        for vid, info in video_infos.items():
-            responses[youtube.video_url(vid)] = info
-        return channel, responses
-
-    def test_stops_at_first_video_older_than_cutoff(self, monkeypatch):
-        entries = [_flat(VID_A), _flat(VID_B), _flat(VID_C)]
-        channel, responses = self._channel_responses(
-            entries,
-            **{
-                VID_A: _info(VID_A, timestamp=1700000000),
-                VID_B: _info(VID_B, timestamp=1690000000),
-                VID_C: _info(VID_C, timestamp=1000000000),
-            },
-        )
-        fake = FakeExtract(responses)
+        fake = FakeExtract({f"{channel}/videos": {"entries": entries}})
         monkeypatch.setattr(youtube, "_extract", fake)
+        return channel, fake
+
+    def test_one_request_stops_at_first_video_older_than_cutoff(self, monkeypatch):
+        channel, fake = self._listing(
+            monkeypatch,
+            [
+                _flat(VID_A, timestamp=1700000000),
+                _flat(VID_B, timestamp=1690000000),
+                _flat(VID_C, timestamp=1000000000),
+            ],
+        )
         since = datetime.fromtimestamp(1650000000, tz=timezone.utc)
 
         got = youtube.list_channel_videos_since(channel, since)
 
         assert [e["id"] for e in got] == [VID_A, VID_B]
-        # VID_C's full metadata was fetched to check its date, but nothing
-        # past it: the scan stops as soon as an upload predates `since`.
-        assert len(fake.calls) == 4  # 1 flat listing + 3 per-video lookups
+        [(url, extra)] = fake.calls
+        assert extra["extractor_args"] == {"youtubetab": {"approximate_date": [""]}}
 
-    def test_skips_livestream_without_a_full_lookup(self, monkeypatch):
-        entries = [_flat(VID_A, live_status="is_live"), _flat(VID_B)]
-        channel, responses = self._channel_responses(entries, **{VID_B: _info(VID_B)})
-        monkeypatch.setattr(youtube, "_extract", FakeExtract(responses))
+    def test_skips_livestreams_and_shorts(self, monkeypatch):
+        channel, _ = self._listing(
+            monkeypatch,
+            [
+                _flat(VID_A, live_status="is_live"),
+                _flat(VID_B, url=f"https://www.youtube.com/shorts/{VID_B}"),
+                _flat(VID_C),
+            ],
+        )
         since = datetime.fromtimestamp(0, tz=timezone.utc)
 
         got = youtube.list_channel_videos_since(channel, since)
 
-        # VID_A was dropped from the flat listing, so its full metadata
-        # (not stubbed here) was never requested -- a KeyError would fail
-        # this test otherwise.
-        assert [e["id"] for e in got] == [VID_B]
+        assert [e["id"] for e in got] == [VID_C]
 
-    def test_skips_short_found_only_in_full_metadata_without_stopping(
-        self, monkeypatch
-    ):
-        entries = [_flat(VID_A), _flat(VID_B)]
-        channel, responses = self._channel_responses(
-            entries,
-            **{
-                VID_A: _info(VID_A, media_type="short"),
-                VID_B: _info(VID_B),
-            },
-        )
-        monkeypatch.setattr(youtube, "_extract", FakeExtract(responses))
-        since = datetime.fromtimestamp(0, tz=timezone.utc)
-
-        got = youtube.list_channel_videos_since(channel, since)
-
-        assert [e["id"] for e in got] == [VID_B]
-
-    def test_returns_title_date_and_description(self, monkeypatch):
-        entries = [_flat(VID_A)]
-        channel, responses = self._channel_responses(
-            entries,
-            **{VID_A: _info(VID_A, description="desc", timestamp=1700000000)},
-        )
-        monkeypatch.setattr(youtube, "_extract", FakeExtract(responses))
+    def test_returns_title_and_date(self, monkeypatch):
+        channel, _ = self._listing(monkeypatch, [_flat(VID_A, timestamp=1700000000)])
         since = datetime.fromtimestamp(0, tz=timezone.utc)
 
         [got] = youtube.list_channel_videos_since(channel, since)
@@ -387,8 +362,16 @@ class TestListChannelVideosSince:
             "id": VID_A,
             "title": f"Video {VID_A}",
             "date": datetime.fromtimestamp(1700000000, tz=timezone.utc),
-            "description": "desc",
+            "description": "",
         }
+
+    def test_undated_entries_are_kept(self, monkeypatch):
+        channel, _ = self._listing(monkeypatch, [_flat(VID_A), _flat(VID_B)])
+        since = datetime.fromtimestamp(1650000000, tz=timezone.utc)
+
+        got = youtube.list_channel_videos_since(channel, since)
+
+        assert [e["id"] for e in got] == [VID_A, VID_B]
 
 
 class TestExtractErrors:

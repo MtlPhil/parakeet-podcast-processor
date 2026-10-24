@@ -239,9 +239,9 @@ class PodcastDownloader:
         added.
 
         RSS feeds return every entry. YouTube channels return uploads from
-        the last ``months`` months only, newest first (a channel's full
-        history can run into the thousands, and each candidate needs its
-        own lookup to date it -- see ``youtube.list_channel_videos_since``).
+        the last ``months`` months only, newest first, with approximate
+        dates (a channel's full history can run into the thousands -- see
+        ``youtube.list_channel_videos_since``).
         A single YouTube video returns just itself. Raises ``ValueError``
         for a playlist, which is imported as one source per video instead
         of picked from.
