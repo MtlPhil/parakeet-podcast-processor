@@ -20,7 +20,7 @@ settings:
   # Transcription (Apple Silicon): the language is detected per episode;
   # Parakeet handles parakeet_languages, Whisper (MLX) everything else
   parakeet_enabled: true
-  parakeet_model: "mlx-community/parakeet-tdt-0.6b-v2"
+  parakeet_model: "mlx-community/parakeet-tdt-0.6b-v3"
   parakeet_languages: [en]
   whisper_model: turbo         # turbo, large, medium, small, base, tiny
   # Unload Ollama's models (and wait until they're gone) before transcribing,

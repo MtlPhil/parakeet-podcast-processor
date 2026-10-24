@@ -41,7 +41,7 @@ try:
 except ImportError:
     WHISPER_AVAILABLE = False
 
-DEFAULT_PARAKEET_MODEL = "mlx-community/parakeet-tdt-0.6b-v2"
+DEFAULT_PARAKEET_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
 
 # Languages Parakeet transcribes (setting: parakeet_languages); every other
 # language goes to Whisper.

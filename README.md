@@ -212,7 +212,7 @@ settings:
   audio_format: wav                 # wav or mp3
 
   parakeet_enabled: true            # false → Whisper for every language
-  parakeet_model: "mlx-community/parakeet-tdt-0.6b-v2"
+  parakeet_model: "mlx-community/parakeet-tdt-0.6b-v3"
   parakeet_languages: [en]          # languages Parakeet handles; others → Whisper
   whisper_model: turbo              # turbo | large | medium | small | base | tiny,
                                     # or a Hugging Face repo of an MLX Whisper model
@@ -542,7 +542,7 @@ See [ROADMAP.md](ROADMAP.md) for planned work.
 - The workflow, and in particular the graded writing loop, is inspired by
   [Tomasz Tunguz](https://tomtunguz.com)'s description of his podcast
   processing system on the *How I AI* podcast.
-- Transcription by [NVIDIA Parakeet](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2)
+- Transcription by [NVIDIA Parakeet](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)
   via [parakeet-mlx](https://github.com/senstella/parakeet-mlx) and
   [OpenAI Whisper](https://github.com/openai/whisper).
 - Originally forked from
