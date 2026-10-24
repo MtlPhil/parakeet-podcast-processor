@@ -238,8 +238,8 @@ export default function AddPodcast({ embedded = false }) {
             <p className="text-sm text-gray-700">
               <span className="font-medium">{preview.name || preview.url}</span> has{' '}
               {preview.episodes.length} available episode{preview.episodes.length === 1 ? '' : 's'}.
-              Pick which ones to fetch now &mdash; every future fetch will pull the top episodes
-              per your settings.
+              Pick which ones to fetch now, or none &mdash; every future fetch will pull the top
+              episodes per your settings.
             </p>
             <EpisodePicker
               episodes={preview.episodes}
@@ -261,12 +261,14 @@ export default function AddPodcast({ embedded = false }) {
             </button>
             <button
               type="submit"
-              disabled={submitting || selected.size === 0}
+              disabled={submitting}
               className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 text-sm font-medium"
             >
               {submitting
                 ? 'Adding...'
-                : `Add & Fetch ${selected.size} Episode${selected.size === 1 ? '' : 's'}`}
+                : selected.size === 0
+                  ? 'Add Without Episodes'
+                  : `Add & Fetch ${selected.size} Episode${selected.size === 1 ? '' : 's'}`}
             </button>
           </div>
         </form>

@@ -171,6 +171,29 @@ class TestProcessFeedResume:
         titles = {c.kwargs["title"] for c in db.add_episode.call_args_list}
         assert titles == {"A", "C"}
 
+    def test_empty_episode_guids_downloads_nothing(self, tmp_path, monkeypatch):
+        # Adding a podcast with no episode picked must not fall back to top-N.
+        dl, db = self._downloader(tmp_path)
+        monkeypatch.setattr(
+            dl,
+            "_rss_episodes",
+            lambda url: [
+                {
+                    "title": "A",
+                    "url": "http://x/a.mp3",
+                    "date": None,
+                    "description": "",
+                    "guid": "a",
+                }
+            ],
+        )
+        monkeypatch.setattr(
+            dl, "download_episode", lambda url, filename: f"data/audio/{filename}.wav"
+        )
+
+        assert dl.process_feed("http://example.com/feed.xml", episode_guids=[]) == 0
+        db.add_episode.assert_not_called()
+
 
 class TestFetchEpisodesDates:
     _FEED = """<?xml version="1.0"?><rss version="2.0"><channel><title>T</title>
