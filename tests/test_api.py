@@ -410,6 +410,94 @@ class TestEpisodes:
         assert resp.status_code == 404
 
 
+class TestEmailSynopsis:
+    def _seed(self, synopsis="First part.\n\nSecond part.", synopsis_fr=None):
+        db = deps.get_db()
+        pid = db.add_podcast("Pod", "http://example.com/mail.rss")
+        eid = db.add_episode(pid, "Ep", datetime.now(), "http://example.com/mail.mp3")
+        db.add_summary(eid, ["t"], ["th"], [], [], full_summary="Short")
+        if synopsis:
+            db.update_summary_long_summary(eid, synopsis)
+        if synopsis_fr:
+            db.update_summary_fields(eid, long_summary_fr=synopsis_fr)
+        return eid
+
+    def _send(self, eid, **body):
+        with patch("p3.api.routers.episodes.send_email") as send:
+            resp = client.post(f"/api/episodes/{eid}/synopsis/email", json=body)
+        return resp, send
+
+    def test_sends_one_message_to_every_address(self):
+        eid = self._seed()
+        resp, send = self._send(eid, to="a@example.com, b@example.org;c@example.net")
+        assert resp.status_code == 200
+        assert resp.json()["to"] == ["a@example.com", "b@example.org", "c@example.net"]
+        _, to, subject, text, html = send.call_args.args
+        assert to == "a@example.com, b@example.org, c@example.net"
+        assert subject == "Synopsis: Ep"
+        assert "Second part." in text and "<p>Second part.</p>" in html
+
+    def test_sends_the_french_synopsis_when_asked(self):
+        eid = self._seed(synopsis_fr="Première partie.")
+        _, send = self._send(eid, to="a@example.com", language="fr")
+        assert "Première partie." in send.call_args.args[3]
+        assert send.call_args.args[2] == "Synopsis : Ep"
+
+    def test_french_falls_back_to_english_before_translation(self):
+        eid = self._seed()
+        _, send = self._send(eid, to="a@example.com", language="fr")
+        assert "First part." in send.call_args.args[3]
+
+    def test_rejects_an_invalid_address(self):
+        eid = self._seed()
+        resp, send = self._send(eid, to="a@example.com, not-an-address")
+        assert resp.status_code == 400
+        assert "not-an-address" in resp.json()["detail"]
+        send.assert_not_called()
+
+    def test_rejects_an_address_with_a_line_break(self):
+        eid = self._seed()
+        resp, send = self._send(eid, to="a@example.com\nBcc: x@example.com")
+        assert resp.status_code == 400
+        send.assert_not_called()
+
+    def test_rejects_an_empty_list(self):
+        eid = self._seed()
+        resp, send = self._send(eid, to=" , ")
+        assert resp.status_code == 400
+        send.assert_not_called()
+
+    def test_needs_a_synopsis(self):
+        eid = self._seed(synopsis=None)
+        resp, send = self._send(eid, to="a@example.com")
+        assert resp.status_code == 400
+        send.assert_not_called()
+
+    def test_reports_a_sending_failure(self):
+        eid = self._seed()
+        with patch(
+            "p3.api.routers.episodes.send_email",
+            side_effect=RuntimeError("smtp_host is not set in config/feeds.yaml"),
+        ):
+            resp = client.post(
+                f"/api/episodes/{eid}/synopsis/email", json={"to": "a@example.com"}
+            )
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "Fill in the mail server first."
+
+    def test_someone_elses_episode_is_not_found(self):
+        eid = self._seed()
+        client.get("/api/me")  # the tester takes over the seeded episode
+        with patch("p3.api.routers.episodes.send_email") as send:
+            resp = client.post(
+                f"/api/episodes/{eid}/synopsis/email",
+                json={"to": "a@example.com"},
+                headers={"Remote-User": "bob"},
+            )
+        assert resp.status_code == 404
+        send.assert_not_called()
+
+
 # ------------------------------------------------------------------
 # Batch pipeline triggers
 # ------------------------------------------------------------------

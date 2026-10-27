@@ -1,5 +1,6 @@
 """The daily run's email: new episodes, those processed outside a run since the
-last report, their digests by theme, and any errors."""
+last report, their digests by theme, and any errors. Also an episode's synopsis,
+sent on request."""
 
 import logging
 import os
@@ -195,6 +196,21 @@ def build_email(
         html.append("</ul>")
 
     return subject, "\n".join(text), "".join(html)
+
+
+def build_synopsis_email(
+    podcast: str, title: str, url: str, synopsis: str, language: str
+) -> Tuple[str, str, str]:
+    """(subject, plain text, HTML) for one episode's synopsis."""
+    label = "Synopsis :" if language == "fr" else "Synopsis:"
+    subject = f"{label} {title}"
+    paragraphs = [p.strip() for p in synopsis.split("\n\n") if p.strip()]
+    text = [f"{podcast}: {title}", url, ""] + [p + "\n" for p in paragraphs]
+    html = [
+        f"<h2>{escape(title)}</h2>",
+        f'<p>{escape(podcast)} · <a href="{escape(url)}">{escape(url)}</a></p>',
+    ] + [f"<p>{escape(p)}</p>" for p in paragraphs]
+    return subject, "\n".join(text).rstrip() + "\n", "".join(html)
 
 
 def send_email(settings: Dict[str, Any], to: str, subject: str, text: str, html: str):

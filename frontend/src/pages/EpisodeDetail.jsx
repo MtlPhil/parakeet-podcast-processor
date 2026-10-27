@@ -20,6 +20,7 @@ import StatusBadge from '../components/StatusBadge';
 import ExternalLink from '../components/ExternalLink';
 import JobProgress from '../components/JobProgress';
 import ProviderSelect from '../components/ProviderSelect';
+import EmailSynopsis from '../components/EmailSynopsis';
 
 const TABS = ['overview', 'transcript', 'summary'];
 
@@ -303,9 +304,12 @@ export default function EpisodeDetail() {
               )}
               {text('long_summary') ? (
                 <div>
-                  <h3 className="font-medium text-gray-800 mb-1">
-                    {language === 'fr' ? 'Synopsis (notes d’étude)' : 'Synopsis (Study Notes)'}
-                  </h3>
+                  <div className="flex flex-wrap items-center gap-2 mb-1">
+                    <h3 className="font-medium text-gray-800">
+                      {language === 'fr' ? 'Synopsis (notes d’étude)' : 'Synopsis (Study Notes)'}
+                    </h3>
+                    <EmailSynopsis episodeId={id} language={language} />
+                  </div>
                   <div className="space-y-2">
                     {text('long_summary').split('\n\n').map((para, i) => (
                       <p key={i} className="text-sm text-gray-700">{para}</p>

@@ -106,3 +106,14 @@ def test_report_skips_episodes_already_reported(db):
 
     assert report["earlier"] == []
     assert "(0 new)" in subject and "No new episodes today." in text
+
+
+def test_synopsis_email_escapes_html():
+    subject, text, html = mailer.build_synopsis_email(
+        "Show", "A <b> title", "https://e.com/?a=1&b=2", "One.\n\nTwo & three.", "en"
+    )
+    assert subject == "Synopsis: A <b> title"
+    assert text.startswith("Show: A <b> title\nhttps://e.com/?a=1&b=2\n")
+    assert "<h2>A &lt;b&gt; title</h2>" in html
+    assert 'href="https://e.com/?a=1&amp;b=2"' in html
+    assert "<p>Two &amp; three.</p>" in html

@@ -78,6 +78,8 @@ export const cleanupAudio = () =>
   request('/episodes/cleanup-audio', { method: 'POST' });
 export const generateSynopsis = (id, { provider, model } = {}) =>
   request(`/episodes/${id}/synopsis`, { method: 'POST', body: JSON.stringify({ provider, model }) });
+export const emailSynopsis = (id, { to, language }) =>
+  request(`/episodes/${id}/synopsis/email`, { method: 'POST', body: JSON.stringify({ to, language }) });
 
 // Batch pipeline triggers — one job is queued per eligible episode; the
 // backend job runner executes them one at a time.

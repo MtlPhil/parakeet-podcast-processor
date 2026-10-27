@@ -236,6 +236,13 @@ class SynopsisCreate(BaseModel):
     model: Optional[str] = Field(None, description=_MODEL_HELP)
 
 
+class SynopsisEmail(BaseModel):
+    to: str = Field(..., description="Email addresses, separated by commas")
+    language: Optional[str] = Field(
+        None, description="en or fr. Defaults to the user's language."
+    )
+
+
 class LinkedInOut(BaseModel):
     slug: str
     title: str
