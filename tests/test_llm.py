@@ -193,9 +193,50 @@ class TestGeminiRetries:
         assert len(calls) == 3
         assert sleeps == list(llm._GEMINI_RETRY_WAITS[:2])
 
-    def test_gives_up_after_the_last_retry(self, monkeypatch):
+    def test_falls_back_after_the_last_retry(self, monkeypatch):
+        attempts = len(llm._GEMINI_RETRY_WAITS) + 1
+        client, calls, _ = self._client(
+            monkeypatch, [(503, "overloaded")] * attempts + [(200, "notes")]
+        )
+        assert client.chat("s", "u") == "notes"
+        assert len(calls) == attempts + 1
+        assert llm.GEMINI_FALLBACK_MODEL in calls[-1]
+        assert client.model == llm.GEMINI_FALLBACK_MODEL
+
+    def test_keeps_the_fallback_for_later_requests(self, monkeypatch):
+        attempts = len(llm._GEMINI_RETRY_WAITS) + 1
+        client, calls, _ = self._client(
+            monkeypatch,
+            [(503, "overloaded")] * attempts + [(200, "one"), (200, "two")],
+        )
+        client.chat("s", "u")
+        assert client.chat("s", "u") == "two"
+        assert llm.GEMINI_FALLBACK_MODEL in calls[-1]
+
+    def test_falls_back_when_unreachable(self, monkeypatch):
+        import httpx
+
+        attempts = len(llm._GEMINI_RETRY_WAITS) + 1
+        client, calls, _ = self._client(
+            monkeypatch,
+            [httpx.ConnectError("down")] * attempts + [(200, "notes")],
+        )
+        assert client.chat("s", "u") == "notes"
+        assert llm.GEMINI_FALLBACK_MODEL in calls[-1]
+
+    def test_gives_up_when_the_fallback_fails_too(self, monkeypatch):
+        attempts = len(llm._GEMINI_RETRY_WAITS) + 1
+        client, calls, _ = self._client(
+            monkeypatch, [(503, "overloaded")] * attempts * 2
+        )
+        with pytest.raises(RuntimeError, match="503"):
+            client.chat("s", "u")
+        assert len(calls) == attempts * 2
+
+    def test_no_fallback_from_the_fallback_model(self, monkeypatch):
         attempts = len(llm._GEMINI_RETRY_WAITS) + 1
         client, calls, _ = self._client(monkeypatch, [(503, "overloaded")] * attempts)
+        client.model = llm.GEMINI_FALLBACK_MODEL
         with pytest.raises(RuntimeError, match="503"):
             client.chat("s", "u")
         assert len(calls) == attempts
@@ -205,3 +246,4 @@ class TestGeminiRetries:
         with pytest.raises(RuntimeError, match="400"):
             client.chat("s", "u")
         assert len(calls) == 1 and sleeps == []
+        assert client.model == "gemini-test"

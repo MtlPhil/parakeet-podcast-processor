@@ -22,6 +22,9 @@ SUPPORTED_PROVIDERS = ("ollama", "openai", "gemini")
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
 DEFAULT_OLLAMA_MODEL = "gemma4:12b"
 DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
+# Used instead when the configured Gemini model stays overloaded or
+# unreachable through every retry.
+GEMINI_FALLBACK_MODEL = "gemini-3.6-flash"
 
 # Context window requested from Ollama: the longest cleaned/truncated
 # transcript (~100k characters) is about 25k tokens, plus the prompt.
@@ -42,6 +45,10 @@ _GEMINI_RETRY_STATUSES = {429, 500, 502, 503, 504}
 
 # How long release_ollama_models waits for Ollama to free a model's memory.
 _OLLAMA_RELEASE_TIMEOUT = 60.0
+
+
+class _GeminiUnavailable(RuntimeError):
+    """Gemini stayed overloaded or unreachable through every retry."""
 
 
 def load_api_key(provider: str) -> Optional[str]:
@@ -203,6 +210,28 @@ class LLMClient:
                 "No Gemini API key found: set GEMINI_API_KEY or create "
                 f"{GEMINI_API_KEY_FILE}"
             )
+        try:
+            return self._gemini_request(self.api_key, system, user, max_tokens)
+        except _GeminiUnavailable as e:
+            if self.model == GEMINI_FALLBACK_MODEL:
+                raise
+            # The client keeps the fallback, so the rest of a multi-request
+            # job (synopsis sections, translation chunks) doesn't wait out
+            # the retries on the overloaded model again.
+            logger.warning(
+                "%s is unavailable (%s); falling back to %s",
+                self.model,
+                e,
+                GEMINI_FALLBACK_MODEL,
+            )
+            self.model = GEMINI_FALLBACK_MODEL
+            return self._gemini_request(self.api_key, system, user, max_tokens)
+
+    def _gemini_request(
+        self, api_key: str, system: str, user: str, max_tokens: int
+    ) -> str:
+        """One Gemini request to ``self.model``, with the overload retries.
+        Raises _GeminiUnavailable once every retry failed that way."""
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
             f"{self.model}:generateContent"
@@ -214,7 +243,7 @@ class LLMClient:
                         url,
                         # Sent as a header rather than a query parameter so the
                         # key never appears in request logs.
-                        headers={"x-goog-api-key": self.api_key},
+                        headers={"x-goog-api-key": api_key},
                         json={
                             "systemInstruction": {"parts": [{"text": system}]},
                             "contents": [{"role": "user", "parts": [{"text": user}]}],
@@ -229,7 +258,7 @@ class LLMClient:
                     )
             except httpx.TransportError as e:  # timeouts and dropped connections
                 if wait is None:
-                    raise RuntimeError(f"Gemini API unreachable: {e}") from e
+                    raise _GeminiUnavailable(f"Gemini API unreachable: {e}") from e
                 logger.warning("Gemini request failed (%s); retrying in %.0fs", e, wait)
                 time.sleep(wait)
                 continue
@@ -239,6 +268,10 @@ class LLMClient:
                 "Gemini API returned %d; retrying in %.0fs", response.status_code, wait
             )
             time.sleep(wait)
+        if response.status_code in _GEMINI_RETRY_STATUSES:
+            raise _GeminiUnavailable(
+                f"Gemini API error: {response.status_code} - {response.text}"
+            )
         if response.status_code != 200:
             raise RuntimeError(
                 f"Gemini API error: {response.status_code} - {response.text}"
