@@ -614,3 +614,35 @@ class TestEvaluation:
         }
         assert "lookup" in result["strata"] and "lang:en" in result["strata"]
         assert len(result["questions"]) == 3
+
+
+class TestShowNotes:
+    def test_notes_text_strips_html(self):
+        from p3.chunker import notes_text
+
+        assert notes_text("<p>Guest: <b>Jane&nbsp;Doe</b></p><p>Links</p>") == (
+            "Guest: Jane\xa0Doe\nLinks"
+        )
+        assert notes_text(None) == "" and len(notes_text("x" * 5000)) == 3000
+
+    def test_notes_are_indexed_and_backfilled(self, db):
+        pid = db.add_podcast("Pod", "http://example.com/rss")
+        eid = db.add_episode(pid, "Ep", None, "http://x/1")
+        db.add_transcript_segments(eid, _segments(["hello there"]))
+        db.update_episode_status(eid, "processed")
+        index_episode(db, eid, FakeEmbedder())
+        assert db.episodes_to_index("fake-embed") == []
+
+        assert db.set_missing_description("http://x/1", "Guest: Jane Doe, economist")
+        assert not db.set_missing_description("http://x/1", "other notes")  # kept
+        assert db.episodes_to_index("fake-embed") == [eid]
+        index_episode(db, eid, FakeEmbedder())
+        kinds = [c["kind"] for c in db.get_chunks(list(range(1, 20))).values()]
+        assert "notes" in kinds
+        assert db.episodes_to_index("fake-embed") == []
+        assert db.bm25_search(tokenize("economist"), None)
+
+    def test_new_episodes_keep_their_notes(self, db):
+        pid = db.add_podcast("Pod", "http://example.com/rss")
+        eid = db.add_episode(pid, "Ep", None, "http://x/2", description="Notes")
+        assert db.get_episode_by_id(eid)["description"] == "Notes"

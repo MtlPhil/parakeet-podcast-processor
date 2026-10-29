@@ -399,6 +399,9 @@ class PodcastDownloader:
                 continue
             # Already downloaded (maybe for another user): just link it.
             if self.db.episode_exists(ep_data["url"]):
+                self.db.set_missing_description(
+                    ep_data["url"], ep_data.get("description")
+                )
                 if self._claim_existing(
                     ep_data["url"], episode_guids is not None, ep_data["title"]
                 ):
@@ -431,6 +434,7 @@ class PodcastDownloader:
                     date=ep_data["date"],
                     url=ep_data["url"],
                     file_path=file_path,
+                    description=ep_data.get("description"),
                 )
                 self._link_new(episode_id)
                 downloaded_count += 1
@@ -633,6 +637,7 @@ class PodcastDownloader:
             date=youtube.upload_datetime(info),
             url=video,
             file_path=file_path,
+            description=info.get("description"),
         )
         self._link_new(episode_id)
         logger.info("Downloaded: %s", title)

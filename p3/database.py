@@ -108,6 +108,12 @@ class P3Database:
         self.conn.execute(
             "ALTER TABLE episodes ADD COLUMN IF NOT EXISTS language VARCHAR"
         )
+        # Migration: the show notes (the feed's episode description, or the
+        # YouTube video's), indexed by Ask. Filled in by later fetches for
+        # episodes added before.
+        self.conn.execute(
+            "ALTER TABLE episodes ADD COLUMN IF NOT EXISTS description VARCHAR"
+        )
 
         self.conn.execute("""
             CREATE SEQUENCE IF NOT EXISTS transcript_id_seq START 1
@@ -438,8 +444,9 @@ class P3Database:
         date: Optional[datetime],
         url: str,
         file_path: Optional[str] = None,
+        description: Optional[str] = None,
     ) -> int:
-        """Add new episode.
+        """Add new episode. ``description`` is its show notes.
 
         ``date`` is stored as naive UTC. The ``date`` column is DuckDB's
         timezone-naive TIMESTAMP, so binding a timezone-aware datetime (as
@@ -452,12 +459,32 @@ class P3Database:
         next_id = self.conn.execute("SELECT nextval('episode_id_seq')").fetchone()[0]
         self.conn.execute(
             """
-            INSERT INTO episodes (id, podcast_id, title, date, url, file_path)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO episodes (id, podcast_id, title, date, url, file_path,
+                description)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-            (next_id, podcast_id, title, date, url, file_path),
+            (next_id, podcast_id, title, date, url, file_path, description or None),
         )
         return next_id
+
+    def set_missing_description(self, url: str, description: Optional[str]) -> bool:
+        """Store the show notes of an episode that has none yet (episodes
+        added before they were kept). True if it changed."""
+        if not description or not description.strip():
+            return False
+        row = self.conn.execute(
+            "SELECT id FROM episodes WHERE url = ? "
+            "AND (description IS NULL OR description = '')",
+            (url,),
+        ).fetchone()
+        if not row:
+            return False
+        # No RETURNING: DuckDB runs an UPDATE ... RETURNING as delete +
+        # reinsert, which the foreign keys from transcripts reject.
+        self.conn.execute(
+            "UPDATE episodes SET description = ? WHERE id = ?", (description, row[0])
+        )
+        return True
 
     def episode_exists(self, url: str) -> bool:
         """Check if episode already exists."""
@@ -1670,11 +1697,19 @@ class P3Database:
     def episodes_to_index(self, embed_model: Optional[str]) -> List[int]:
         """Processed episodes whose passages are missing, or were embedded with
         another model (or not at all, when ``embed_model`` is given)."""
+        # Show notes stored after the episode was indexed also make it stale.
+        notes_missing = (
+            "(ANY_VALUE(e.description) IS NOT NULL AND ANY_VALUE(e.description) <> ''"
+            " AND COUNT(*) FILTER (c.kind = 'notes') = 0)"
+        )
         if embed_model:
-            stale = "COUNT(c.id) = 0 OR COUNT(*) FILTER (c.embed_model IS DISTINCT FROM ?) > 0"
+            stale = (
+                "COUNT(c.id) = 0 OR COUNT(*) FILTER "
+                f"(c.embed_model IS DISTINCT FROM ?) > 0 OR {notes_missing}"
+            )
             params: List[Any] = [embed_model]
         else:
-            stale = "COUNT(c.id) = 0"
+            stale = f"COUNT(c.id) = 0 OR {notes_missing}"
             params = []
         rows = self.conn.execute(
             f"""

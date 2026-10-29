@@ -1062,7 +1062,22 @@ def queue_backlog(db, username: str) -> list[str]:
     job_ids = queue_step_jobs(db, episodes, "pipeline", None, username)
     if job_ids:
         logger.info("Queued %d backlog episode(s) for %s", len(job_ids), username)
+    _queue_index_catch_up(db)
     return job_ids
+
+
+def _queue_index_catch_up(db) -> None:
+    """Queue an index job behind the backlog when episodes are missing from
+    the Ask index (an embedding that failed, show notes found by a later
+    fetch), unless one is already waiting."""
+    from p3.embedder import DEFAULT_EMBEDDING_MODEL
+
+    model = _get_settings().get("embedding_model") or DEFAULT_EMBEDDING_MODEL
+    if not db.episodes_to_index(model):
+        return
+    if any(j["job_type"] == "index" for j in db.get_active_jobs()):
+        return
+    job_runner.enqueue(task_index, db.create_job("index"))
 
 
 def _email_run_report(db, run_id: str, username: str) -> bool:
