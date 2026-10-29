@@ -262,6 +262,31 @@ class TestFusion:
         assert result.passages
         assert result.skipped == {"vector": "ollama down", "rerank": "no reranker"}
 
+    def test_repeated_passages_are_kept_once(self, db):
+        e1, _ = _library(db)
+        p = db.add_podcast("Money Talk again", "http://example.com/money2")
+        copy = db.add_episode(
+            p, "The Bank of Canada", datetime(2026, 9, 2), "http://x/1b"
+        )
+        db.add_transcript_segments(
+            copy,
+            db.get_transcripts_for_episode(e1)
+            and _segments(
+                [
+                    "The Bank of Canada raised interest rates again.",
+                    "Inflation is still above target, said the governor.",
+                    "Mortgage holders will feel the rates.",
+                ]
+            ),
+        )
+        db.update_episode_status(copy, "processed")
+        index_episode(db, copy, FakeEmbedder())
+        result = Retriever(db, FakeEmbedder(), None).retrieve(
+            "bank interest rates", None
+        )
+        texts = [p["text"] for p in result.passages]
+        assert len(texts) == len(set(texts))
+
     def test_retriever_reranks(self, db):
         e1, _ = _library(db)
         result = Retriever(db, FakeEmbedder(), FakeReranker()).retrieve(

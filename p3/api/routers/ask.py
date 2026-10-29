@@ -21,6 +21,7 @@ from p3.api.models import AskRating, AskRequest
 from p3.llm import DEFAULT_OLLAMA_URL, resolve_provider_and_model
 
 router = APIRouter(prefix="/api/ask", tags=["ask"])
+ASK_NUM_CTX = 8192
 logger = logging.getLogger(__name__)
 
 
@@ -50,7 +51,14 @@ def _asker(username: str):
     return Asker(
         db,
         Retriever(db, embedder, reranker),
-        LLMClient(provider=provider, model=model, ollama_base_url=base_url),
+        LLMClient(
+            provider=provider,
+            model=model,
+            ollama_base_url=base_url,
+            # Ask's prompts (a dozen passages) stay well under this; the
+            # default window would reserve several GB more.
+            num_ctx=ASK_NUM_CTX,
+        ),
         username,
         default_language=settings.get("language") or "en",
     )

@@ -128,6 +128,7 @@ class LLMClient:
         api_key: Optional[str] = None,
         ollama_base_url: str = DEFAULT_OLLAMA_URL,
         keep_alive: Union[str, int] = "30s",
+        num_ctx: Optional[int] = None,
     ):
         self.provider = provider.lower()
         self.model = model
@@ -137,6 +138,9 @@ class LLMClient:
         # window lets back-to-back calls reuse the loaded model without
         # holding several GB of memory once a batch is done.
         self.keep_alive = keep_alive
+        # Ollama's context window. Its memory grows with it, so callers with
+        # short prompts (Ask) ask for less than the transcript-sized default.
+        self.num_ctx = num_ctx or _OLLAMA_NUM_CTX
 
     @property
     def is_configured(self) -> bool:
@@ -179,7 +183,7 @@ class LLMClient:
             "repeat_penalty": 1.3,
             # Ollama's default window is smaller than a long transcript
             # prompt; an overflow silently drops the instructions at its start.
-            "num_ctx": _OLLAMA_NUM_CTX,
+            "num_ctx": self.num_ctx,
         }
 
     def _stream_ollama(self, system: str, user: str, max_tokens: int) -> Iterator[str]:
@@ -266,7 +270,7 @@ class LLMClient:
                 "repeat_penalty": 1.3,
                 # Ollama's default window is smaller than a long transcript
                 # prompt; an overflow silently drops the instructions at its start.
-                "num_ctx": _OLLAMA_NUM_CTX,
+                "num_ctx": self.num_ctx,
             },
         )
         return response["message"]["content"].strip()
