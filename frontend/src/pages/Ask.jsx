@@ -335,9 +335,28 @@ export default function Ask() {
       setMessages([]);
       return;
     }
-    getAskThread(threadId)
-      .then((t) => setMessages(t.messages.map(fromStored)))
-      .catch((e) => setError(e.message));
+    // An answer still being written (the page was closed meanwhile): show it
+    // as pending and check back until it's stored.
+    let timer;
+    let cancelled = false;
+    const load = () =>
+      getAskThread(threadId)
+        .then((t) => {
+          if (cancelled) return;
+          const stored = t.messages.map(fromStored);
+          setMessages(
+            t.answering
+              ? [...stored, { role: 'assistant', answer: '', sources: [], streaming: true, startedAt: Date.now() }]
+              : stored
+          );
+          if (t.answering) timer = setTimeout(load, 4000);
+        })
+        .catch((e) => setError(e.message));
+    load();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
     // Only when the thread changes; a running answer updates messages itself.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threadId]);
@@ -373,7 +392,10 @@ export default function Ask() {
         question,
         threadId,
         (event) => {
-          if (event.event === 'status') setStage(event.stage);
+          if (event.event === 'thread') {
+            // Stored already: from here the page can be left and come back.
+            if (event.thread_id !== threadId) setParams({ thread: event.thread_id }, { replace: !threadId });
+          } else if (event.event === 'status') setStage(event.stage);
           else if (event.event === 'sources') update({ sources: event.sources });
           else if (event.event === 'token') {
             streamed += event.text;

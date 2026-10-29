@@ -7,6 +7,7 @@ No model is loaded: the embedder, reranker and LLM are stand-ins.
 import json
 import os
 import re
+import threading
 from datetime import datetime
 
 import pytest
@@ -906,3 +907,52 @@ def test_french_summaries_and_junk_topics():
     }
     assert kinds["summary"]["text"] == "En français."
     assert "topics" not in kinds
+
+
+class TestAnswersOutliveTheConnection:
+    def test_answer_is_stored_when_nobody_reads_the_stream(self, tmp_path, monkeypatch):
+        import time
+
+        from p3.api.models import AskRequest
+        from p3.api.routers import ask as ask_router
+
+        client, deps = _client(tmp_path, monkeypatch)
+        db = deps.get_db()
+        client.get("/api/me")
+        _library(db, username="tester")
+        release = threading.Event()
+
+        class SlowLLM(FakeLLM):
+            def chat_stream(self, system, user, max_tokens=2000):
+                release.wait(5)
+                yield from super().chat_stream(system, user, max_tokens)
+
+        monkeypatch.setattr(
+            ask_router,
+            "_asker",
+            lambda u: Asker(
+                db, Retriever(db, FakeEmbedder(), FakeReranker()), SlowLLM(), u
+            ),
+        )
+        try:
+            # The page went away: the response is never read.
+            ask_router.ask(AskRequest(question="bank rates?"), username="tester")
+            thread_id = ask_router.answering_thread("tester")
+            assert thread_id
+            with pytest.raises(Exception) as busy:
+                ask_router.ask(AskRequest(question="another?"), username="tester")
+            assert getattr(busy.value, "status_code", None) == 409
+            assert (
+                client.get(f"/api/ask/threads/{thread_id}").json()["answering"] is True
+            )
+            release.set()
+            for _ in range(100):
+                if ask_router.answering_thread("tester") is None:
+                    break
+                time.sleep(0.05)
+            thread = client.get(f"/api/ask/threads/{thread_id}").json()
+            assert [m["role"] for m in thread["messages"]] == ["user", "assistant"]
+            assert thread["messages"][1]["mode"] == "answer" and not thread["answering"]
+        finally:
+            release.set()
+            deps.close_db()
