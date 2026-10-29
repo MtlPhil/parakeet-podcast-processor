@@ -85,7 +85,7 @@ function AskQuality() {
   const [error, setError] = useState(null);
 
   const load = () => {
-    getAskStatus().then(setStatus).catch(() => {});
+    getAskStatus(true).then(setStatus).catch(() => {});
     getAskEval().then(setEvalInfo).catch((e) => setError(e.message));
     getAskFeedback().then(setFeedback).catch(() => {});
   };

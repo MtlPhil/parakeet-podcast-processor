@@ -7,6 +7,7 @@ Ollama the embedding search is skipped, without the reranker the fused order
 stands, and the result says which stages ran.
 """
 
+import hashlib
 import logging
 import time
 from dataclasses import dataclass, field
@@ -207,7 +208,9 @@ class Retriever:
         for chunk_id, score in ranked:
             if chunk_id not in chunks:
                 continue
-            fingerprint = " ".join(tokenize(chunks[chunk_id]["text"]))[:400]
+            fingerprint = hashlib.sha1(
+                " ".join(tokenize(chunks[chunk_id]["text"])).encode()
+            ).hexdigest()
             if fingerprint in seen:
                 continue
             seen.add(fingerprint)

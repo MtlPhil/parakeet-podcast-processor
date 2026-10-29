@@ -528,7 +528,12 @@ def task_eval_generate(job_id: str, count: int = 60):
     db = get_db()
     try:
         db.update_job(job_id, status="running", message="Writing questions...")
-        from p3.eval_ask import EVAL_DIR, QUESTIONS_FILE, generate_questions
+        from p3.eval_ask import (
+            EVAL_DIR,
+            QUESTIONS_FILE,
+            generate_questions,
+            write_json,
+        )
         from p3.llm import LLMClient
 
         settings = _get_settings()
@@ -541,12 +546,14 @@ def task_eval_generate(job_id: str, count: int = 60):
         )
         questions = generate_questions(db, llm, count)
         EVAL_DIR.mkdir(parents=True, exist_ok=True)
-        out = (
-            QUESTIONS_FILE
-            if not QUESTIONS_FILE.exists()
-            else EVAL_DIR / f"questions-generated-{datetime.now():%Y%m%d-%H%M}.json"
-        )
-        out.write_text(json.dumps(questions, indent=2, ensure_ascii=False))
+        out = QUESTIONS_FILE
+        try:
+            # "x": never replace a question set, even one created meanwhile.
+            with open(out, "x") as f:
+                json.dump(questions, f, indent=2, ensure_ascii=False)
+        except FileExistsError:
+            out = EVAL_DIR / f"questions-generated-{datetime.now():%Y%m%d-%H%M%S}.json"
+            write_json(out, questions)
         db.update_job(
             job_id,
             status="completed",
@@ -569,7 +576,12 @@ def task_eval_retrieval(job_id: str):
             get_reranker,
             release_ask_models,
         )
-        from p3.eval_ask import EVAL_DIR, evaluate_retrieval, load_questions
+        from p3.eval_ask import (
+            EVAL_DIR,
+            evaluate_retrieval,
+            load_questions,
+            write_json,
+        )
         from p3.retriever import Retriever
 
         settings = _get_settings()
@@ -585,8 +597,7 @@ def task_eval_retrieval(job_id: str):
         finally:
             release_ask_models()
         out = EVAL_DIR / "results" / f"retrieval-{datetime.now():%Y%m%d-%H%M%S}.json"
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(result, indent=2, default=str))
+        write_json(out, result)
         final = result["overall"].get("final", {})
         db.update_job(
             job_id,

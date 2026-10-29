@@ -15,7 +15,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
-from p3.api.auth import current_username, require_admin
+from p3.api.auth import current_user, current_username, require_admin
 from p3.api.deps import get_db, user_settings
 from p3.api.job_queue import job_runner
 from p3.api.models import AskRating, AskRequest
@@ -165,13 +165,19 @@ def ask(body: AskRequest, username: str = Depends(current_username)):
 
 
 @router.get("/status")
-def ask_status(username: str = Depends(current_username)):
+def ask_status(
+    library: bool = Query(
+        False, description="Admins: counts for the whole library, not their own"
+    ),
+    user: dict = Depends(current_user),
+):
     """What Ask can do right now, for the page's notices."""
     from p3.embedder import RERANKER_AVAILABLE
 
     db = get_db()
+    everyone = library and user["role"] == "admin"
     return {
-        "index": db.index_stats(username),
+        "index": db.index_stats(None if everyone else user["username"]),
         "models_paused": not _models_allowed(),
         "reranker_available": RERANKER_AVAILABLE,
     }
@@ -323,20 +329,20 @@ def feedback(limit: int = Query(50, ge=1, le=200)):
 def feedback_to_eval(message_id: str):
     """Add a rated answer's question to the evaluation set, flagged for
     review (its relevant passages still have to be marked)."""
-    from p3.eval_ask import EVAL_DIR, QUESTIONS_FILE, question_from_feedback
+    from p3 import eval_ask
 
-    message = next(
-        (m for m in get_db().rated_ask_messages(500) if m["id"] == message_id), None
-    )
+    message = get_db().rated_ask_message(message_id)
     if not message:
         raise HTTPException(404, "Rated answer not found")
-    questions = (
-        json.loads(QUESTIONS_FILE.read_text()) if QUESTIONS_FILE.exists() else []
-    )
-    if any(q.get("message_id") == message_id for q in questions):
+
+    def add(questions: list):
+        if any(q.get("message_id") == message_id for q in questions):
+            return None
+        item = eval_ask.question_from_feedback(message, questions)
+        questions.append(item)
+        return item
+
+    item = eval_ask.update_questions(add)
+    if item is None:
         raise HTTPException(409, "Already in the evaluation set")
-    item = question_from_feedback(message, questions)
-    questions.append(item)
-    EVAL_DIR.mkdir(parents=True, exist_ok=True)
-    QUESTIONS_FILE.write_text(json.dumps(questions, indent=2, ensure_ascii=False))
     return item
