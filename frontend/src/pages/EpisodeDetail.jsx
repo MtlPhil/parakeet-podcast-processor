@@ -29,10 +29,14 @@ export default function EpisodeDetail() {
   // ?t=<seconds> (from an Ask citation) opens the transcript at that moment.
   const [params] = useSearchParams();
   const jumpTo = params.get('t') != null ? Number(params.get('t')) : null;
+  // &end=<seconds>: the cited passage's end, highlighted from jumpTo to it.
+  const jumpEnd = params.get('end') != null ? Number(params.get('end')) : null;
   const [episode, setEpisode] = useState(null);
   const [transcript, setTranscript] = useState(null);
   const [summary, setSummary] = useState(null);
-  const [tab, setTab] = useState(jumpTo != null ? 'transcript' : 'overview');
+  const [tab, setTab] = useState(
+    jumpTo != null ? 'transcript' : TABS.includes(params.get('tab')) ? params.get('tab') : 'overview'
+  );
   const targetRef = useRef(null);
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState(null);
@@ -279,7 +283,12 @@ export default function EpisodeDetail() {
                     key={seg.id}
                     ref={seg.id === targetId ? targetRef : null}
                     className={`flex gap-3 text-sm ${
-                      seg.id === targetId ? 'bg-yellow-100 rounded -mx-1 px-1' : ''
+                      seg.id === targetId ||
+                      (jumpEnd != null &&
+                        seg.timestamp_start >= jumpTo &&
+                        seg.timestamp_start < jumpEnd)
+                        ? 'bg-yellow-100 rounded -mx-1 px-1'
+                        : ''
                     }`}
                   >
                     <span className="text-gray-400 w-16 shrink-0 text-right tabular-nums">

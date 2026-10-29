@@ -1910,6 +1910,34 @@ class P3Database:
         )
         return {row["id"]: row for row in self._fetchall_as_dicts(cursor)}
 
+    def recent_topics(self, username: Optional[str], limit: int = 3) -> List[str]:
+        """The first key topic of the user's latest digests, distinct, for
+        example questions."""
+        join, params = self._user_episode_join(username)
+        rows = self.conn.execute(
+            f"""
+            SELECT s.key_topics FROM summaries s
+            JOIN episodes e ON e.id = s.episode_id {join}
+            ORDER BY s.created_at DESC LIMIT 30
+        """,
+            params,
+        ).fetchall()
+        topics: List[str] = []
+        for (raw,) in rows:
+            try:
+                values = json.loads(raw) if isinstance(raw, str) else raw or []
+            except ValueError:
+                continue
+            for topic in values[:1]:
+                topic = str(topic).strip()
+                if 3 <= len(topic) <= 60 and topic.lower() not in {
+                    t.lower() for t in topics
+                }:
+                    topics.append(topic)
+            if len(topics) >= limit:
+                break
+        return topics
+
     def summary_chunks(self, episode_ids: List[int]) -> Dict[int, Dict[str, Any]]:
         """Each listed episode's summary passage (as ``get_chunks`` returns
         it), by episode id."""

@@ -132,6 +132,7 @@ def ask(body: AskRequest, username: str = Depends(current_username)):
                             **event["retrieval"],
                             "mode": event["mode"],
                             "understanding": event["understanding"],
+                            "scope": event["scope"],
                             "invalid_citations": event["invalid_citations"],
                         },
                         timings=event["timings"],
@@ -179,6 +180,7 @@ def ask_status(
     return {
         "index": db.index_stats(None if everyone else user["username"]),
         "models_paused": not _models_allowed(),
+        "suggestions": db.recent_topics(user["username"]),
         "reranker_available": RERANKER_AVAILABLE,
     }
 
@@ -194,8 +196,12 @@ def get_thread(thread_id: str, username: str = Depends(current_username)):
     if not thread:
         raise HTTPException(404, "Conversation not found")
     for message in thread["messages"]:
-        # The retrieval record is for review; the page only needs the mode.
-        message["mode"] = (message.pop("retrieval", None) or {}).get("mode")
+        # The retrieval record is for review; the page needs only the mode
+        # and the question as the search understood it.
+        record = message.pop("retrieval", None) or {}
+        message["mode"] = record.get("mode")
+        message["standalone"] = (record.get("understanding") or {}).get("question")
+        message["scope"] = record.get("scope")
     return thread
 
 

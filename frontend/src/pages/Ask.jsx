@@ -26,17 +26,19 @@ const STAGES = {
   answering: 'Writing the answer…',
 };
 
-const KIND_LABELS = { summary: 'Episode summary', topics: 'Episode topics', quote: 'Quote' };
+const KIND_LABELS = { summary: 'Episode summary', topics: 'Episode topics', quote: 'Quote', notes: 'Show notes' };
+// Passages written by the digest model, not said in the episode.
+const AI_WRITTEN = new Set(['summary', 'topics']);
 
-const EXAMPLES = [
-  'What have my podcasts said about interest rates this fall?',
-  'Which guests talked about AI regulation, and what did they argue?',
-  'Quels épisodes parlent du marché immobilier à Montréal?',
-];
-
-// Where a source opens: the transcript at its moment, or the episode.
-const sourceLink = (s) =>
-  s.start_s != null ? `/episodes/${s.episode_id}?t=${Math.floor(s.start_s)}` : `/episodes/${s.episode_id}`;
+// Where a source opens: the transcript at its moment (the whole passage
+// highlighted), the summary tab, or the episode.
+const sourceLink = (s) => {
+  if (s.start_s != null) {
+    const end = s.end_s != null ? `&end=${Math.ceil(s.end_s)}` : '';
+    return `/episodes/${s.episode_id}?t=${Math.floor(s.start_s)}${end}`;
+  }
+  return AI_WRITTEN.has(s.kind) ? `/episodes/${s.episode_id}?tab=summary` : `/episodes/${s.episode_id}`;
+};
 
 const sourceLine = (s) =>
   [
@@ -115,6 +117,14 @@ function SourceCard({ source }) {
           <Link to={sourceLink(source)} className="text-xs font-medium text-blue-700 hover:underline break-words">
             {sourceLine(source)}
           </Link>
+          {AI_WRITTEN.has(source.kind) && (
+            <span
+              className="ml-2 text-[10px] uppercase tracking-wide text-amber-800 bg-amber-50 border border-amber-200 rounded px-1"
+              title="Written by the summarizing model from the transcript, not said in the episode. Check the transcript before quoting it."
+            >
+              AI summary
+            </span>
+          )}
           <p className="text-xs text-gray-600 mt-1 whitespace-pre-line break-words">
             {open || !long ? source.text : `${source.text.slice(0, 280)}…`}
           </p>
@@ -132,10 +142,14 @@ function SourceCard({ source }) {
 function Sources({ sources, mode }) {
   const [showOthers, setShowOthers] = useState(false);
   if (!sources?.length) return null;
-  // Without a written answer every passage is a result; with one, the cited
-  // ones come first and the rest stay folded.
-  const cited = mode === 'answer' ? sources.filter((s) => s.cited) : sources;
-  const others = mode === 'answer' ? sources.filter((s) => !s.cited) : [];
+  // With a written answer the cited passages come first and the rest stay
+  // folded; when nothing matched they are only the nearest misses, folded;
+  // otherwise (keyword results, waiting) every passage is a result.
+  const cited =
+    mode === 'answer' ? sources.filter((s) => s.cited) : mode === 'not_covered' ? [] : sources;
+  const others =
+    mode === 'answer' ? sources.filter((s) => !s.cited) : mode === 'not_covered' ? sources : [];
+  const othersLabel = mode === 'not_covered' ? 'nearest passage' : 'other passage';
   return (
     <div className="mt-4">
       {cited.length > 0 && (
@@ -151,7 +165,7 @@ function Sources({ sources, mode }) {
       {others.length > 0 && (
         <div className="mt-2">
           <button onClick={() => setShowOthers(!showOthers)} className="text-xs text-gray-500 hover:text-gray-700">
-            {showOthers ? 'Hide' : 'Show'} {others.length} other passage{others.length === 1 ? '' : 's'} searched
+            {showOthers ? 'Hide' : 'Show'} {others.length} {othersLabel}{others.length === 1 ? '' : 's'}
           </button>
           {showOthers && (
             <ul className="space-y-2 mt-2">
@@ -164,17 +178,42 @@ function Sources({ sources, mode }) {
   );
 }
 
-// The answer with its cited sources as Markdown, for notes.
+// The answer with its cited sources as Markdown, for notes: the question as
+// the search understood it, when it was asked, and each source quoted.
 const asMarkdown = (question, message) => {
   const cited = (message.sources || []).filter((s) => s.cited || message.mode !== 'answer');
-  const lines = cited.map(
-    (s) => `[${s.n}] ${sourceLine(s)} — ${window.location.origin}${sourceLink(s)}`
-  );
-  return `## ${question}\n\n${message.answer}\n\n${lines.join('\n')}\n`;
+  const sources = cited.map((s) => {
+    const badge = AI_WRITTEN.has(s.kind) ? ' (AI summary, not said in the episode)' : '';
+    const quote = s.text.split('\n').map((line) => `> ${line}`).join('\n');
+    return `[${s.n}] ${sourceLine(s)}${badge} — ${window.location.origin}${sourceLink(s)}\n${quote}`;
+  });
+  const asked = new Date().toISOString().slice(0, 10);
+  const warning = message.uncited ? '\n\n*This answer cites no passage.*' : '';
+  return `## ${message.standalone || question}\n\n*Asked ${asked}, from my podcast library.*\n\n${message.answer}${warning}\n\n${sources.join('\n\n')}\n`;
 };
 
+// "Searched: …" under an answer, so a narrowed search is never invisible.
+function ScopeLine({ scope }) {
+  if (!scope) return null;
+  const shows = scope.podcasts?.length ? `${scope.podcasts.join(', ')} only` : 'all shows';
+  const dates =
+    scope.after || scope.before
+      ? [scope.after && `from ${scope.after}`, scope.before && `to ${scope.before}`].filter(Boolean).join(' ')
+      : 'all dates';
+  const coverage =
+    scope.episodes_indexed < scope.episodes_processed
+      ? ` · ${scope.episodes_indexed} of ${scope.episodes_processed} episodes indexed`
+      : ` · ${scope.episodes_indexed} episodes`;
+  return (
+    <p className="text-[11px] text-gray-500 mt-3">
+      Searched: {shows}, {dates}
+      {scope.inferred && ' (read from your question)'}
+      {coverage}
+    </p>
+  );
+}
+
 const NOTICES = {
-  not_covered: 'No passage in your library answers this closely enough, so no answer was written.',
   paused: 'An episode is being transcribed: these are keyword matches only.',
   llm_failed: 'The answer model failed; the passages it would have used are below.',
   no_llm: 'No answer model is configured; these are the passages found.',
@@ -189,9 +228,14 @@ function AssistantMessage({ message, question }) {
     await rateAskAnswer(message.id, next).catch(() => setRating(rating));
   };
   const copy = async () => {
-    await navigator.clipboard?.writeText(asMarkdown(question, message));
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    try {
+      if (!navigator.clipboard) throw new Error('no clipboard');
+      await navigator.clipboard.writeText(asMarkdown(question, message));
+      setCopied('Copied');
+    } catch {
+      setCopied('Copy failed: your browser blocked the clipboard');
+    }
+    setTimeout(() => setCopied(false), 2500);
   };
   return (
     <div className="bg-white border rounded-xl p-4 shadow-sm">
@@ -207,6 +251,7 @@ function AssistantMessage({ message, question }) {
         </p>
       )}
       <Sources sources={message.sources} mode={message.mode} />
+      <ScopeLine scope={message.scope} />
       {message.id && (
         <div className="flex items-center gap-3 mt-3 text-xs text-gray-500">
           <button onClick={() => rate(1)} className={rating === 1 ? 'text-green-700 font-semibold' : 'hover:text-gray-800'} aria-label="Helpful">
@@ -216,9 +261,36 @@ function AssistantMessage({ message, question }) {
             ▼ Not helpful
           </button>
           <button onClick={copy} className="hover:text-gray-800 ml-auto">
-            {copied ? 'Copied' : 'Copy with sources'}
+            {copied || 'Copy with sources'}
           </button>
         </div>
+      )}
+    </div>
+  );
+}
+
+// While an answer is written: the stage, the time so far, and the passages
+// as soon as the search has found them, so there is something to read.
+function Pending({ stage, sources, startedAt }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  const seconds = Math.round((now - (startedAt || now)) / 1000);
+  return (
+    <div className="bg-white border rounded-xl p-4">
+      <p className="text-sm text-gray-500">
+        <span className="animate-pulse">{STAGES[stage] || 'Working…'}</span>{' '}
+        <span className="tabular-nums">{seconds} s</span>
+      </p>
+      {sources?.length > 0 && (
+        <>
+          <p className="text-xs text-gray-500 mt-1">
+            With a local model an answer can take a few minutes. The passages it will use are ready to read now.
+          </p>
+          <Sources sources={sources} mode="passages" />
+        </>
       )}
     </div>
   );
@@ -232,6 +304,8 @@ const fromStored = (m) => ({
   content: m.content,
   sources: m.citations || [],
   mode: m.mode || 'answer',
+  scope: m.scope,
+  standalone: m.standalone,
   uncited: (m.mode || 'answer') === 'answer' && m.role === 'assistant' && !m.citations?.some((c) => c.cited),
   rating: m.rating,
 });
@@ -280,7 +354,14 @@ export default function Ask() {
     setError(null);
     setBusy(true);
     setStage('understanding');
-    const pending = { role: 'assistant', answer: '', sources: [], mode: 'answer', streaming: true };
+    const pending = {
+      role: 'assistant',
+      answer: '',
+      sources: [],
+      mode: 'answer',
+      streaming: true,
+      startedAt: Date.now(),
+    };
     setMessages((prev) => [...prev, { role: 'user', content: question }, pending]);
     const update = (patch) =>
       setMessages((prev) => [...prev.slice(0, -1), { ...prev[prev.length - 1], ...patch }]);
@@ -303,6 +384,8 @@ export default function Ask() {
               answer: event.answer,
               sources: event.sources,
               mode: event.mode,
+              scope: event.scope,
+              standalone: event.understanding?.question,
               uncited: event.uncited_answer,
               streaming: false,
             });
@@ -332,6 +415,14 @@ export default function Ask() {
   };
 
   const index = status?.index;
+  // Example questions from the user's own recent topics, else generic ones.
+  const examples = status?.suggestions?.length
+    ? status.suggestions.map((topic) => `What have my podcasts said about ${topic}?`)
+    : [
+        'What did my podcasts say this month about the topic I follow most?',
+        'Which guests disagreed with each other, and on what?',
+        'Quels épisodes récents parlent de santé?',
+      ];
   const partlyIndexed = index && index.episodes < index.processed_episodes;
   const questionFor = (i) => messages[i - 1]?.content || '';
 
@@ -376,7 +467,7 @@ export default function Ask() {
       <section className="flex-1 min-w-0">
         <h1 className="text-2xl font-bold text-gray-900 mb-1">Ask your library</h1>
         <p className="text-sm text-gray-500 mb-4">
-          Answers come only from your podcasts, with every claim linked to the moment it was said.
+          Answers come only from your podcasts. Each claim links to the transcript moment, or the episode summary, it comes from.
         </p>
 
         {partlyIndexed && (
@@ -405,7 +496,7 @@ export default function Ask() {
           <div className="mb-6">
             <p className="text-sm text-gray-600 mb-2">Try:</p>
             <div className="flex flex-col gap-2">
-              {EXAMPLES.map((q) => (
+              {examples.map((q) => (
                 <button
                   key={q}
                   onClick={(e) => submit(e, q)}
@@ -429,10 +520,7 @@ export default function Ask() {
             ) : (
               <div key={m.id || i}>
                 {m.streaming && !m.answer ? (
-                  <div className="bg-white border rounded-xl p-4 text-sm text-gray-500 animate-pulse">
-                    {STAGES[stage] || 'Working…'}
-                    {m.sources?.length > 0 && ` ${m.sources.length} passages found.`}
-                  </div>
+                  <Pending stage={stage} sources={m.sources} startedAt={m.startedAt} />
                 ) : (
                   <AssistantMessage message={m} question={questionFor(i)} />
                 )}

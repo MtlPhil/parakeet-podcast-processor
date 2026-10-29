@@ -828,3 +828,64 @@ def test_translation_rescues_a_cross_language_question(db):
         None,
     ).ask(french)
     assert no_translation["mode"] == "not_covered"
+
+
+def test_quotes_get_their_transcript_moment_and_summaries_lose_preambles():
+    from p3.chunker import build_chunks
+
+    episode = {"title": "E", "podcast_title": "P", "date": None, "language": "en"}
+    segments = _segments(
+        ["Hello and welcome.", "We will hike rates until inflation is back at target."]
+        + ["Filler talk."] * 4
+    )
+    summary = {
+        "full_summary": "Here is a concise summary (approximately 300 words):\nThe bank hikes.",
+        "quotes": [
+            "We will hike rates until inflation is back at target",
+            "Never said",
+        ],
+    }
+    chunks = {
+        c["kind"] + str(i): c
+        for i, c in enumerate(build_chunks(episode, segments, summary))
+    }
+    summary_chunk = next(c for c in chunks.values() if c["kind"] == "summary")
+    assert summary_chunk["text"] == "The bank hikes."
+    quotes = [c for c in chunks.values() if c["kind"] == "quote"]
+    assert quotes[0]["start_s"] == 0 and quotes[1]["start_s"] is None
+
+
+def test_answers_report_their_search_scope(db):
+    e1, e2 = _library(db)
+    llm = FakeLLM(
+        understanding={
+            "question": "phone news",
+            "language": "en",
+            "podcasts": ["Tech Weekly"],
+            "after": "2026-09-15",
+        }
+    )
+    done = Asker(db, Retriever(db, FakeEmbedder(), FakeReranker()), llm, None).ask("x")
+    assert done["scope"]["podcasts"] == ["Tech Weekly"]
+    assert done["scope"]["after"] == "2026-09-15" and done["scope"]["inferred"]
+    assert done["scope"]["episodes_indexed"] == 2
+
+
+def test_broad_answers_leave_out_episodes_that_barely_match(db):
+    from p3.retriever import Retrieval, broaden
+
+    e1, e2 = _library(db)
+    chunks = db.get_chunks(list(range(1, 20)))
+    passages = [
+        {**c, "score": 1.0, "rerank_score": 0.9 if c["episode_id"] == e1 else 0.001}
+        for c in chunks.values()
+        if c["kind"] == "transcript"
+    ]
+    result = broaden(db, Retrieval(passages=passages), min_rerank=0.05)
+    assert {p["episode_id"] for p in result.passages} == {e1}
+
+
+def test_recent_topics_suggest_questions(db):
+    e1, _ = _library(db)
+    db.add_summary(e1, ["Interest rates", "Housing"], [], [], [], "Summary.")
+    assert db.recent_topics(None) == ["Interest rates"]

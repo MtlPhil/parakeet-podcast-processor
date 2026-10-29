@@ -91,6 +91,33 @@ def notes_text(description: Optional[str]) -> str:
     return text[:NOTES_MAX_CHARS]
 
 
+# The model's own framing at the top of some summaries ("Here is a concise
+# summary (approximately 300 words):").
+_PREAMBLE_RE = re.compile(
+    r"^\s*(here is|here's|voici|below is)\b[^\n]{0,120}?:\s*", re.IGNORECASE
+)
+# A quote is placed at the transcript passage holding this share of its words.
+QUOTE_MATCH = 0.6
+
+
+def clean_summary(text: str) -> str:
+    return _PREAMBLE_RE.sub("", text, count=1).strip()
+
+
+def locate_quote(quote: str, passages: List[Dict[str, Any]]) -> Optional[Dict]:
+    """The transcript passage a digest quote comes from (most of its words
+    in it), or None. Quotes are often lightly reworded by the digest."""
+    words = set(tokenize(quote))
+    if len(words) < 3:
+        return None
+    best, best_share = None, 0.0
+    for p in passages:
+        share = len(words & set(tokenize(p["text"]))) / len(words)
+        if share > best_share:
+            best, best_share = p, share
+    return best if best_share >= QUOTE_MATCH else None
+
+
 def _prefix(podcast_title: str, episode_title: str, date: Optional[datetime]) -> str:
     day = f" ({date.strftime('%Y-%m-%d')})" if date else ""
     return f"{podcast_title}: {episode_title}{day}"
@@ -161,14 +188,25 @@ def build_chunks(
     notes = notes_text(episode.get("description"))
     if notes:
         chunks.append({"kind": KIND_NOTES, "text": notes})
+    transcript = list(chunks)
     if summary:
-        if (summary.get("full_summary") or "").strip():
-            chunks.append({"kind": KIND_SUMMARY, "text": summary["full_summary"]})
+        text = clean_summary(summary.get("full_summary") or "")
+        if text:
+            chunks.append({"kind": KIND_SUMMARY, "text": text})
         topics = _as_list(summary.get("key_topics")) + _as_list(summary.get("themes"))
         if topics:
             chunks.append({"kind": KIND_TOPICS, "text": "; ".join(topics)})
         for quote in _as_list(summary.get("quotes")):
-            chunks.append({"kind": KIND_QUOTE, "text": quote})
+            # Placed in the transcript where it was said, when it can be found.
+            source = locate_quote(quote, transcript)
+            chunks.append(
+                {
+                    "kind": KIND_QUOTE,
+                    "text": quote,
+                    "start_s": source["start_s"] if source else None,
+                    "end_s": source["end_s"] if source else None,
+                }
+            )
     for seq, chunk in enumerate(chunks):
         chunk.setdefault("start_s", None)
         chunk.setdefault("end_s", None)
