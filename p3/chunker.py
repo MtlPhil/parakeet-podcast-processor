@@ -95,7 +95,9 @@ def notes_text(description: Optional[str]) -> str:
 # The model's own framing at the top of some summaries ("Here is a concise
 # summary (approximately 300 words):").
 _PREAMBLE_RE = re.compile(
-    r"^\s*(here is|here's|voici|below is)\b[^\n]{0,120}?:\s*", re.IGNORECASE
+    r"^\s*(here is|here's|voici|below is)\b[^\n]{0,120}?"
+    r"\b(summary|résumé|resume)\b[^\n]{0,60}?:\s*",
+    re.IGNORECASE,
 )
 # A quote is placed at the transcript passage holding this share of its words.
 QUOTE_MATCH = 0.6
@@ -186,10 +188,11 @@ def build_chunks(
         episode.get("podcast_title") or "", episode["title"], episode.get("date")
     )
     chunks = transcript_chunks(segments)
+    # Taken before the show notes: quotes are placed in what was said.
+    transcript = list(chunks)
     notes = notes_text(episode.get("description"))
     if notes:
         chunks.append({"kind": KIND_NOTES, "text": notes})
-    transcript = list(chunks)
     if summary:
         # A French episode's summary in French, when the digest has one.
         french = episode.get("language") == "fr" and summary.get("full_summary_fr")
@@ -207,7 +210,12 @@ def build_chunks(
             + _as_list(summary.get("themes"))
             if tokenize(t)
         ]
-        if len(topics) >= 2 or (topics and len(tokenize(topics[0])) > 1):
+        # The word-frequency fallback (no LLM) marks its output with this one
+        # theme; its "topics" are just frequent words.
+        fallback = _as_list(summary.get("themes")) == ["general discussion"]
+        if not fallback and (
+            len(topics) >= 2 or (topics and len(tokenize(topics[0])) > 1)
+        ):
             chunks.append({"kind": KIND_TOPICS, "text": "; ".join(topics)})
         for quote in _as_list(summary.get("quotes")):
             # Placed in the transcript where it was said, when it can be found.
@@ -216,8 +224,8 @@ def build_chunks(
                 {
                     "kind": KIND_QUOTE,
                     "text": quote,
-                    "start_s": source["start_s"] if source else None,
-                    "end_s": source["end_s"] if source else None,
+                    "start_s": source.get("start_s") if source else None,
+                    "end_s": source.get("end_s") if source else None,
                 }
             )
     for seq, chunk in enumerate(chunks):

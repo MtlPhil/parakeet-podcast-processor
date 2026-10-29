@@ -196,6 +196,7 @@ export async function askStream(question, threadId, onEvent, signal, filters = {
     reader.cancel().catch(() => {});
   }
 }
+export const stopAsk = () => request('/ask/stop', { method: 'POST' });
 export const getAskStatus = (library = false) =>
   request(`/ask/status${library ? '?library=true' : ''}`);
 export const getAskThreads = () => request('/ask/threads');

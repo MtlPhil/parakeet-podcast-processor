@@ -262,7 +262,7 @@ def broaden(
 ) -> Retrieval:
     """Regroup a retrieval by episode for a broad question: the best
     ``episodes`` episodes in order of their best passage, each represented by
-    its summary passage followed by its best passages. With reranker scores,
+    its best passages followed by its summary. With reranker scores,
     episodes whose best passage scores under ``min_rerank`` are left out
     rather than padding the answer."""
     order: List[int] = []
@@ -283,10 +283,12 @@ def broaden(
     passages: List[Dict[str, Any]] = []
     for episode_id in order:
         top = max((p["score"] for p in best[episode_id]), default=0.0)
+        # What was said comes first; the AI-written summary only adds
+        # context after it, and is the first to go when the prompt is full.
+        passages.extend(best[episode_id])
         summary = summaries.get(episode_id)
         if summary:
             passages.append({**summary, "score": top, "rerank_score": None})
-        passages.extend(best[episode_id])
     retrieval.passages = passages
     retrieval.stages["episodes"] = [(e, 0.0) for e in order]
     return retrieval

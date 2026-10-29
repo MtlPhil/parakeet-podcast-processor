@@ -9,6 +9,7 @@ import {
   getAskThreads,
   indexLibrary,
   rateAskAnswer,
+  stopAsk,
 } from '../api/client';
 import { useMe } from '../hooks/useMe';
 
@@ -188,18 +189,24 @@ function Sources({ sources, mode }) {
   );
 }
 
+// Feed text (titles, passages) is escaped for Markdown, so pasting the notes
+// into Obsidian or Notion can't create links or load images from a feed;
+// the answer keeps its [n] citations but loses any link or image syntax.
+const escapeMd = (text) => text.replace(/([\\`*_[\]()!<>#|])/g, '\\$1');
+const neutralizeLinks = (text) => text.replace(/!\[/g, '!\\[').replace(/\]\(/g, ']\\(');
+
 // The answer with its cited sources as Markdown, for notes: the question as
 // the search understood it, when it was asked, and each source quoted.
 const asMarkdown = (question, message) => {
   const cited = (message.sources || []).filter((s) => s.cited || message.mode !== 'answer');
   const sources = cited.map((s) => {
     const badge = AI_WRITTEN.has(s.kind) ? ' (AI summary, not said in the episode)' : '';
-    const quote = s.text.split('\n').map((line) => `> ${line}`).join('\n');
-    return `[${s.n}] ${sourceLine(s)}${badge} — ${window.location.origin}${sourceLink(s)}\n${quote}`;
+    const quote = s.text.split('\n').map((line) => `> ${escapeMd(line)}`).join('\n');
+    return `[${s.n}] ${escapeMd(sourceLine(s))}${badge} — <${window.location.origin}${sourceLink(s)}>\n${quote}`;
   });
   const asked = new Date().toISOString().slice(0, 10);
   const warning = message.uncited ? '\n\n*This answer cites no passage.*' : '';
-  return `## ${message.standalone || question}\n\n*Asked ${asked}, from my podcast library.*\n\n${message.answer}${warning}\n\n${sources.join('\n\n')}\n`;
+  return `## ${escapeMd(message.standalone || question)}\n\n*Asked ${asked}, from my podcast library.*\n\n${neutralizeLinks(message.answer)}${warning}\n\n${sources.join('\n\n')}\n`;
 };
 
 // "Searched: …" under an answer, so a narrowed search is never invisible.
@@ -413,12 +420,15 @@ export default function Ask() {
     const controller = new AbortController();
     abortRef.current = controller;
     let streamed = '';
+    let finished = false;
+    let stored = false;
     try {
       await askStream(
         question,
         threadId,
         (event) => {
           if (event.event === 'thread') {
+            stored = true;
             // Stored already: from here the page can be left and come back.
             if (event.thread_id !== threadId) setParams({ thread: event.thread_id }, { replace: !threadId });
           } else if (event.event === 'status') setStage(event.stage);
@@ -427,6 +437,7 @@ export default function Ask() {
             streamed += event.text;
             update({ answer: streamed });
           } else if (event.event === 'done') {
+            finished = true;
             update({
               id: event.message_id,
               answer: event.answer,
@@ -440,6 +451,7 @@ export default function Ask() {
             });
             if (event.thread_id !== threadId) setParams({ thread: event.thread_id }, { replace: !threadId });
           } else if (event.event === 'error') {
+            finished = true;
             // The question and this failure are stored in the thread: stay in it.
             if (event.thread_id !== threadId) setParams({ thread: event.thread_id }, { replace: !threadId });
             throw new Error(event.detail);
@@ -452,9 +464,18 @@ export default function Ask() {
           before: filters.before || undefined,
         }
       );
+      // The connection dropped before the answer ended: it is still being
+      // written and stored server-side; reopening the thread shows it.
+      if (!finished) throw new Error('The connection was lost; the answer will appear when you reopen this conversation.');
     } catch (err) {
       if (err.name !== 'AbortError') setError(err.message);
-      update({ streaming: false });
+      if (!stored) {
+        // Refused (e.g. another answer is being written): take it back off.
+        setMessages((prev) => prev.slice(0, -2));
+        setInput(question);
+      } else {
+        update({ streaming: false });
+      }
     } finally {
       setBusy(false);
       setStage(null);
@@ -645,7 +666,9 @@ export default function Ask() {
             {busy ? (
               <button
                 type="button"
-                onClick={() => abortRef.current?.abort()}
+                onClick={() => stopAsk().catch((e) => setError(e.message))}
+                title="Stops the answer where it is and keeps what was written"
+
                 className="px-4 py-2 border text-sm rounded-lg hover:bg-gray-100"
               >
                 Stop

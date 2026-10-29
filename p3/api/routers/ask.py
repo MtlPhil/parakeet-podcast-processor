@@ -12,6 +12,7 @@ import json
 import logging
 import queue
 import threading
+from threading import Event
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -86,8 +87,15 @@ _answering_lock = threading.Lock()
 
 
 def answering_thread(username: str):
+    """The thread the user's answer in progress is for, or None."""
     with _answering_lock:
-        return _answering.get(username)
+        entry = _answering.get(username)
+        return entry["thread_id"] if entry else None
+
+
+def _release(username: str) -> None:
+    with _answering_lock:
+        _answering.pop(username, None)
 
 
 @router.post("")
@@ -108,75 +116,82 @@ def ask(body: AskRequest, username: str = Depends(current_username)):
             raise HTTPException(404, "Conversation not found")
     asker = _asker(username)
     use_models = _models_allowed()
+    cancel = Event()
     with _answering_lock:
         if username in _answering:
             raise HTTPException(409, "An answer is still being written; wait for it")
-        thread_id = thread["id"] if thread else db.create_ask_thread(username, question)
-        _answering[username] = thread_id
-    try:
-        db.add_ask_message(thread_id, "user", question)
-    except Exception:
-        with _answering_lock:
-            _answering.pop(username, None)
-        raise
-    history = history_of(thread)
+        _answering[username] = {"thread_id": None, "cancel": cancel}
     # The worker's events for this request's stream (None ends it).
     out: "queue.Queue[Optional[dict]]" = queue.Queue()
+    try:
+        thread_id = thread["id"] if thread else db.create_ask_thread(username, question)
+        with _answering_lock:
+            _answering[username]["thread_id"] = thread_id
+        db.add_ask_message(thread_id, "user", question)
+        history = history_of(thread)
 
-    def work():
-        # Every question gets a stored reply, so a thread never holds two
-        # user turns in a row.
-        try:
-            for event in asker.answer_stream(
-                question,
-                history,
-                use_models,
-                filters={
-                    "podcast_ids": body.podcast_ids,
-                    "after": body.after,
-                    "before": body.before,
-                },
-            ):
-                if event["event"] == "done":
-                    event["thread_id"] = thread_id
-                    event["message_id"] = db.add_ask_message(
+        def work():
+            # Every question gets a stored reply, so a thread never holds two
+            # user turns in a row, and every stream ends with done or error.
+            try:
+                for event in asker.answer_stream(
+                    question,
+                    history,
+                    use_models,
+                    filters={
+                        "podcast_ids": body.podcast_ids,
+                        "after": body.after,
+                        "before": body.before,
+                    },
+                    cancel=cancel,
+                ):
+                    if event["event"] == "done":
+                        event["thread_id"] = thread_id
+                        event["message_id"] = db.add_ask_message(
+                            thread_id,
+                            "assistant",
+                            event["answer"],
+                            citations=event["sources"],
+                            retrieval={
+                                **event["retrieval"],
+                                "mode": event["mode"],
+                                "understanding": event["understanding"],
+                                "scope": event["scope"],
+                                "invalid_citations": event["invalid_citations"],
+                                "weak_citations": event["weak_citations"],
+                            },
+                            timings=event["timings"],
+                            models=event["models"],
+                        )
+                        # The stored record is for review, not for the page.
+                        event.pop("retrieval", None)
+                    out.put(event)
+            except Exception:
+                logger.exception("Answering failed")
+                out.put(
+                    {
+                        "event": "error",
+                        "detail": _FAILED["error"],
+                        "thread_id": thread_id,
+                    }
+                )
+                try:
+                    db.add_ask_message(
                         thread_id,
                         "assistant",
-                        event["answer"],
-                        citations=event["sources"],
-                        retrieval={
-                            **event["retrieval"],
-                            "mode": event["mode"],
-                            "understanding": event["understanding"],
-                            "scope": event["scope"],
-                            "invalid_citations": event["invalid_citations"],
-                            "weak_citations": event["weak_citations"],
-                        },
-                        timings=event["timings"],
-                        models=event["models"],
+                        _FAILED["error"],
+                        retrieval={"mode": "error"},
                     )
-                    # The stored record is for review, not for the page.
-                    event.pop("retrieval", None)
-                out.put(event)
-        except Exception:
-            logger.exception("Answering failed")
-            message_id = db.add_ask_message(
-                thread_id, "assistant", _FAILED["error"], retrieval={"mode": "error"}
-            )
-            out.put(
-                {
-                    "event": "error",
-                    "detail": _FAILED["error"],
-                    "thread_id": thread_id,
-                    "message_id": message_id,
-                }
-            )
-        finally:
-            with _answering_lock:
-                _answering.pop(username, None)
-            out.put(None)
+                except Exception:
+                    logger.exception("Could not store the failed answer")
+            finally:
+                _release(username)
+                out.put(None)
 
-    threading.Thread(target=work, name="ask", daemon=True).start()
+        threading.Thread(target=work, name="ask", daemon=True).start()
+    except BaseException:
+        _release(username)
+        raise
 
     def events():
         yield dumps({"event": "thread", "thread_id": thread_id})
@@ -191,6 +206,18 @@ def ask(body: AskRequest, username: str = Depends(current_username)):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.post("/stop")
+def stop(username: str = Depends(current_username)):
+    """Stop the user's answer in progress: what was written so far is kept.
+    (Closing the page doesn't stop it; the answer is stored when done.)"""
+    with _answering_lock:
+        entry = _answering.get(username)
+    if not entry:
+        return {"stopped": False}
+    entry["cancel"].set()
+    return {"stopped": True, "thread_id": entry["thread_id"]}
 
 
 @router.get("/status")
@@ -237,6 +264,8 @@ def get_thread(thread_id: str, username: str = Depends(current_username)):
 
 @router.delete("/threads/{thread_id}")
 def delete_thread(thread_id: str, username: str = Depends(current_username)):
+    if answering_thread(username) == thread_id:
+        raise HTTPException(409, "Its answer is still being written; stop it first")
     if not get_db().delete_ask_thread(thread_id, username):
         raise HTTPException(404, "Conversation not found")
     return {"deleted": thread_id}
