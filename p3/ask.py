@@ -40,7 +40,7 @@ from .writer import _detect_language
 
 logger = logging.getLogger(__name__)
 
-UNDERSTAND_PROMPT_VERSION = "understand-v2"
+UNDERSTAND_PROMPT_VERSION = "understand-v3"
 ANSWER_PROMPT_VERSION = "answer-v2"
 
 # Below this reranker score (0 to 1) the best passage is taken as unrelated
@@ -64,6 +64,8 @@ transcripts (English and French). Reply with one JSON object and nothing else:
   "question": the user's latest question rewritten to stand alone (resolve \
 "he", "that", "the second one" from the conversation), in its original language,
   "language": "en" or "fr", the language the user wrote the latest question in,
+  "translation": the rewritten question in the other language (English if \
+it is French, French if it is English),
   "scope": "lookup" for a specific fact, claim or moment; "broad" for an \
 overview, a comparison between shows or guests, a trend over time, or a \
 count ("how often", "which episodes"),
@@ -241,6 +243,9 @@ class Understanding:
     language: str
     scope: str = "lookup"
     keywords: List[str] = field(default_factory=list)
+    # The question in the other language: the library mixes English and
+    # French, and the reranker scores across languages poorly.
+    translation: Optional[str] = None
     filters: Dict[str, Any] = field(default_factory=dict)
     raw: Optional[Dict[str, Any]] = None
 
@@ -354,6 +359,7 @@ class Asker:
                 else fallback.language
             ),
             scope="broad" if data.get("scope") == "broad" else "lookup",
+            translation=str(data.get("translation") or "").strip() or None,
             keywords=[str(k) for k in data.get("keywords") or [] if str(k).strip()][
                 :12
             ],
@@ -402,6 +408,8 @@ class Asker:
     def _retrieve(self, understanding: Understanding, use_models: bool, **limits):
         """Search with the question's filters; without them when they leave
         nothing or fail."""
+        if understanding.translation:
+            limits["alternates"] = [understanding.translation]
         if understanding.filters:
             try:
                 retrieval = self.retriever.retrieve(

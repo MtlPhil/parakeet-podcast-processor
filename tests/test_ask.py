@@ -804,3 +804,27 @@ def test_evaluate_answers_grades_and_counts_declines(db):
         and result["supported"] == 1.0
     )
     assert result["questions"][1]["stratum"] == "no_answer"
+
+
+def test_translation_rescues_a_cross_language_question(db):
+    """The reranker scores a French question against English passages
+    poorly; the question step's translation is reranked too."""
+    _library(db)
+    french = "Que dit la banque centrale?"
+    llm = FakeLLM(
+        understanding={
+            "question": french,
+            "language": "fr",
+            "translation": "What did the bank say about rates?",
+        }
+    )
+    asker = Asker(db, Retriever(db, FakeEmbedder(), FakeReranker()), llm, None)
+    done = asker.ask(french)
+    assert done["mode"] == "answer" and done["language"] == "fr"
+    no_translation = Asker(
+        db,
+        Retriever(db, FakeEmbedder(), FakeReranker()),
+        FakeLLM(understanding={"question": french, "language": "fr"}),
+        None,
+    ).ask(french)
+    assert no_translation["mode"] == "not_covered"
