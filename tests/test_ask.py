@@ -980,3 +980,24 @@ def test_chosen_filters_replace_inferred_ones_and_stand(db):
     # A chosen date range with nothing in it isn't widened behind the user's back.
     empty = list(asker.answer_stream("rates", filters={"after": "2030-01-01"}))[-1]
     assert empty["sources"] == [] and empty["mode"] == "not_covered"
+
+
+def test_support_check_flags_citations_their_passage_does_not_back():
+    from p3.ask import check_support, citation_claims
+
+    passages = [
+        {
+            "text": "The central bank raised interest rates by half a point.",
+            "episode_title": "Rates day",
+        },
+        {"text": "We talked about our favourite cat videos.", "episode_title": "Cats"},
+    ]
+    answer = (
+        "**Rates day** [1]\n"
+        "The central bank raised interest rates by half a point [1]. "
+        "The central bank also cut its growth forecast sharply [2]."
+    )
+    claims = citation_claims(answer, passages)
+    assert [n for n, _ in claims] == [1, 2]  # the heading is skipped
+    weak = check_support(answer, passages, FakeReranker())
+    assert [w["n"] for w in weak] == [2]

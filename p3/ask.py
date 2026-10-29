@@ -238,6 +238,54 @@ def validate_citations(answer: str, passage_count: int) -> Dict[str, Any]:
     return {"answer": cleaned, "cited": cited, "invalid": invalid}
 
 
+# Below this reranker score a cited passage likely doesn't back its sentence.
+# Calibrated on real answers: supported pairs score a median 0.90, and the
+# clearest overstated citation found by review scored 0.001.
+SUPPORT_THRESHOLD = 0.1
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
+
+
+def citation_claims(answer: str, passages: List[Dict[str, Any]]) -> List[tuple]:
+    """(passage number, sentence without its citations) for every cited
+    sentence that makes a claim. Headings and list items that only name an
+    episode are skipped: they score low against any passage."""
+    claims = []
+    for sentence in _SENTENCE_SPLIT_RE.split(answer):
+        numbers = [int(n) for n in re.findall(r"\[(\d+)\]", sentence)]
+        text = re.sub(r"\[\d+\]", "", sentence).replace("*", "").strip(" -•:()")
+        if not numbers or len(text) < 25:
+            continue
+        for n in dict.fromkeys(numbers):
+            if not 1 <= n <= len(passages):
+                continue
+            source = passages[n - 1]
+            label = set(
+                tokenize(
+                    f"{source.get('podcast_title') or ''} "
+                    f"{source.get('episode_title') or ''}"
+                )
+            )
+            words = [w for w in tokenize(text) if not w.isdigit()]
+            if label and words and sum(w in label for w in words) >= 0.7 * len(words):
+                continue  # the sentence only names the episode
+            claims.append((n, text))
+    return claims
+
+
+def check_support(
+    answer: str, passages: List[Dict[str, Any]], reranker: Any
+) -> List[Dict[str, Any]]:
+    """The citations whose passage likely doesn't back the sentence citing
+    it, as {n, sentence, score}."""
+    claims = citation_claims(answer, passages)
+    weak = []
+    for n, text in claims:
+        [score] = reranker.score(text, [passages[n - 1]["text"]])
+        if score < SUPPORT_THRESHOLD:
+            weak.append({"n": n, "sentence": text, "score": round(float(score), 4)})
+    return weak
+
+
 def source_of(n: int, passage: Dict[str, Any], cited: bool) -> Dict[str, Any]:
     """A passage as the client shows it under the answer."""
     episode_date = passage.get("episode_date")
@@ -494,6 +542,24 @@ class Asker:
             "episodes_processed": stats["processed_episodes"],
         }
 
+    def _weak_citations(
+        self, answer: str, passages: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """``check_support`` with the retriever's reranker, when there is one
+        and models may run; nothing otherwise. Never fails the answer."""
+        reranker = self.retriever.reranker
+        if reranker is None:
+            return []
+        t = time.monotonic()
+        try:
+            with model_use():
+                return check_support(answer, passages, reranker)
+        except Exception as e:  # paused, or the reranker failed
+            logger.warning("Support check skipped: %s", e)
+            return []
+        finally:
+            logger.debug("Support check took %.1fs", time.monotonic() - t)
+
     def covered(self, retrieval: Retrieval) -> bool:
         if not retrieval.passages:
             return False
@@ -552,6 +618,7 @@ class Asker:
         answer = ""
         cited: List[int] = []
         invalid: List[int] = []
+        weak: List[Dict[str, Any]] = []
         if not use_models:
             mode = "paused"
             answer = _PAUSED[language]
@@ -595,6 +662,7 @@ class Asker:
                     checked["cited"],
                     checked["invalid"],
                 )
+                weak = self._weak_citations(answer, passages)
             except ModelsPaused:
                 mode = "paused"
                 answer = _PAUSED[language]
@@ -620,6 +688,7 @@ class Asker:
             "sources": sources,
             "cited": cited,
             "invalid_citations": invalid,
+            "weak_citations": weak,
             "uncited_answer": mode == "answer" and not cited,
             "scope": self._scope_of(understanding),
             "understanding": {
