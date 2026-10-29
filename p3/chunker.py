@@ -40,6 +40,7 @@ _STOPWORDS = set("""
     il ils je la le les leur leurs lui ma mais me mes moi mon ne nos notre
     nous on ou par pas pour qu que qui sa se ses son sur ta te tes toi ton
     tu un une vos votre vous ca ben euh bon alors donc puis comme fait faire
+    about because which
     """.split())
 _WORD_RE = re.compile(r"\w+")
 # Letters NFKD leaves whole, spelled out so "sœur" matches "soeur".
@@ -190,11 +191,23 @@ def build_chunks(
         chunks.append({"kind": KIND_NOTES, "text": notes})
     transcript = list(chunks)
     if summary:
-        text = clean_summary(summary.get("full_summary") or "")
+        # A French episode's summary in French, when the digest has one.
+        french = episode.get("language") == "fr" and summary.get("full_summary_fr")
+        text = clean_summary(
+            (summary.get("full_summary_fr") if french else summary.get("full_summary"))
+            or ""
+        )
         if text:
             chunks.append({"kind": KIND_SUMMARY, "text": text})
-        topics = _as_list(summary.get("key_topics")) + _as_list(summary.get("themes"))
-        if topics:
+        # Topics that are only common words come from the word-frequency
+        # fallback ("about; because; think"): they would match anything.
+        topics = [
+            t
+            for t in _as_list(summary.get("key_topics"))
+            + _as_list(summary.get("themes"))
+            if tokenize(t)
+        ]
+        if len(topics) >= 2 or (topics and len(tokenize(topics[0])) > 1):
             chunks.append({"kind": KIND_TOPICS, "text": "; ".join(topics)})
         for quote in _as_list(summary.get("quotes")):
             # Placed in the transcript where it was said, when it can be found.

@@ -889,3 +889,20 @@ def test_recent_topics_suggest_questions(db):
     e1, _ = _library(db)
     db.add_summary(e1, ["Interest rates", "Housing"], [], [], [], "Summary.")
     assert db.recent_topics(None) == ["Interest rates"]
+
+
+def test_french_summaries_and_junk_topics():
+    from p3.chunker import build_chunks
+
+    episode = {"title": "E", "podcast_title": "P", "date": None, "language": "fr"}
+    summary = {
+        "full_summary": "In English.",
+        "full_summary_fr": "En français.",
+        "key_topics": ["about", "because", "think"],
+        "themes": [],
+    }
+    kinds = {
+        c["kind"]: c for c in build_chunks(episode, _segments(["bonjour"]), summary)
+    }
+    assert kinds["summary"]["text"] == "En français."
+    assert "topics" not in kinds
