@@ -200,9 +200,21 @@ class Retriever:
                 result.skipped["rerank"] = str(e)
             result.timings["rerank"] = time.monotonic() - t
 
+        # The same episode can be in the library twice (republished under a
+        # new link): a passage whose words repeat one kept already is dropped.
+        seen: set = set()
+        unique = []
+        for chunk_id, score in ranked:
+            if chunk_id not in chunks:
+                continue
+            fingerprint = " ".join(tokenize(chunks[chunk_id]["text"]))[:400]
+            if fingerprint in seen:
+                continue
+            seen.add(fingerprint)
+            unique.append((chunk_id, score))
         episode_of = {i: c["episode_id"] for i, c in chunks.items()}
         for chunk_id, score in limit_per_episode(
-            ranked, episode_of, top_k, per_episode
+            unique, episode_of, top_k, per_episode
         ):
             passage = dict(chunks[chunk_id])
             passage["score"] = score

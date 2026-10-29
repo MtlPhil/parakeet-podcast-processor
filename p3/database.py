@@ -365,6 +365,12 @@ class P3Database:
         """)
 
         self._resync_sequences()
+        # Write the schema changes to the database file now. A hard kill soon
+        # after an upgrade otherwise leaves them only in the WAL, and DuckDB
+        # has failed to replay a WAL holding an ALTER TABLE on episodes
+        # ("Calling DatabaseManager::GetDefaultDatabase with no default
+        # database set"), so the database would no longer open.
+        self.conn.execute("CHECKPOINT")
 
     def _resync_sequences(self):
         """Ensure each id sequence starts past its table's current max id.
