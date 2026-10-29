@@ -287,6 +287,17 @@ class SettingsUpdate(BaseModel):
     settings: Optional[dict] = None
 
 
+class AskRequest(BaseModel):
+    question: str = Field(..., min_length=1, max_length=2000)
+    thread_id: Optional[str] = Field(
+        None, description="Continue this conversation (its earlier turns give context)"
+    )
+
+
+class AskRating(BaseModel):
+    rating: int = Field(..., ge=-1, le=1, description="1 helpful, -1 not, 0 clear")
+
+
 class UserSettings(BaseModel):
     """A user's own settings (see deps.USER_SETTING_DEFAULTS). Omitted or
     null fields fall back to the shared settings."""

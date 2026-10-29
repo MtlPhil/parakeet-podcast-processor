@@ -55,6 +55,50 @@ def _release_ollama(settings: dict) -> None:
         release_ollama_models(settings.get("ollama_base_url", DEFAULT_OLLAMA_URL))
 
 
+# Set while transcription models are loaded. Ask then answers with keyword
+# search only: its models and the transcription models don't fit in 16 GB
+# together.
+transcribing = threading.Event()
+
+
+def _begin_transcription(settings: dict) -> None:
+    """Stop Ask from loading models, then free theirs and Ollama's. The caller
+    clears ``transcribing`` once the transcription models are unloaded."""
+    transcribing.set()
+    from p3.embedder import release_ask_models
+
+    release_ask_models()
+    _release_ollama(settings)
+
+
+def _make_embedder(settings: dict):
+    from p3.embedder import DEFAULT_EMBEDDING_MODEL, Embedder
+
+    return Embedder(
+        settings.get("embedding_model") or DEFAULT_EMBEDDING_MODEL,
+        settings.get("ollama_base_url", DEFAULT_OLLAMA_URL),
+    )
+
+
+def _index_episode(db, episode_id: int, settings: dict) -> str:
+    """Add a digested episode to the Ask index. Never raises: when embedding
+    fails the passages are kept for keyword search, and a later "Index
+    library" run embeds them. Returns a note for the job message."""
+    from p3.indexer import index_episode
+
+    try:
+        count = index_episode(db, episode_id, _make_embedder(settings))
+        return f"{count} passages indexed"
+    except Exception as e:
+        logger.warning("Embedding episode %d failed: %s", episode_id, e)
+    try:
+        index_episode(db, episode_id, None)
+        return "indexed for keyword search only (embedding failed)"
+    except Exception as e:
+        logger.exception("Indexing episode %d failed", episode_id)
+        return f"not indexed: {e}"
+
+
 def _make_cleaner(
     db, settings: dict, provider: Optional[str] = None, model: Optional[str] = None
 ):
@@ -391,16 +435,19 @@ def task_transcribe(job_id: str, episode_id: int):
         )
 
         settings = _get_settings()
-        _release_ollama(settings)
-        transcriber = _make_transcriber(db, settings)
-
-        db.update_job(job_id, progress=0.2, message=f"Transcribing: {title}")
-        stop_heartbeat = _start_heartbeat(db, job_id, f"Transcribing: {title}")
+        _begin_transcription(settings)
         try:
-            success = transcriber.transcribe_episode(episode_id)
+            transcriber = _make_transcriber(db, settings)
+
+            db.update_job(job_id, progress=0.2, message=f"Transcribing: {title}")
+            stop_heartbeat = _start_heartbeat(db, job_id, f"Transcribing: {title}")
+            try:
+                success = transcriber.transcribe_episode(episode_id)
+            finally:
+                stop_heartbeat()
+            transcriber.unload_models()
         finally:
-            stop_heartbeat()
-        transcriber.unload_models()
+            transcribing.clear()
 
         if success:
             db.update_job(
@@ -423,6 +470,51 @@ def task_transcribe(job_id: str, episode_id: int):
 # ------------------------------------------------------------------
 
 
+def task_index(job_id: str):
+    """Add every processed episode missing from the Ask index (or embedded
+    with another model) to it: the backfill after enabling Ask or changing
+    the embedding model. Gives way to a daily run between episodes: it stops
+    and queues a new index job for the rest behind it."""
+    db = get_db()
+    try:
+        db.update_job(job_id, status="running", message="Indexing the library...")
+        from p3.indexer import index_pending
+
+        def on_progress(done: int, total: int, message: str):
+            db.update_job(
+                job_id, progress=done / total if total else 0, message=message
+            )
+
+        stats = index_pending(
+            db,
+            _make_embedder(_get_settings()),
+            progress=on_progress,
+            should_stop=lambda: job_runner.priority_waiting,
+        )
+        left = stats["pending"] - stats["indexed"] - stats["failed"]
+        if left > 0:
+            next_job = db.create_job("index")
+            job_runner.enqueue(task_index, next_job)
+        db.update_job(
+            job_id,
+            status="completed" if not stats["failed"] else "failed",
+            progress=1.0,
+            message=(
+                f"Indexed {stats['indexed']} of {stats['pending']} episodes"
+                + (f", {stats['failed']} failed" if stats["failed"] else "")
+                + (f"; {left} left for the next index job" if left > 0 else "")
+            ),
+            error=(
+                f"{stats['failed']} episodes could not be indexed (see the log)"
+                if stats["failed"]
+                else None
+            ),
+        )
+    except Exception as e:
+        logger.exception("Index task failed")
+        db.update_job(job_id, status="failed", error=str(e))
+
+
 def task_digest(job_id: str, episode_id: int):
     """Generate structured summary for an episode."""
     db = get_db()
@@ -435,8 +527,13 @@ def task_digest(job_id: str, episode_id: int):
         result = cleaner.generate_summary(episode_id)
 
         if result:
+            db.update_job(job_id, progress=0.9, message="Indexing for Ask...")
+            note = _index_episode(db, episode_id, _get_settings())
             db.update_job(
-                job_id, status="completed", progress=1.0, message="Summary complete"
+                job_id,
+                status="completed",
+                progress=1.0,
+                message=f"Summary complete; {note}",
             )
         else:
             db.update_job(
@@ -1020,10 +1117,13 @@ def task_full_pipeline(job_id: str, episode_id: int):
         # Step 1: Transcribe (if needed)
         if episode["status"] == "downloaded":
             db.update_job(job_id, progress=0.1, message="Transcribing...")
-            _release_ollama(settings)
-            transcriber = _make_transcriber(db, settings)
-            success = transcriber.transcribe_episode(episode_id)
-            transcriber.unload_models()
+            _begin_transcription(settings)
+            try:
+                transcriber = _make_transcriber(db, settings)
+                success = transcriber.transcribe_episode(episode_id)
+                transcriber.unload_models()
+            finally:
+                transcribing.clear()
             if not success:
                 db.update_job(job_id, status="failed", error="Transcription failed")
                 return
@@ -1045,8 +1145,13 @@ def task_full_pipeline(job_id: str, episode_id: int):
                 )
                 return
 
+        db.update_job(job_id, progress=0.9, message="Indexing for Ask...")
+        note = _index_episode(db, episode_id, settings)
         db.update_job(
-            job_id, status="completed", progress=1.0, message="Pipeline complete"
+            job_id,
+            status="completed",
+            progress=1.0,
+            message=f"Pipeline complete; {note}",
         )
     except Exception as e:
         logger.exception("Full pipeline task failed")

@@ -296,6 +296,68 @@ class P3Database:
             "CREATE INDEX IF NOT EXISTS idx_jobs_episode_id ON jobs(episode_id)"
         )
 
+        # Ask: passages of each episode (see p3/chunker.py) with their
+        # embeddings, and the BM25 term table over them. Ids are assigned
+        # under _chunk_lock rather than by a sequence, so a hard kill can't
+        # leave a sequence behind the rows (see _resync_sequences). No
+        # foreign keys: chunks are written and deleted with their episode.
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS chunks (
+                id INTEGER PRIMARY KEY,
+                episode_id INTEGER NOT NULL,
+                seq INTEGER NOT NULL,
+                kind VARCHAR NOT NULL,
+                start_s DOUBLE,
+                end_s DOUBLE,
+                text VARCHAR NOT NULL,
+                prefix VARCHAR,
+                language VARCHAR,
+                n_terms INTEGER NOT NULL,
+                embedding FLOAT[],
+                embed_model VARCHAR,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chunks_episode_id ON chunks(episode_id)"
+        )
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS chunk_terms (
+                chunk_id INTEGER NOT NULL,
+                episode_id INTEGER NOT NULL,
+                term VARCHAR NOT NULL,
+                tf INTEGER NOT NULL
+            )
+        """)
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chunk_terms_term ON chunk_terms(term)"
+        )
+        # Ask conversations. Messages keep what produced them (passages and
+        # scores, timings, model and prompt versions) so any answer can be
+        # explained and reproduced.
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS ask_threads (
+                id VARCHAR PRIMARY KEY,
+                username VARCHAR NOT NULL,
+                title VARCHAR,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS ask_messages (
+                id VARCHAR PRIMARY KEY,
+                thread_id VARCHAR NOT NULL,
+                role VARCHAR NOT NULL,
+                content VARCHAR NOT NULL,
+                citations JSON,
+                retrieval JSON,
+                timings JSON,
+                models JSON,
+                rating INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         self._resync_sequences()
 
     def _resync_sequences(self):
@@ -1341,7 +1403,7 @@ class P3Database:
     def purge_episode(self, episode_id: int):
         """Erase an episode nobody has, with everything that hangs off it."""
         self.remove_audio(episode_id)
-        for table in ("transcripts", "summaries", "jobs"):
+        for table in ("transcripts", "summaries", "jobs", "chunk_terms", "chunks"):
             self.conn.execute(
                 f"DELETE FROM {table} WHERE episode_id = ?", (episode_id,)
             )
@@ -1533,6 +1595,329 @@ class P3Database:
             "SELECT COUNT(*) FROM jobs WHERE status = 'pending'"
         ).fetchone()[0]
         return stats
+
+    # ------------------------------------------------------------------
+    # Ask index: passages, embeddings and BM25 terms
+    # ------------------------------------------------------------------
+
+    _chunk_lock = threading.Lock()
+
+    def replace_chunks(
+        self,
+        episode_id: int,
+        chunks: List[Dict[str, Any]],
+        embeddings: Optional[List[List[float]]],
+        embed_model: Optional[str],
+    ) -> int:
+        """Replace an episode's passages (from ``chunker.build_chunks``) and
+        their BM25 terms. ``embeddings`` match ``chunks`` in order; None
+        stores keyword-searchable passages only. Returns the count stored."""
+        from p3.chunker import term_counts
+
+        with self._chunk_lock:
+            self.delete_chunks(episode_id)
+            if not chunks:
+                return 0
+            first = (
+                self.conn.execute("SELECT COALESCE(MAX(id), 0) FROM chunks").fetchone()[
+                    0
+                ]
+                + 1
+            )
+            term_rows: Tuple[List[int], List[str], List[int]] = ([], [], [])
+            rows = []
+            for i, chunk in enumerate(chunks):
+                counts = term_counts(f"{chunk.get('prefix') or ''} {chunk['text']}")
+                for term, tf in counts.items():
+                    term_rows[0].append(first + i)
+                    term_rows[1].append(term)
+                    term_rows[2].append(tf)
+                rows.append(
+                    (
+                        first + i,
+                        episode_id,
+                        chunk["seq"],
+                        chunk["kind"],
+                        chunk.get("start_s"),
+                        chunk.get("end_s"),
+                        chunk["text"],
+                        chunk.get("prefix"),
+                        chunk.get("language"),
+                        sum(counts.values()),
+                        embeddings[i] if embeddings else None,
+                        embed_model if embeddings else None,
+                    )
+                )
+            self.conn.executemany(
+                "INSERT INTO chunks (id, episode_id, seq, kind, start_s, end_s, "
+                "text, prefix, language, n_terms, embedding, embed_model) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+            if term_rows[0]:
+                # One statement for every term: unnest zips the lists.
+                self.conn.execute(
+                    "INSERT INTO chunk_terms SELECT unnest(?::INTEGER[]), ?, "
+                    "unnest(?::VARCHAR[]), unnest(?::INTEGER[])",
+                    [term_rows[0], episode_id, term_rows[1], term_rows[2]],
+                )
+            return len(rows)
+
+    def delete_chunks(self, episode_id: int):
+        self.conn.execute("DELETE FROM chunk_terms WHERE episode_id = ?", (episode_id,))
+        self.conn.execute("DELETE FROM chunks WHERE episode_id = ?", (episode_id,))
+
+    def episodes_to_index(self, embed_model: Optional[str]) -> List[int]:
+        """Processed episodes whose passages are missing, or were embedded with
+        another model (or not at all, when ``embed_model`` is given)."""
+        if embed_model:
+            stale = "COUNT(c.id) = 0 OR COUNT(*) FILTER (c.embed_model IS DISTINCT FROM ?) > 0"
+            params: List[Any] = [embed_model]
+        else:
+            stale = "COUNT(c.id) = 0"
+            params = []
+        rows = self.conn.execute(
+            f"""
+            SELECT e.id FROM episodes e LEFT JOIN chunks c ON c.episode_id = e.id
+            WHERE e.status = 'processed'
+            GROUP BY e.id HAVING {stale}
+            ORDER BY e.id
+        """,
+            params,
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def index_stats(self) -> Dict[str, Any]:
+        row = self.conn.execute(
+            "SELECT COUNT(*), COUNT(DISTINCT episode_id), "
+            "COUNT(*) FILTER (embedding IS NOT NULL) FROM chunks"
+        ).fetchone()
+        models = self.conn.execute(
+            "SELECT embed_model, COUNT(*) FROM chunks GROUP BY 1 ORDER BY 2 DESC"
+        ).fetchall()
+        return {
+            "chunks": row[0],
+            "episodes": row[1],
+            "embedded": row[2],
+            "models": {m or "none": n for m, n in models},
+            "processed_episodes": self.conn.execute(
+                "SELECT COUNT(*) FROM episodes WHERE status = 'processed'"
+            ).fetchone()[0],
+        }
+
+    def _chunk_scope(
+        self, username: Optional[str], filters: Optional[Dict[str, Any]]
+    ) -> Tuple[str, List[Any]]:
+        """JOIN/WHERE text limiting ``c`` (chunks) to a user's episodes and
+        the optional filters: ``podcast_ids``, ``after`` / ``before`` (dates,
+        inclusive), ``language``, ``kinds``. ``e`` is the episode."""
+        sql = "JOIN episodes e ON e.id = c.episode_id "
+        params: List[Any] = []
+        if username is not None:
+            sql += "JOIN user_episodes ue ON ue.episode_id = e.id AND ue.username = ? "
+            params.append(username)
+        where = ["1 = 1"]
+        filters = filters or {}
+        if filters.get("podcast_ids"):
+            where.append("e.podcast_id IN (SELECT unnest(?::INTEGER[]))")
+            params.append(list(filters["podcast_ids"]))
+        if filters.get("after"):
+            where.append("e.date >= ?::DATE")
+            params.append(str(filters["after"]))
+        if filters.get("before"):
+            where.append("e.date < ?::DATE + INTERVAL 1 DAY")
+            params.append(str(filters["before"]))
+        if filters.get("language"):
+            where.append("e.language = ?")
+            params.append(filters["language"])
+        if filters.get("kinds"):
+            where.append("c.kind IN (SELECT unnest(?::VARCHAR[]))")
+            params.append(list(filters["kinds"]))
+        return sql + "WHERE " + " AND ".join(where), params
+
+    def bm25_search(
+        self,
+        terms: List[str],
+        username: Optional[str],
+        filters: Optional[Dict[str, Any]] = None,
+        limit: int = 50,
+        k1: float = 1.2,
+        b: float = 0.75,
+    ) -> List[Tuple[int, float]]:
+        """(chunk id, BM25 score) of the best passages for ``terms`` (already
+        tokenized), best first, within the user's library."""
+        terms = sorted(set(terms))
+        if not terms:
+            return []
+        scope, params = self._chunk_scope(username, filters)
+        rows = self.conn.execute(
+            f"""
+            WITH q AS (SELECT unnest(?::VARCHAR[]) AS term),
+            stats AS (SELECT COUNT(*) AS n, AVG(n_terms) AS avgdl FROM chunks),
+            df AS (
+                SELECT t.term, COUNT(*) AS df FROM chunk_terms t
+                JOIN q ON q.term = t.term GROUP BY t.term
+            ),
+            lib AS (SELECT c.id, c.n_terms FROM chunks c {scope})
+            SELECT t.chunk_id, SUM(
+                LN(1 + (s.n - df.df + 0.5) / (df.df + 0.5))
+                * (t.tf * (? + 1))
+                / (t.tf + ? * (1 - ? + ? * l.n_terms / s.avgdl))
+            ) AS score
+            FROM chunk_terms t
+            JOIN df ON df.term = t.term
+            JOIN lib l ON l.id = t.chunk_id
+            CROSS JOIN stats s
+            GROUP BY t.chunk_id
+            ORDER BY score DESC, t.chunk_id
+            LIMIT ?
+        """,
+            [terms, *params, k1, k1, b, b, limit],
+        ).fetchall()
+        return [(r[0], float(r[1])) for r in rows]
+
+    def vector_search(
+        self,
+        vector: List[float],
+        embed_model: str,
+        username: Optional[str],
+        filters: Optional[Dict[str, Any]] = None,
+        limit: int = 50,
+    ) -> List[Tuple[int, float]]:
+        """(chunk id, cosine similarity) of the passages nearest ``vector``,
+        best first, among those embedded with ``embed_model``."""
+        scope, params = self._chunk_scope(username, filters)
+        rows = self.conn.execute(
+            f"""
+            SELECT c.id, list_cosine_similarity(c.embedding, ?::FLOAT[]) AS score
+            FROM chunks c {scope} AND c.embed_model = ?
+            ORDER BY score DESC, c.id
+            LIMIT ?
+        """,
+            [vector, *params, embed_model, limit],
+        ).fetchall()
+        return [(r[0], float(r[1])) for r in rows]
+
+    def get_chunks(self, chunk_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+        """Passages by id, with their episode and podcast for citations."""
+        if not chunk_ids:
+            return {}
+        cursor = self.conn.execute(
+            """
+            SELECT c.id, c.episode_id, c.seq, c.kind, c.start_s, c.end_s, c.text,
+                   c.language, e.title AS episode_title, e.date AS episode_date,
+                   e.podcast_id, p.title AS podcast_title
+            FROM chunks c
+            JOIN episodes e ON e.id = c.episode_id
+            JOIN podcasts p ON p.id = e.podcast_id
+            WHERE c.id IN (SELECT unnest(?::INTEGER[]))
+        """,
+            [list(chunk_ids)],
+        )
+        return {row["id"]: row for row in self._fetchall_as_dicts(cursor)}
+
+    # ------------------------------------------------------------------
+    # Ask conversations
+    # ------------------------------------------------------------------
+
+    def create_ask_thread(self, username: str, title: str) -> str:
+        thread_id = uuid.uuid4().hex
+        self.conn.execute(
+            "INSERT INTO ask_threads (id, username, title) VALUES (?, ?, ?)",
+            (thread_id, username, title[:200]),
+        )
+        return thread_id
+
+    def get_ask_thread(self, thread_id: str, username: str) -> Optional[Dict[str, Any]]:
+        """A user's thread with its messages in order, or None (also for
+        someone else's thread)."""
+        thread = self._fetchone_as_dict(
+            self.conn.execute(
+                "SELECT * FROM ask_threads WHERE id = ? AND username = ?",
+                (thread_id, username),
+            )
+        )
+        if not thread:
+            return None
+        messages = self._fetchall_as_dicts(
+            self.conn.execute(
+                "SELECT * FROM ask_messages WHERE thread_id = ? "
+                "ORDER BY created_at, id",
+                (thread_id,),
+            )
+        )
+        for m in messages:
+            for key in ("citations", "retrieval", "timings", "models"):
+                if isinstance(m.get(key), str):
+                    m[key] = json.loads(m[key])
+        thread["messages"] = messages
+        return thread
+
+    def list_ask_threads(self, username: str, limit: int = 50) -> List[Dict[str, Any]]:
+        return self._fetchall_as_dicts(
+            self.conn.execute(
+                """
+                SELECT t.id, t.title, t.created_at,
+                       MAX(m.created_at) AS updated_at, COUNT(m.id) AS message_count
+                FROM ask_threads t LEFT JOIN ask_messages m ON m.thread_id = t.id
+                WHERE t.username = ?
+                GROUP BY t.id, t.title, t.created_at
+                ORDER BY COALESCE(MAX(m.created_at), t.created_at) DESC
+                LIMIT ?
+            """,
+                (username, limit),
+            )
+        )
+
+    def add_ask_message(
+        self,
+        thread_id: str,
+        role: str,
+        content: str,
+        citations: Optional[list] = None,
+        retrieval: Optional[dict] = None,
+        timings: Optional[dict] = None,
+        models: Optional[dict] = None,
+    ) -> str:
+        message_id = uuid.uuid4().hex
+        self.conn.execute(
+            "INSERT INTO ask_messages (id, thread_id, role, content, citations, "
+            "retrieval, timings, models) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                message_id,
+                thread_id,
+                role,
+                content,
+                json.dumps(citations) if citations is not None else None,
+                json.dumps(retrieval, default=str) if retrieval is not None else None,
+                json.dumps(timings) if timings is not None else None,
+                json.dumps(models) if models is not None else None,
+            ),
+        )
+        return message_id
+
+    def delete_ask_thread(self, thread_id: str, username: str) -> bool:
+        if not self.get_ask_thread(thread_id, username):
+            return False
+        self.conn.execute("DELETE FROM ask_messages WHERE thread_id = ?", (thread_id,))
+        self.conn.execute("DELETE FROM ask_threads WHERE id = ?", (thread_id,))
+        return True
+
+    def rate_ask_message(self, message_id: str, username: str, rating: int) -> bool:
+        """Set the thumbs up (1) / down (-1) / none (0) of one of the user's
+        answers. False if it isn't theirs."""
+        owned = self.conn.execute(
+            "SELECT 1 FROM ask_messages m JOIN ask_threads t ON t.id = m.thread_id "
+            "WHERE m.id = ? AND t.username = ? AND m.role = 'assistant'",
+            (message_id, username),
+        ).fetchone()
+        if not owned:
+            return False
+        self.conn.execute(
+            "UPDATE ask_messages SET rating = ? WHERE id = ?",
+            (rating or None, message_id),
+        )
+        return True
 
     def close(self):
         """Close database connection."""

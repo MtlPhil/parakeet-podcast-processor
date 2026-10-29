@@ -126,6 +126,12 @@ class DailyScheduler:
                 run_if_due()
             except Exception:
                 logger.exception("Daily run check failed")
+            # The Ask reranker stays loaded between questions; free it once
+            # nobody has asked anything for a while.
+            from p3.embedder import _reranker
+
+            if _reranker is not None:
+                _reranker.release(idle_only=True)
             if self._stop.wait(self._interval):
                 return
 

@@ -1,10 +1,11 @@
 """Provider-agnostic chat client shared by the summarizer and the writer."""
 
+import json
 import logging
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, Iterator, Optional, Tuple, Union
 
 import httpx
 
@@ -154,6 +155,95 @@ class LLMClient:
             f"Unsupported LLM provider: {self.provider!r} "
             f"(expected one of {', '.join(SUPPORTED_PROVIDERS)})"
         )
+
+    def chat_stream(
+        self, system: str, user: str, max_tokens: int = 2000
+    ) -> Iterator[str]:
+        """Like ``chat``, but yields the reply as it is generated. Ollama and
+        Gemini stream; OpenAI yields the whole reply at once. A Gemini stream
+        that fails before its first piece falls back to ``chat`` (with its
+        retries and fallback model)."""
+        if self.provider == "ollama":
+            yield from self._stream_ollama(system, user, max_tokens)
+        elif self.provider == "gemini":
+            yield from self._stream_gemini(system, user, max_tokens)
+        else:
+            yield self.chat(system, user, max_tokens)
+
+    def _ollama_options(self, max_tokens: int) -> Dict[str, Any]:
+        return {
+            # Hard cap on output length so a small model caught in a
+            # repetition loop cannot generate until the context is full.
+            "num_predict": max_tokens,
+            # Slightly above Ollama's 1.1 default to discourage such loops.
+            "repeat_penalty": 1.3,
+            # Ollama's default window is smaller than a long transcript
+            # prompt; an overflow silently drops the instructions at its start.
+            "num_ctx": _OLLAMA_NUM_CTX,
+        }
+
+    def _stream_ollama(self, system: str, user: str, max_tokens: int) -> Iterator[str]:
+        if not OLLAMA_AVAILABLE:
+            raise RuntimeError("The 'ollama' Python package is not installed")
+        client = ollama.Client(host=self.ollama_base_url)
+        for part in client.chat(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            keep_alive=self.keep_alive,
+            think=False,
+            stream=True,
+            options=self._ollama_options(max_tokens),
+        ):
+            text = part["message"]["content"]
+            if text:
+                yield text
+
+    def _stream_gemini(self, system: str, user: str, max_tokens: int) -> Iterator[str]:
+        if not self.api_key:
+            raise RuntimeError(
+                "No Gemini API key found: set GEMINI_API_KEY or create "
+                f"{GEMINI_API_KEY_FILE}"
+            )
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{self.model}:streamGenerateContent?alt=sse"
+        )
+        started = False
+        try:
+            with httpx.Client(timeout=_REQUEST_TIMEOUT) as client:
+                with client.stream(
+                    "POST",
+                    url,
+                    headers={"x-goog-api-key": self.api_key},
+                    json={
+                        "systemInstruction": {"parts": [{"text": system}]},
+                        "contents": [{"role": "user", "parts": [{"text": user}]}],
+                        "generationConfig": {
+                            "maxOutputTokens": max_tokens,
+                            "temperature": 0.2,
+                            "thinkingConfig": {"thinkingBudget": 0},
+                        },
+                    },
+                ) as response:
+                    if response.status_code != 200:
+                        raise RuntimeError(f"Gemini API error: {response.status_code}")
+                    for line in response.iter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        data = json.loads(line[5:])
+                        for candidate in data.get("candidates", []):
+                            for piece in candidate.get("content", {}).get("parts", []):
+                                if piece.get("text"):
+                                    started = True
+                                    yield piece["text"]
+        except (httpx.TransportError, RuntimeError, ValueError) as e:
+            if started:
+                raise
+            logger.warning("Gemini stream failed (%s); retrying without streaming", e)
+            yield self.chat(system, user, max_tokens)
 
     def _chat_ollama(self, system: str, user: str, max_tokens: int) -> str:
         if not OLLAMA_AVAILABLE:

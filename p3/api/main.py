@@ -17,6 +17,9 @@ from p3.api.auth import current_username
 from p3.api.deps import close_db, get_db
 from p3.api.job_queue import job_runner
 from p3.api.models import StatsOut
+from p3.api.routers import (
+    ask,
+)
 from p3.api.routers import auth as auth_routes
 from p3.api.routers import (
     blogs,
@@ -154,6 +157,7 @@ app.include_router(blogs.router)
 app.include_router(linkedin.router)
 app.include_router(settings.router)
 app.include_router(search.router)
+app.include_router(ask.router)
 app.include_router(daily_run.router)
 app.include_router(users.router)
 app.include_router(auth_routes.router)
