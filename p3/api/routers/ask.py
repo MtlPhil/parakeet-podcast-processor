@@ -127,7 +127,16 @@ def ask(body: AskRequest, username: str = Depends(current_username)):
         # Every question gets a stored reply, so a thread never holds two
         # user turns in a row.
         try:
-            for event in asker.answer_stream(question, history, use_models):
+            for event in asker.answer_stream(
+                question,
+                history,
+                use_models,
+                filters={
+                    "podcast_ids": body.podcast_ids,
+                    "after": body.after,
+                    "before": body.before,
+                },
+            ):
                 if event["event"] == "done":
                     event["thread_id"] = thread_id
                     event["message_id"] = db.add_ask_message(

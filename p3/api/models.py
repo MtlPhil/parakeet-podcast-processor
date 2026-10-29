@@ -1,5 +1,6 @@
 """Pydantic models for API request/response schemas."""
 
+from datetime import date
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
@@ -292,6 +293,11 @@ class AskRequest(BaseModel):
     thread_id: Optional[str] = Field(
         None, description="Continue this conversation (its earlier turns give context)"
     )
+    podcast_ids: Optional[List[int]] = Field(
+        None, description="Search only these podcasts (instead of any inferred)"
+    )
+    after: Optional[date] = Field(None, description="Episodes from this date")
+    before: Optional[date] = Field(None, description="Episodes up to this date")
 
 
 class AskRating(BaseModel):

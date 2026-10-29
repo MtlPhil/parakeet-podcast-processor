@@ -956,3 +956,27 @@ class TestAnswersOutliveTheConnection:
         finally:
             release.set()
             deps.close_db()
+
+
+def test_chosen_filters_replace_inferred_ones_and_stand(db):
+    e1, e2 = _library(db)
+    llm = FakeLLM(
+        understanding={
+            "question": "rates",
+            "language": "en",
+            "podcasts": ["Tech Weekly"],
+        }
+    )
+    asker = Asker(db, Retriever(db, FakeEmbedder(), FakeReranker()), llm, None)
+    events = list(
+        asker.answer_stream(
+            "rates", filters={"podcast_ids": [1], "after": None, "before": None}
+        )
+    )
+    done = events[-1]
+    assert done["scope"]["podcasts"] == ["Money Talk"] and done["scope"]["chosen"]
+    assert not done["scope"]["inferred"]
+    assert {s["episode_id"] for s in done["sources"]} == {e1}
+    # A chosen date range with nothing in it isn't widened behind the user's back.
+    empty = list(asker.answer_stream("rates", filters={"after": "2030-01-01"}))[-1]
+    assert empty["sources"] == [] and empty["mode"] == "not_covered"

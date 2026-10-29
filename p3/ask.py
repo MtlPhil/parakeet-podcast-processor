@@ -442,7 +442,8 @@ class Asker:
                     use_models=use_models,
                     **limits,
                 )
-                if retrieval.passages:
+                # Filters the user chose stand even when they leave nothing.
+                if retrieval.passages or understanding.filters.get("chosen"):
                     return retrieval
             except Exception:
                 logger.exception("Search with filters %s failed", understanding.filters)
@@ -458,6 +459,23 @@ class Asker:
 
     # -- answer step ---------------------------------------------------
 
+    def _chosen_filters(
+        self, filters: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """The user's own filters, limited to their podcasts, or None when
+        they chose none (the question's are used then)."""
+        if not filters or not any(filters.values()):
+            return None
+        own = {p["id"] for p in self.db.get_all_podcasts(self.username)}
+        chosen: Dict[str, Any] = {"chosen": True}
+        ids = [i for i in filters.get("podcast_ids") or [] if i in own]
+        if ids:
+            chosen["podcast_ids"] = ids
+        for key in ("after", "before"):
+            if filters.get(key):
+                chosen[key] = str(filters[key])
+        return chosen
+
     def _scope_of(self, understanding: Understanding) -> Dict[str, Any]:
         """What was searched, for the line under the answer: the shows and
         dates the question was read as limited to, and the library's size."""
@@ -470,7 +488,8 @@ class Asker:
             ],
             "after": filters.get("after"),
             "before": filters.get("before"),
-            "inferred": bool(filters),
+            "inferred": bool(filters) and not filters.get("chosen"),
+            "chosen": bool(filters.get("chosen")),
             "episodes_indexed": stats["episodes"],
             "episodes_processed": stats["processed_episodes"],
         }
@@ -486,12 +505,15 @@ class Asker:
         question: str,
         history: Optional[List[Dict[str, str]]] = None,
         use_models: bool = True,
+        filters: Optional[Dict[str, Any]] = None,
     ) -> Iterator[Dict[str, Any]]:
         """Run a question end to end, yielding events: ``status`` (stage),
         ``sources`` (the passages, numbered), ``token`` (answer text), then
         one ``done`` with the final answer, citations and the record to
         store. ``use_models=False`` (during a transcription) skips every
-        model and returns keyword search results."""
+        model and returns keyword search results. ``filters`` (podcast_ids,
+        after, before), chosen by the user, replace those read from the
+        question."""
         timings: Dict[str, float] = {}
         started = time.monotonic()
 
@@ -505,6 +527,9 @@ class Asker:
             )
         timings["understand"] = time.monotonic() - started
         language = understanding.language
+        chosen = self._chosen_filters(filters)
+        if chosen is not None:
+            understanding.filters = chosen
         # A transcription may have started meanwhile (see p3/model_gate.py).
         use_models = use_models and models_allowed()
 

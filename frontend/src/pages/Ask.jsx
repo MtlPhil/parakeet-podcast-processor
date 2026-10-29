@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import {
   askStream,
   deleteAskThread,
+  getPodcasts,
   getAskStatus,
   getAskThread,
   getAskThreads,
@@ -208,6 +209,7 @@ function ScopeLine({ scope }) {
     <p className="text-[11px] text-gray-500 mt-3">
       Searched: {shows}, {dates}
       {scope.inferred && ' (read from your question)'}
+      {scope.chosen && ' (your filters)'}
       {coverage}
     </p>
   );
@@ -322,12 +324,18 @@ export default function Ask() {
   const [error, setError] = useState(null);
   const [status, setStatus] = useState(null);
   const [showThreads, setShowThreads] = useState(false);
+  // Optional limits the user sets; empty means the question decides.
+  const [podcasts, setPodcasts] = useState([]);
+  const [filters, setFilters] = useState({ podcast: '', after: '', before: '' });
+  const [showFilters, setShowFilters] = useState(false);
+  const activeFilters = Boolean(filters.podcast || filters.after || filters.before);
   const bottomRef = useRef(null);
   const abortRef = useRef(null);
 
   const loadThreads = useCallback(() => getAskThreads().then(setThreads).catch(() => {}), []);
   useEffect(() => { loadThreads(); }, [loadThreads]);
   useEffect(() => { getAskStatus().then(setStatus).catch(() => {}); }, []);
+  useEffect(() => { getPodcasts().then(setPodcasts).catch(() => {}); }, []);
 
   useEffect(() => {
     if (busy) return;
@@ -418,7 +426,12 @@ export default function Ask() {
             throw new Error(event.detail);
           }
         },
-        controller.signal
+        controller.signal,
+        {
+          podcast_ids: filters.podcast ? [Number(filters.podcast)] : undefined,
+          after: filters.after || undefined,
+          before: filters.before || undefined,
+        }
       );
     } catch (err) {
       if (err.name !== 'AbortError') setError(err.message);
@@ -555,6 +568,49 @@ export default function Ask() {
         {error && <p className="text-sm text-red-600 mb-3">{error}</p>}
 
         <form onSubmit={submit} className="sticky bottom-0 bg-gray-50 pt-2 pb-4">
+          <div className="flex items-center gap-2 mb-2 text-xs">
+            <button
+              type="button"
+              onClick={() => setShowFilters(!showFilters)}
+              className={`px-2 py-1 rounded border ${activeFilters ? 'border-blue-300 bg-blue-50 text-blue-800' : 'text-gray-600 hover:bg-gray-100'}`}
+            >
+              {activeFilters ? 'Filters on' : 'Filters'}
+            </button>
+            {activeFilters && (
+              <button
+                type="button"
+                onClick={() => setFilters({ podcast: '', after: '', before: '' })}
+                className="text-gray-500 hover:text-gray-800"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+          {showFilters && (
+            <div className="flex flex-wrap items-end gap-3 mb-2 text-xs">
+              <label className="flex flex-col gap-1">
+                Show
+                <select
+                  value={filters.podcast}
+                  onChange={(e) => setFilters({ ...filters, podcast: e.target.value })}
+                  className="border rounded px-2 py-1 max-w-[16rem]"
+                >
+                  <option value="">All shows</option>
+                  {podcasts.map((p) => (
+                    <option key={p.id} value={p.id}>{p.title}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex flex-col gap-1">
+                From
+                <input type="date" value={filters.after} onChange={(e) => setFilters({ ...filters, after: e.target.value })} className="border rounded px-2 py-1" />
+              </label>
+              <label className="flex flex-col gap-1">
+                To
+                <input type="date" value={filters.before} onChange={(e) => setFilters({ ...filters, before: e.target.value })} className="border rounded px-2 py-1" />
+              </label>
+            </div>
+          )}
           <div className="flex gap-2">
             <textarea
               value={input}

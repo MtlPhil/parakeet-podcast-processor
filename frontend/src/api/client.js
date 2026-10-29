@@ -163,11 +163,12 @@ export const search = (q) => request(`/search?${new URLSearchParams({ q })}`);
 // Ask: questions answered from the library, streamed as Server-Sent Events.
 // Calls onEvent with each event ({ event: 'status' | 'sources' | 'token' |
 // 'done' | 'error', ... }) as it arrives.
-export async function askStream(question, threadId, onEvent, signal) {
+// ``filters`` ({ podcast_ids, after, before }) replace any the question implies.
+export async function askStream(question, threadId, onEvent, signal, filters = {}) {
   const res = await fetch(`${BASE}/ask`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question, thread_id: threadId || undefined }),
+    body: JSON.stringify({ question, thread_id: threadId || undefined, ...filters }),
     signal,
   });
   if (!res.ok) {

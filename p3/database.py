@@ -1809,6 +1809,7 @@ class P3Database:
             params.append(username)
         where = ["1 = 1"]
         filters = filters or {}
+        # Keys other than the ones below (e.g. "chosen") are ignored.
         if filters.get("podcast_ids"):
             where.append("e.podcast_id IN (SELECT unnest(?::INTEGER[]))")
             params.append(list(filters["podcast_ids"]))
