@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
-import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   getEpisode,
   getTranscript,
@@ -26,10 +26,14 @@ const TABS = ['overview', 'transcript', 'summary'];
 
 export default function EpisodeDetail() {
   const { id } = useParams();
+  // ?t=<seconds> (from an Ask citation) opens the transcript at that moment.
+  const [params] = useSearchParams();
+  const jumpTo = params.get('t') != null ? Number(params.get('t')) : null;
   const [episode, setEpisode] = useState(null);
   const [transcript, setTranscript] = useState(null);
   const [summary, setSummary] = useState(null);
-  const [tab, setTab] = useState('overview');
+  const [tab, setTab] = useState(jumpTo != null ? 'transcript' : 'overview');
+  const targetRef = useRef(null);
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState(null);
   const [synopsisProvider, setSynopsisProvider] = useState('');
@@ -57,6 +61,21 @@ export default function EpisodeDetail() {
   );
 
   useEffect(() => { load(); }, [load]);
+
+  // The segment playing at jumpTo: the last one starting at or before it.
+  const targetId =
+    jumpTo != null && transcript
+      ? transcript.reduce(
+          (found, seg) => (seg.timestamp_start <= jumpTo + 0.5 ? seg.id : found),
+          transcript[0]?.id
+        )
+      : null;
+
+  useEffect(() => {
+    if (tab === 'transcript' && targetRef.current) {
+      targetRef.current.scrollIntoView({ block: 'center' });
+    }
+  }, [tab, targetId]);
 
   useEffect(() => {
     if (job?.status === 'completed') load();
@@ -256,7 +275,13 @@ export default function EpisodeDetail() {
               </div>
               <div className="space-y-2 max-h-[600px] overflow-y-auto">
                 {transcript.map((seg) => (
-                  <div key={seg.id} className="flex gap-3 text-sm">
+                  <div
+                    key={seg.id}
+                    ref={seg.id === targetId ? targetRef : null}
+                    className={`flex gap-3 text-sm ${
+                      seg.id === targetId ? 'bg-yellow-100 rounded -mx-1 px-1' : ''
+                    }`}
+                  >
                     <span className="text-gray-400 w-16 shrink-0 text-right tabular-nums">
                       {formatTime(seg.timestamp_start)}
                     </span>

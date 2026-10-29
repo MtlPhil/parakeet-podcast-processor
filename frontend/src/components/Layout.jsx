@@ -11,6 +11,7 @@ const signOut = async () => {
 const NAV_ITEMS = [
   { to: '/', label: 'Dashboard' },
   { to: '/podcasts', label: 'Podcasts' },
+  { to: '/ask', label: 'Ask' },
   { to: '/search', label: 'Search' },
   { to: '/add', label: 'Add Podcast' },
   { to: '/blogs', label: 'Content' },
