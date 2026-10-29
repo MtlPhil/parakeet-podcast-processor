@@ -8,6 +8,7 @@ wait behind a transcription; while one runs, answers fall back to keyword
 search, which loads no model.
 """
 
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -20,6 +21,7 @@ from p3.api.models import AskRating, AskRequest
 from p3.llm import DEFAULT_OLLAMA_URL, resolve_provider_and_model
 
 router = APIRouter(prefix="/api/ask", tags=["ask"])
+logger = logging.getLogger(__name__)
 
 
 def _asker(username: str):
@@ -50,13 +52,20 @@ def _asker(username: str):
         Retriever(db, embedder, reranker),
         LLMClient(provider=provider, model=model, ollama_base_url=base_url),
         username,
+        default_language=settings.get("language") or "en",
     )
 
 
 def _models_allowed() -> bool:
-    from p3.api.tasks import transcribing
+    from p3.model_gate import models_allowed
 
-    return not transcribing.is_set()
+    return models_allowed()
+
+
+_FAILED = {
+    "error": "Something went wrong while answering; the error was logged.",
+    "interrupted": "(The answer was stopped before it finished.)",
+}
 
 
 @router.post("")
@@ -81,8 +90,28 @@ def ask(body: AskRequest, username: str = Depends(current_username)):
         thread_id = thread["id"] if thread else db.create_ask_thread(username, question)
         history = history_of(thread)
         db.add_ask_message(thread_id, "user", question)
+        # Every question gets a stored reply, so a thread never holds two user
+        # turns in a row: on an error or a closed connection, what there is.
+        stored = False
+        partial: list = []
+        sources: list = []
+
+        def store_failure(mode: str) -> str:
+            text = "".join(partial).strip()
+            return db.add_ask_message(
+                thread_id,
+                "assistant",
+                f"{text}\n\n{_FAILED[mode]}" if text else _FAILED[mode],
+                citations=sources,
+                retrieval={"mode": mode},
+            )
+
         try:
             for event in asker.answer_stream(question, history, use_models):
+                if event["event"] == "token":
+                    partial.append(event["text"])
+                elif event["event"] == "sources":
+                    sources[:] = event["sources"]
                 if event["event"] == "done":
                     event["thread_id"] = thread_id
                     event["message_id"] = db.add_ask_message(
@@ -99,11 +128,25 @@ def ask(body: AskRequest, username: str = Depends(current_username)):
                         timings=event["timings"],
                         models=event["models"],
                     )
+                    stored = True
                     # The stored record is for review, not for the page.
                     event.pop("retrieval", None)
                 yield dumps(event)
-        except Exception as e:  # the stream has started: report in-band
-            yield dumps({"event": "error", "detail": str(e), "thread_id": thread_id})
+        except Exception:  # the stream has started: report in-band
+            logger.exception("Answering failed")
+            message_id = store_failure("error")
+            stored = True
+            yield dumps(
+                {
+                    "event": "error",
+                    "detail": _FAILED["error"],
+                    "thread_id": thread_id,
+                    "message_id": message_id,
+                }
+            )
+        finally:
+            if not stored:  # the client went away mid-answer
+                store_failure("interrupted")
 
     return StreamingResponse(
         events(),
@@ -119,7 +162,7 @@ def ask_status(username: str = Depends(current_username)):
 
     db = get_db()
     return {
-        "index": db.index_stats(),
+        "index": db.index_stats(username),
         "models_paused": not _models_allowed(),
         "reranker_available": RERANKER_AVAILABLE,
     }

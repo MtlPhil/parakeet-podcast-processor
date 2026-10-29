@@ -1642,53 +1642,81 @@ class P3Database:
         from p3.chunker import term_counts
 
         with self._chunk_lock:
-            self.delete_chunks(episode_id)
-            if not chunks:
-                return 0
-            first = (
+            # One transaction: a kill midway must not leave passages without
+            # their terms (they would look indexed but never match a search).
+            self.conn.execute("BEGIN TRANSACTION")
+            try:
+                count = self._replace_chunks(
+                    episode_id, chunks, embeddings, embed_model, term_counts
+                )
+                self.conn.execute("COMMIT")
+            except BaseException:
+                self.conn.execute("ROLLBACK")
+                raise
+            return count
+
+    def _replace_chunks(
+        self,
+        episode_id: int,
+        chunks: List[Dict[str, Any]],
+        embeddings: Optional[List[List[float]]],
+        embed_model: Optional[str],
+        term_counts: Any,
+    ) -> int:
+        self.delete_chunks(episode_id)
+        if not chunks:
+            return 0
+        # Ids are never reused (stored answers refer to them): the next one is
+        # past both the current rows and the highest id ever handed out.
+        high = int(self.get_state("chunk_id_high") or 0)
+        first = (
+            max(
+                high,
                 self.conn.execute("SELECT COALESCE(MAX(id), 0) FROM chunks").fetchone()[
                     0
-                ]
-                + 1
+                ],
             )
-            term_rows: Tuple[List[int], List[str], List[int]] = ([], [], [])
-            rows = []
-            for i, chunk in enumerate(chunks):
-                counts = term_counts(f"{chunk.get('prefix') or ''} {chunk['text']}")
-                for term, tf in counts.items():
-                    term_rows[0].append(first + i)
-                    term_rows[1].append(term)
-                    term_rows[2].append(tf)
-                rows.append(
-                    (
-                        first + i,
-                        episode_id,
-                        chunk["seq"],
-                        chunk["kind"],
-                        chunk.get("start_s"),
-                        chunk.get("end_s"),
-                        chunk["text"],
-                        chunk.get("prefix"),
-                        chunk.get("language"),
-                        sum(counts.values()),
-                        embeddings[i] if embeddings else None,
-                        embed_model if embeddings else None,
-                    )
+            + 1
+        )
+        self.set_state("chunk_id_high", str(first + len(chunks) - 1))
+        term_rows: Tuple[List[int], List[str], List[int]] = ([], [], [])
+        rows = []
+        for i, chunk in enumerate(chunks):
+            counts = term_counts(f"{chunk.get('prefix') or ''} {chunk['text']}")
+            for term, tf in counts.items():
+                term_rows[0].append(first + i)
+                term_rows[1].append(term)
+                term_rows[2].append(tf)
+            rows.append(
+                (
+                    first + i,
+                    episode_id,
+                    chunk["seq"],
+                    chunk["kind"],
+                    chunk.get("start_s"),
+                    chunk.get("end_s"),
+                    chunk["text"],
+                    chunk.get("prefix"),
+                    chunk.get("language"),
+                    sum(counts.values()),
+                    embeddings[i] if embeddings else None,
+                    embed_model if embeddings else None,
                 )
-            self.conn.executemany(
-                "INSERT INTO chunks (id, episode_id, seq, kind, start_s, end_s, "
-                "text, prefix, language, n_terms, embedding, embed_model) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                rows,
             )
-            if term_rows[0]:
-                # One statement for every term: unnest zips the lists.
-                self.conn.execute(
-                    "INSERT INTO chunk_terms SELECT unnest(?::INTEGER[]), ?, "
-                    "unnest(?::VARCHAR[]), unnest(?::INTEGER[])",
-                    [term_rows[0], episode_id, term_rows[1], term_rows[2]],
-                )
-            return len(rows)
+        self.conn.executemany(
+            "INSERT INTO chunks (id, episode_id, seq, kind, start_s, end_s, "
+            "text, prefix, language, n_terms, embedding, embed_model) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+        if term_rows[0]:
+            # One statement for every term: unnest zips the lists.
+            self.conn.execute(
+                "INSERT INTO chunk_terms SELECT unnest(?::INTEGER[]), ?, "
+                "unnest(?::VARCHAR[]), unnest(?::INTEGER[])",
+                [term_rows[0], episode_id, term_rows[1], term_rows[2]],
+            )
+        return len(rows)
 
     def delete_chunks(self, episode_id: int):
         self.conn.execute("DELETE FROM chunk_terms WHERE episode_id = ?", (episode_id,))
@@ -1722,13 +1750,20 @@ class P3Database:
         ).fetchall()
         return [r[0] for r in rows]
 
-    def index_stats(self) -> Dict[str, Any]:
+    def index_stats(self, username: Optional[str] = None) -> Dict[str, Any]:
+        """Passage counts for a user's library (everyone's without one)."""
+        join, params = self._user_episode_join(username)
         row = self.conn.execute(
-            "SELECT COUNT(*), COUNT(DISTINCT episode_id), "
-            "COUNT(*) FILTER (embedding IS NOT NULL) FROM chunks"
+            "SELECT COUNT(c.id), COUNT(DISTINCT c.episode_id), "
+            "COUNT(c.id) FILTER (c.embedding IS NOT NULL) "
+            f"FROM chunks c JOIN episodes e ON e.id = c.episode_id {join}",
+            params,
         ).fetchone()
         models = self.conn.execute(
-            "SELECT embed_model, COUNT(*) FROM chunks GROUP BY 1 ORDER BY 2 DESC"
+            "SELECT c.embed_model, COUNT(*) "
+            f"FROM chunks c JOIN episodes e ON e.id = c.episode_id {join} "
+            "GROUP BY 1 ORDER BY 2 DESC",
+            params,
         ).fetchall()
         return {
             "chunks": row[0],
@@ -1736,7 +1771,8 @@ class P3Database:
             "embedded": row[2],
             "models": {m or "none": n for m, n in models},
             "processed_episodes": self.conn.execute(
-                "SELECT COUNT(*) FROM episodes WHERE status = 'processed'"
+                f"SELECT COUNT(*) FROM episodes e {join} WHERE e.status = 'processed'",
+                params,
             ).fetchone()[0],
         }
 
@@ -1780,7 +1816,9 @@ class P3Database:
         b: float = 0.75,
     ) -> List[Tuple[int, float]]:
         """(chunk id, BM25 score) of the best passages for ``terms`` (already
-        tokenized), best first, within the user's library."""
+        tokenized), best first, within the user's library. Term statistics
+        are computed over that same library and filters, so the ranking
+        reveals nothing about other users' passages."""
         terms = sorted(set(terms))
         if not terms:
             return []
@@ -1788,23 +1826,24 @@ class P3Database:
         rows = self.conn.execute(
             f"""
             WITH q AS (SELECT unnest(?::VARCHAR[]) AS term),
-            stats AS (SELECT COUNT(*) AS n, AVG(n_terms) AS avgdl FROM chunks),
-            df AS (
-                SELECT t.term, COUNT(*) AS df FROM chunk_terms t
-                JOIN q ON q.term = t.term GROUP BY t.term
+            lib AS (SELECT c.id, c.n_terms FROM chunks c {scope}),
+            stats AS (SELECT COUNT(*) AS n, AVG(n_terms) AS avgdl FROM lib),
+            hits AS (
+                SELECT t.chunk_id, t.term, t.tf, l.n_terms FROM chunk_terms t
+                JOIN q ON q.term = t.term
+                JOIN lib l ON l.id = t.chunk_id
             ),
-            lib AS (SELECT c.id, c.n_terms FROM chunks c {scope})
-            SELECT t.chunk_id, SUM(
+            df AS (SELECT term, COUNT(*) AS df FROM hits GROUP BY term)
+            SELECT h.chunk_id, SUM(
                 LN(1 + (s.n - df.df + 0.5) / (df.df + 0.5))
-                * (t.tf * (? + 1))
-                / (t.tf + ? * (1 - ? + ? * l.n_terms / s.avgdl))
+                * (h.tf * (? + 1))
+                / (h.tf + ? * (1 - ? + ? * h.n_terms / s.avgdl))
             ) AS score
-            FROM chunk_terms t
-            JOIN df ON df.term = t.term
-            JOIN lib l ON l.id = t.chunk_id
+            FROM hits h
+            JOIN df ON df.term = h.term
             CROSS JOIN stats s
-            GROUP BY t.chunk_id
-            ORDER BY score DESC, t.chunk_id
+            GROUP BY h.chunk_id
+            ORDER BY score DESC, h.chunk_id
             LIMIT ?
         """,
             [terms, *params, k1, k1, b, b, limit],

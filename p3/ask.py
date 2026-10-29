@@ -19,15 +19,18 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Dict, Iterator, List, Optional
 
+from .chunker import tokenize
 from .cleaner import _extract_json
 from .database import P3Database
 from .llm import LLMClient
+from .model_gate import ModelsPaused, model_use, models_allowed
 from .retriever import (
     MAX_PER_EPISODE,
     TOP_K,
     Retrieval,
     Retriever,
     broaden,
+    clean_title,
     passage_label,
 )
 from .writer import _detect_language
@@ -112,7 +115,11 @@ _PAUSED = {
     ),
 }
 
-_CITATION_RE = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\]")
+# [3], [3, 5], [3; 5], [3-5]. Brackets holding a number above this aren't
+# citations (years, amounts) and are left alone.
+_CITATION_RE = re.compile(r"\[\s*(\d+(?:\s*[-–,;]\s*\d+)*)\s*\]")
+_MAX_CITATION = 999
+_FENCE_RE = re.compile(r"[<>]{3,}")
 
 
 def format_time(seconds: Optional[float]) -> str:
@@ -135,7 +142,9 @@ def format_passages(passages: List[Dict[str, Any]]) -> str:
             where += f", {format_time(p['start_s'])}–{format_time(p['end_s'])}"
         elif p["kind"] != "transcript":
             where += f", episode {p['kind']}"
-        blocks.append(f"[{n}] {where}\n<<<\n{p['text']}\n>>>")
+        # The text can't close its fence early: runs of < or > are dropped.
+        text = _FENCE_RE.sub("", p["text"])
+        blocks.append(f"[{n}] {where}\n<<<\n{text}\n>>>")
     return "\n\n".join(blocks)
 
 
@@ -146,7 +155,15 @@ def validate_citations(answer: str, passage_count: int) -> Dict[str, Any]:
     invalid: List[int] = []
 
     def keep(match: "re.Match[str]") -> str:
-        numbers = [int(n) for n in re.split(r"\s*,\s*", match.group(1))]
+        numbers: List[int] = []
+        for part in re.split(r"\s*[,;]\s*", match.group(1)):
+            ends = [int(x) for x in re.split(r"\s*[-–]\s*", part)]
+            if max(ends) > _MAX_CITATION:
+                return match.group(0)
+            if len(ends) == 2 and 0 < ends[1] - ends[0] <= 50:
+                numbers.extend(range(ends[0], ends[1] + 1))
+            else:
+                numbers.extend(ends)
         good = [n for n in numbers if 1 <= n <= passage_count]
         invalid.extend(n for n in numbers if n not in good)
         for n in good:
@@ -200,12 +217,21 @@ class Asker:
         llm: Optional[LLMClient],
         username: Optional[str],
         abstain_threshold: float = ABSTAIN_THRESHOLD,
+        default_language: str = "en",
     ):
+        """``default_language`` (the user's setting) is used when the
+        question's own language can't be told."""
         self.db = db
         self.retriever = retriever
         self.llm = llm if llm is not None and llm.is_configured else None
         self.username = username
         self.abstain_threshold = abstain_threshold
+        self.default_language = (
+            default_language if default_language in ("en", "fr") else "en"
+        )
+
+    def _language_of(self, question: str) -> str:
+        return _detect_language(question) or self.default_language
 
     # -- question step -------------------------------------------------
 
@@ -216,13 +242,15 @@ class Asker:
         filters. Falls back to the question as typed when there is no LLM or
         its reply can't be read."""
         fallback = Understanding(
-            question=question, language=_detect_language(question) or "en"
+            question=question, language=self._language_of(question)
         )
         if self.llm is None:
             return fallback
         turns = (history or [])[-2 * _HISTORY_TURNS :]
         conversation = "\n".join(f"{t['role']}: {t['content'][:600]}" for t in turns)
-        podcasts = [p["title"] for p in self.db.get_all_podcasts(self.username)]
+        podcasts = [
+            clean_title(p["title"]) for p in self.db.get_all_podcasts(self.username)
+        ]
         user = (
             f"Today is {date.today().isoformat()}.\n"
             f"Podcasts in the library: {'; '.join(podcasts)}\n\n"
@@ -230,8 +258,11 @@ class Asker:
             + f"Latest question: {question}"
         )
         try:
-            reply = self.llm.chat(_UNDERSTAND_SYSTEM, user, max_tokens=400)
+            with model_use():
+                reply = self.llm.chat(_UNDERSTAND_SYSTEM, user, max_tokens=400)
             data = _extract_json(reply)
+        except ModelsPaused:
+            return fallback
         except Exception as e:
             logger.warning(
                 "Question step failed, searching the question as typed: %s", e
@@ -257,23 +288,53 @@ class Asker:
 
     def _filters(self, data: Dict[str, Any]) -> Dict[str, Any]:
         filters: Dict[str, Any] = {}
-        names = [str(n).lower() for n in data.get("podcasts") or [] if str(n).strip()]
+        names = [set(tokenize(str(n))) for n in data.get("podcasts") or []]
+        names = [n for n in names if n]
         if names:
-            ids = [
-                p["id"]
-                for p in self.db.get_all_podcasts(self.username)
-                if any(
-                    n in p["title"].lower() or p["title"].lower() in n for n in names
-                )
-            ]
+            # Whole words, either way round: "lenny" names "Lenny's Podcast",
+            # but a podcast called "AI" isn't named by "The Daily Show".
+            ids = []
+            for p in self.db.get_all_podcasts(self.username):
+                title = set(tokenize(p["title"]))
+                if title and any(n <= title or title <= n for n in names):
+                    ids.append(p["id"])
             # A podcast the user doesn't have can't narrow the search to nothing.
             if ids:
                 filters["podcast_ids"] = ids
         for key in ("after", "before"):
             value = data.get(key)
-            if isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
-                filters[key] = value
+            try:
+                filters[key] = date.fromisoformat(str(value)).isoformat()
+            except ValueError:
+                pass  # missing, or not a real date ("2026-02-30")
         return filters
+
+    def _retrieve(self, understanding: Understanding, use_models: bool, **limits):
+        """Search with the question's filters; without them when they leave
+        nothing or fail."""
+        if understanding.filters:
+            try:
+                retrieval = self.retriever.retrieve(
+                    understanding.question,
+                    self.username,
+                    keywords=understanding.keywords,
+                    filters=understanding.filters,
+                    use_models=use_models,
+                    **limits,
+                )
+                if retrieval.passages:
+                    return retrieval
+            except Exception:
+                logger.exception("Search with filters %s failed", understanding.filters)
+            # A filter read into the question shouldn't hide everything.
+            understanding.filters = {}
+        return self.retriever.retrieve(
+            understanding.question,
+            self.username,
+            keywords=understanding.keywords,
+            use_models=use_models,
+            **limits,
+        )
 
     # -- answer step ---------------------------------------------------
 
@@ -297,40 +358,26 @@ class Asker:
         timings: Dict[str, float] = {}
         started = time.monotonic()
 
+        use_models = use_models and models_allowed()
         if use_models:
             yield {"event": "status", "stage": "understanding"}
             understanding = self.understand(question, history)
         else:
             understanding = Understanding(
-                question=question, language=_detect_language(question) or "en"
+                question=question, language=self._language_of(question)
             )
         timings["understand"] = time.monotonic() - started
         language = understanding.language
+        # A transcription may have started meanwhile (see p3/model_gate.py).
+        use_models = use_models and models_allowed()
 
         yield {"event": "status", "stage": "searching"}
         broad = understanding.scope == "broad"
         # A broad question needs more episodes than a lookup, fewer per episode.
         top_k, per_episode = (30, 3) if broad else (TOP_K, MAX_PER_EPISODE)
-        retrieval = self.retriever.retrieve(
-            understanding.question,
-            self.username,
-            keywords=understanding.keywords,
-            filters=understanding.filters,
-            top_k=top_k,
-            use_models=use_models,
-            per_episode=per_episode,
+        retrieval = self._retrieve(
+            understanding, use_models, top_k=top_k, per_episode=per_episode
         )
-        if not retrieval.passages and understanding.filters:
-            # A filter read into the question shouldn't hide everything.
-            retrieval = self.retriever.retrieve(
-                understanding.question,
-                self.username,
-                keywords=understanding.keywords,
-                top_k=top_k,
-                use_models=use_models,
-                per_episode=per_episode,
-            )
-            understanding.filters = {}
         timings.update({f"retrieve_{k}": v for k, v in retrieval.timings.items()})
         covered = self.covered(retrieval)
         if broad and use_models and covered:
@@ -373,17 +420,22 @@ class Asker:
             )
             parts: List[str] = []
             try:
-                for piece in self.llm.chat_stream(system, user, _ANSWER_MAX_TOKENS):  # type: ignore[union-attr]
-                    if "first_token" not in timings:
-                        timings["first_token"] = time.monotonic() - started
-                    parts.append(piece)
-                    yield {"event": "token", "text": piece}
+                with model_use():
+                    for piece in self.llm.chat_stream(system, user, _ANSWER_MAX_TOKENS):  # type: ignore[union-attr]
+                        if "first_token" not in timings:
+                            timings["first_token"] = time.monotonic() - started
+                        parts.append(piece)
+                        yield {"event": "token", "text": piece}
                 checked = validate_citations("".join(parts).strip(), len(passages))
                 answer, cited, invalid = (
                     checked["answer"],
                     checked["cited"],
                     checked["invalid"],
                 )
+            except ModelsPaused:
+                mode = "paused"
+                answer = _PAUSED[language]
+                yield {"event": "token", "text": answer}
             except Exception as e:
                 logger.exception("Answer generation failed")
                 mode = "llm_failed"

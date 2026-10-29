@@ -41,19 +41,36 @@ _STOPWORDS = set("""
     nous on ou par pas pour qu que qui sa se ses son sur ta te tes toi ton
     tu un une vos votre vous ca ben euh bon alors donc puis comme fait faire
     """.split())
-_WORD_RE = re.compile(r"[a-z0-9]+")
+_WORD_RE = re.compile(r"\w+")
+# Letters NFKD leaves whole, spelled out so "sœur" matches "soeur".
+_LIGATURES = str.maketrans({"œ": "oe", "æ": "ae", "ø": "o", "ł": "l", "đ": "d"})
+# Chinese and Japanese don't separate words: they are indexed by character
+# pairs.
+_CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]+")
 
 
 def tokenize(text: str) -> List[str]:
-    """Lowercased, accent-free words of ``text``, without stopwords, so "Été"
-    matches "ete" and French and English share one index."""
-    folded = unicodedata.normalize("NFKD", text.lower())
+    """Case-folded, accent-free words of ``text``, without stopwords, so "Été"
+    matches "ete" and French and English share one index. Any script's
+    words count; Chinese and Japanese runs become character pairs."""
+    folded = unicodedata.normalize("NFKD", text.casefold().translate(_LIGATURES))
     folded = "".join(c for c in folded if not unicodedata.combining(c))
-    return [
-        w
-        for w in _WORD_RE.findall(folded)
-        if w not in _STOPWORDS and (len(w) > 1 or w.isdigit())
-    ]
+    words: List[str] = []
+    for word in _WORD_RE.findall(folded):
+        word = word.strip("_")
+        if not word:
+            continue
+        if _CJK_RE.search(word):
+            for run in _CJK_RE.findall(word):
+                words.extend(
+                    [run]
+                    if len(run) == 1
+                    else [run[i : i + 2] for i in range(len(run) - 1)]
+                )
+            continue
+        if word not in _STOPWORDS and (len(word) > 1 or word.isdigit()):
+            words.append(word)
+    return words
 
 
 def term_counts(text: str) -> Counter:
