@@ -699,3 +699,61 @@ class TestShowNotes:
         pid = db.add_podcast("Pod", "http://example.com/rss")
         eid = db.add_episode(pid, "Ep", None, "http://x/2", description="Notes")
         assert db.get_episode_by_id(eid)["description"] == "Notes"
+
+
+class TestQualityAPI:
+    @pytest.fixture
+    def api(self, tmp_path, monkeypatch):
+        client, deps = _client(tmp_path, monkeypatch)
+        from p3 import eval_ask
+        from p3.api.job_queue import job_runner
+        from p3.api.routers import ask as ask_router
+
+        monkeypatch.setattr(eval_ask, "EVAL_DIR", tmp_path / "eval")
+        monkeypatch.setattr(eval_ask, "QUESTIONS_FILE", tmp_path / "eval" / "q.json")
+        self.queued = []
+        monkeypatch.setattr(
+            job_runner, "enqueue", lambda fn, *a: self.queued.append(fn.__name__)
+        )
+        db = deps.get_db()
+        client.get("/api/me")
+        _library(db, username="tester")
+        monkeypatch.setattr(
+            ask_router,
+            "_asker",
+            lambda u: Asker(
+                db, Retriever(db, FakeEmbedder(), FakeReranker()), FakeLLM(), u
+            ),
+        )
+        yield client, tmp_path
+        deps.close_db()
+
+    def test_rated_answers_go_to_the_eval_set_for_review(self, api):
+        client, tmp_path = api
+        done = _events(client.post("/api/ask", json={"question": "bank rates?"}).text)[
+            -1
+        ]
+        client.post(
+            f"/api/ask/messages/{done['message_id']}/rating", json={"rating": -1}
+        )
+        [rated] = client.get("/api/ask/feedback").json()
+        assert rated["question"] == "bank rates?" and rated["rating"] == -1
+
+        item = client.post(f"/api/ask/feedback/{done['message_id']}/to-eval").json()
+        assert item["needs_review"] and item["candidates"]
+        assert (
+            client.post(f"/api/ask/feedback/{done['message_id']}/to-eval").status_code
+            == 409
+        )
+        overview = client.get("/api/ask/eval").json()
+        assert overview["questions"] == 1 and overview["scorable"] == 0
+        assert (
+            client.get("/api/ask/feedback", headers={"Remote-User": "bob"}).status_code
+            == 403
+        )
+
+    def test_eval_jobs_are_queued(self, api):
+        client, _ = api
+        assert client.post("/api/ask/eval/run").status_code == 400  # no questions yet
+        assert client.post("/api/ask/eval/generate?count=10").status_code == 200
+        assert self.queued == ["task_eval_generate"]

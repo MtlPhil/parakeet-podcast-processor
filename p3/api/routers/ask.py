@@ -8,6 +8,7 @@ wait behind a transcription; while one runs, answers fall back to keyword
 search, which loads no model.
 """
 
+import json
 import logging
 from typing import Optional
 
@@ -252,3 +253,90 @@ def index_library():
     job_id = get_db().create_job("index")
     job_runner.enqueue(task_index, job_id)
     return {"job_id": job_id}
+
+
+# ----------------------------------------------------------------------
+# Quality (admins): evaluation runs and rated answers
+# ----------------------------------------------------------------------
+
+
+@router.get("/eval", dependencies=[Depends(require_admin)])
+def eval_overview():
+    """The question set's size by stratum and the latest retrieval results."""
+    from p3.eval_ask import EVAL_DIR, QUESTIONS_FILE, scorable, summarize_result
+
+    questions = (
+        json.loads(QUESTIONS_FILE.read_text()) if QUESTIONS_FILE.exists() else []
+    )
+    strata: dict = {}
+    for q in questions:
+        strata[q.get("stratum", "lookup")] = (
+            strata.get(q.get("stratum", "lookup"), 0) + 1
+        )
+    results = []
+    for path in sorted((EVAL_DIR / "results").glob("retrieval-*.json"), reverse=True)[
+        :5
+    ]:
+        try:
+            results.append(
+                {"file": path.name, **summarize_result(json.loads(path.read_text()))}
+            )
+        except (ValueError, KeyError):
+            continue
+    return {
+        "questions": len(questions),
+        "scorable": len(scorable(questions)),
+        "needs_review": sum(1 for q in questions if q.get("needs_review")),
+        "strata": strata,
+        "results": results,
+    }
+
+
+@router.post("/eval/generate", dependencies=[Depends(require_admin)])
+def eval_generate(count: int = Query(60, ge=5, le=300)):
+    from p3.api.tasks import task_eval_generate
+
+    job_id = get_db().create_job("eval_generate")
+    job_runner.enqueue(task_eval_generate, job_id, count)
+    return {"job_id": job_id}
+
+
+@router.post("/eval/run", dependencies=[Depends(require_admin)])
+def eval_run():
+    from p3.api.tasks import task_eval_retrieval
+    from p3.eval_ask import QUESTIONS_FILE
+
+    if not QUESTIONS_FILE.exists():
+        raise HTTPException(400, "No question set yet: generate one first")
+    job_id = get_db().create_job("eval_retrieval")
+    job_runner.enqueue(task_eval_retrieval, job_id)
+    return {"job_id": job_id}
+
+
+@router.get("/feedback", dependencies=[Depends(require_admin)])
+def feedback(limit: int = Query(50, ge=1, le=200)):
+    """Rated answers, newest first."""
+    return get_db().rated_ask_messages(limit)
+
+
+@router.post("/feedback/{message_id}/to-eval", dependencies=[Depends(require_admin)])
+def feedback_to_eval(message_id: str):
+    """Add a rated answer's question to the evaluation set, flagged for
+    review (its relevant passages still have to be marked)."""
+    from p3.eval_ask import EVAL_DIR, QUESTIONS_FILE, question_from_feedback
+
+    message = next(
+        (m for m in get_db().rated_ask_messages(500) if m["id"] == message_id), None
+    )
+    if not message:
+        raise HTTPException(404, "Rated answer not found")
+    questions = (
+        json.loads(QUESTIONS_FILE.read_text()) if QUESTIONS_FILE.exists() else []
+    )
+    if any(q.get("message_id") == message_id for q in questions):
+        raise HTTPException(409, "Already in the evaluation set")
+    item = question_from_feedback(message, questions)
+    questions.append(item)
+    EVAL_DIR.mkdir(parents=True, exist_ok=True)
+    QUESTIONS_FILE.write_text(json.dumps(questions, indent=2, ensure_ascii=False))
+    return item

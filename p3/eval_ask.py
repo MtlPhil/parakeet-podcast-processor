@@ -111,6 +111,45 @@ def load_questions(path: Path = QUESTIONS_FILE) -> List[Dict[str, Any]]:
     return json.loads(path.read_text())
 
 
+def scorable(questions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Questions ready to score: reviewed ones (``needs_review`` unset) with
+    relevant passages, or marked as having no answer."""
+    return [
+        q
+        for q in questions
+        if not q.get("needs_review")
+        and (q.get("relevant") or q.get("stratum") == "no_answer")
+    ]
+
+
+def question_from_feedback(
+    message: Dict[str, Any], existing: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """A rated answer's question as a new evaluation item, flagged for
+    review: its cited episodes are only candidates for the relevant ones."""
+    cited = [c for c in message.get("citations") or [] if c.get("cited")]
+    return {
+        "id": f"f{len(existing) + 1:03d}",
+        "question": message["question"],
+        "stratum": "from_feedback",
+        "rating": message["rating"],
+        "candidates": sorted({c["episode_id"] for c in cited}),
+        "relevant": [],
+        "needs_review": True,
+        "message_id": message["id"],
+    }
+
+
+def summarize_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    """The headline numbers of a retrieval result, for the Admin page."""
+    return {
+        "overall": result["overall"],
+        "strata": {k: v.get("final") for k, v in result["strata"].items()},
+        "latency": result["latency"],
+        "questions": len(result["questions"]),
+    }
+
+
 def generate_questions(
     db: P3Database, llm: LLMClient, count: int, seed: int = 1
 ) -> List[Dict[str, Any]]:
@@ -169,7 +208,7 @@ def evaluate_retrieval(
     and per stratum. No-answer questions are reported by their best
     reranker score instead (for calibrating the abstain threshold)."""
     per_question = []
-    for item in questions:
+    for item in scorable(questions):
         started = time.monotonic()
         result = retriever.retrieve(item["question"], username)
         elapsed = time.monotonic() - started

@@ -2014,6 +2014,30 @@ class P3Database:
         )
         return True
 
+    def rated_ask_messages(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Answers users rated, newest first, each with the question asked
+        just before it (for the Admin page and the evaluation set)."""
+        cursor = self.conn.execute(
+            """
+            SELECT m.id, m.thread_id, t.username, m.content AS answer, m.rating,
+                   m.citations, m.created_at,
+                   (SELECT q.content FROM ask_messages q
+                    WHERE q.thread_id = m.thread_id AND q.role = 'user'
+                      AND q.created_at <= m.created_at
+                    ORDER BY q.created_at DESC LIMIT 1) AS question
+            FROM ask_messages m JOIN ask_threads t ON t.id = m.thread_id
+            WHERE m.role = 'assistant' AND m.rating IS NOT NULL
+            ORDER BY m.created_at DESC
+            LIMIT ?
+        """,
+            (limit,),
+        )
+        rows = self._fetchall_as_dicts(cursor)
+        for row in rows:
+            if isinstance(row.get("citations"), str):
+                row["citations"] = json.loads(row["citations"])
+        return rows
+
     def close(self):
         """Close database connection."""
         if self._base_conn is not None:

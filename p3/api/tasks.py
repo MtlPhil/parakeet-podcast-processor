@@ -6,6 +6,7 @@ Pipeline modules are imported inside each task so the API starts quickly
 without loading ML dependencies.
 """
 
+import json
 import logging
 import threading
 import time
@@ -517,6 +518,87 @@ def task_index(job_id: str):
         )
     except Exception as e:
         logger.exception("Index task failed")
+        db.update_job(job_id, status="failed", error=str(e))
+
+
+def task_eval_generate(job_id: str, count: int = 60):
+    """Write evaluation questions from the indexed library with the shared
+    summarizing LLM: to data/eval/questions.json if there is none yet, else
+    to a dated file next to it, so a reviewed set is never overwritten."""
+    db = get_db()
+    try:
+        db.update_job(job_id, status="running", message="Writing questions...")
+        from p3.eval_ask import EVAL_DIR, QUESTIONS_FILE, generate_questions
+        from p3.llm import LLMClient
+
+        settings = _get_settings()
+        provider, model = resolve_provider_and_model(settings)
+        llm = LLMClient(
+            provider=provider,
+            model=model,
+            ollama_base_url=settings.get("ollama_base_url", DEFAULT_OLLAMA_URL),
+            num_ctx=8192,
+        )
+        questions = generate_questions(db, llm, count)
+        EVAL_DIR.mkdir(parents=True, exist_ok=True)
+        out = (
+            QUESTIONS_FILE
+            if not QUESTIONS_FILE.exists()
+            else EVAL_DIR / f"questions-generated-{datetime.now():%Y%m%d-%H%M}.json"
+        )
+        out.write_text(json.dumps(questions, indent=2, ensure_ascii=False))
+        db.update_job(
+            job_id,
+            status="completed",
+            progress=1.0,
+            message=f"Wrote {len(questions)} questions to {out} (review them)",
+        )
+    except Exception as e:
+        logger.exception("Question generation failed")
+        db.update_job(job_id, status="failed", error=str(e))
+
+
+def task_eval_retrieval(job_id: str):
+    """Score retrieval on data/eval/questions.json; the result goes to
+    data/eval/results/."""
+    db = get_db()
+    try:
+        db.update_job(job_id, status="running", message="Evaluating retrieval...")
+        from p3.embedder import (
+            DEFAULT_RERANKER_MODEL,
+            get_reranker,
+            release_ask_models,
+        )
+        from p3.eval_ask import EVAL_DIR, evaluate_retrieval, load_questions
+        from p3.retriever import Retriever
+
+        settings = _get_settings()
+        reranker = (
+            get_reranker(settings.get("reranker_model") or DEFAULT_RERANKER_MODEL)
+            if settings.get("ask_rerank", True)
+            else None
+        )
+        try:
+            result = evaluate_retrieval(
+                db, Retriever(db, _make_embedder(settings), reranker), load_questions()
+            )
+        finally:
+            release_ask_models()
+        out = EVAL_DIR / "results" / f"retrieval-{datetime.now():%Y%m%d-%H%M%S}.json"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(result, indent=2, default=str))
+        final = result["overall"].get("final", {})
+        db.update_job(
+            job_id,
+            status="completed",
+            progress=1.0,
+            message=(
+                f"recall@{result['k']} {final.get('recall', 0):.2f}, "
+                f"MRR {final.get('mrr', 0):.2f} on {final.get('n', 0)} questions"
+            ),
+        )
+    except Exception as e:
+        logger.exception("Retrieval evaluation failed")
         db.update_job(job_id, status="failed", error=str(e))
 
 

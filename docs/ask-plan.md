@@ -139,3 +139,5 @@ Change one thing at a time against the evaluation: chunk length (45/60/90 s), nu
   - **Show notes** (addition 2) stored and indexed.
   - **Transcription guard**: while transcription models are loaded, Ask answers with keyword search only and loads nothing.
   - Measured: indexing ≈ 6 passages/s with bge-m3 (~8–20 s per episode).
+  - Measured, all local (gemma4:12b answers, bge-m3, reranker on Metal), 16 GB Mac with the usual apps open: free memory fell to 12–14% with swap nearly full, and answers took **100–210 s** (question step 12–26 s, reranking 13–27 s instead of the 1–3 s it takes without the 7.7 GB answer model resident, 80–170 s to the first answer token). Quality was good: grounded, cited, attributed to the right show. Ollama's default 32k context left 17% free; Ask now asks for 8k.
+  - **Gemini fallback, evidence for the decision:** the time goes to memory pressure, not to the pipeline. Setting a user's *writing LLM* to Gemini (Settings, no code change) keeps embeddings and reranking local and sends only the retrieved passages (about 12 per question) to Google. Not switched: the owner chose local models.
