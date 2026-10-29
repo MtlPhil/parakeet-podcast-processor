@@ -22,13 +22,20 @@ from typing import Any, Dict, Iterator, List, Optional
 from .cleaner import _extract_json
 from .database import P3Database
 from .llm import LLMClient
-from .retriever import Retrieval, Retriever, passage_label
+from .retriever import (
+    MAX_PER_EPISODE,
+    TOP_K,
+    Retrieval,
+    Retriever,
+    broaden,
+    passage_label,
+)
 from .writer import _detect_language
 
 logger = logging.getLogger(__name__)
 
-UNDERSTAND_PROMPT_VERSION = "understand-v1"
-ANSWER_PROMPT_VERSION = "answer-v1"
+UNDERSTAND_PROMPT_VERSION = "understand-v2"
+ANSWER_PROMPT_VERSION = "answer-v2"
 
 # Below this reranker score (0 to 1) the best passage is taken as unrelated
 # and the question as not covered by the library. To be calibrated on the
@@ -44,6 +51,9 @@ transcripts (English and French). Reply with one JSON object and nothing else:
   "question": the user's latest question rewritten to stand alone (resolve \
 "he", "that", "the second one" from the conversation), in its original language,
   "language": "en" or "fr", the language the user wrote the latest question in,
+  "scope": "lookup" for a specific fact, claim or moment; "broad" for an \
+overview, a comparison between shows or guests, a trend over time, or a \
+count ("how often", "which episodes"),
   "keywords": 3 to 10 search terms: the key names and concepts, each in both \
 English and French when they differ, plus common spellings of names,
   "podcasts": names of podcasts the question limits itself to, or [],
@@ -69,9 +79,16 @@ closest passages do discuss.
 guest), and point out when episodes disagree or when a view changed over time.
 - Start with a direct answer in one or two sentences, then the supporting \
 details. Be concise: no introduction, no closing summary.
-- Write in {language}."""
+- Write in {language}.{broad}"""
 
 _LANGUAGE_NAMES = {"en": "English", "fr": "French (Quebec usage)"}
+
+_BROAD_RULES = """
+- This question is broad: the passages are grouped by episode (each \
+episode's summary, then its most relevant passages). Organize the answer by \
+theme or by show rather than episode by episode, give each episode's date \
+when it matters, and for "how often" or "which episodes" questions list the \
+episodes found and say the list covers only what the search found."""
 
 _NOT_COVERED = {
     "en": "Your library doesn't seem to cover this.",
@@ -166,6 +183,7 @@ def source_of(n: int, passage: Dict[str, Any], cited: bool) -> Dict[str, Any]:
 class Understanding:
     question: str
     language: str
+    scope: str = "lookup"
     keywords: List[str] = field(default_factory=list)
     filters: Dict[str, Any] = field(default_factory=dict)
     raw: Optional[Dict[str, Any]] = None
@@ -228,6 +246,7 @@ class Asker:
                 if data.get("language") in ("en", "fr")
                 else fallback.language
             ),
+            scope="broad" if data.get("scope") == "broad" else "lookup",
             keywords=[str(k) for k in data.get("keywords") or [] if str(k).strip()][
                 :12
             ],
@@ -289,12 +308,17 @@ class Asker:
         language = understanding.language
 
         yield {"event": "status", "stage": "searching"}
+        broad = understanding.scope == "broad"
+        # A broad question needs more episodes than a lookup, fewer per episode.
+        top_k, per_episode = (30, 3) if broad else (TOP_K, MAX_PER_EPISODE)
         retrieval = self.retriever.retrieve(
             understanding.question,
             self.username,
             keywords=understanding.keywords,
             filters=understanding.filters,
+            top_k=top_k,
             use_models=use_models,
+            per_episode=per_episode,
         )
         if not retrieval.passages and understanding.filters:
             # A filter read into the question shouldn't hide everything.
@@ -302,10 +326,15 @@ class Asker:
                 understanding.question,
                 self.username,
                 keywords=understanding.keywords,
+                top_k=top_k,
                 use_models=use_models,
+                per_episode=per_episode,
             )
             understanding.filters = {}
         timings.update({f"retrieve_{k}": v for k, v in retrieval.timings.items()})
+        covered = self.covered(retrieval)
+        if broad and use_models and covered:
+            retrieval = broaden(self.db, retrieval)
         passages = retrieval.passages
 
         mode = "answer"
@@ -315,7 +344,7 @@ class Asker:
         if not use_models:
             mode = "paused"
             answer = _PAUSED[language]
-        elif not self.covered(retrieval):
+        elif not covered:
             mode = "not_covered"
             answer = _NOT_COVERED[language] + (
                 " " + _CLOSEST[language] if passages else ""
@@ -334,7 +363,9 @@ class Asker:
         if mode == "answer":
             yield {"event": "status", "stage": "answering"}
             t = time.monotonic()
-            system = _ANSWER_SYSTEM.replace("{language}", _LANGUAGE_NAMES[language])
+            system = _ANSWER_SYSTEM.replace(
+                "{language}", _LANGUAGE_NAMES[language]
+            ).replace("{broad}", _BROAD_RULES if broad else "")
             user = (
                 f"Today is {date.today().isoformat()}.\n"
                 f"Question: {understanding.question}\n\n"
@@ -377,6 +408,7 @@ class Asker:
             "uncited_answer": mode == "answer" and not cited,
             "understanding": {
                 "question": understanding.question,
+                "scope": understanding.scope,
                 "keywords": understanding.keywords,
                 "filters": understanding.filters,
             },

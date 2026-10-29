@@ -11,7 +11,12 @@ from datetime import datetime
 
 import pytest
 
-from p3.ask import Asker, validate_citations
+from p3.ask import (
+    ANSWER_PROMPT_VERSION,
+    UNDERSTAND_PROMPT_VERSION,
+    Asker,
+    validate_citations,
+)
 from p3.chunker import build_chunks, tokenize, transcript_chunks
 from p3.database import P3Database
 from p3.indexer import index_episode, index_pending
@@ -303,7 +308,10 @@ class TestAsker:
         assert done["cited"] == [1] and done["invalid_citations"] == [9]
         assert done["sources"][0]["cited"] is True
         assert "<<<" in llm.prompts[-1]  # passages are fenced as quoted data
-        assert done["models"]["prompts"] == ["understand-v1", "answer-v1"]
+        assert done["models"]["prompts"] == [
+            UNDERSTAND_PROMPT_VERSION,
+            ANSWER_PROMPT_VERSION,
+        ]
 
     def test_not_covered_skips_the_answer_model(self, db):
         _library(db)
@@ -353,6 +361,26 @@ class TestAsker:
             "after": "2026-09-15",
         }
         assert {s["episode_id"] for s in done["sources"]} == {e2}
+
+    def test_broad_questions_group_passages_by_episode(self, db):
+        e1, e2 = _library(db)
+        db.add_summary(e1, ["rates"], ["economy"], [], [], "The bank raised rates.")
+        index_episode(db, e1, FakeEmbedder())
+        llm = FakeLLM(
+            understanding={
+                "question": "Overview of rates talk",
+                "language": "en",
+                "scope": "broad",
+                "keywords": ["rates", "bank"],
+            }
+        )
+        done = self._asker(db, llm).ask("What has been said about rates overall?")
+        assert done["understanding"]["scope"] == "broad"
+        kinds = [s["kind"] for s in done["sources"] if s["episode_id"] == e1]
+        assert kinds[0] == "summary"
+        assert (
+            "This question is broad" not in llm.prompts[-1]
+        )  # it's in the system prompt
 
     def test_llm_failure_still_returns_sources(self, db):
         _library(db)

@@ -119,6 +119,7 @@ class Retriever:
         filters: Optional[Dict[str, Any]] = None,
         top_k: int = TOP_K,
         use_models: bool = True,
+        per_episode: int = MAX_PER_EPISODE,
     ) -> Retrieval:
         """Passages for ``question``. ``keywords`` (extra search terms, e.g.
         translations and names from the question step) widen the keyword
@@ -181,10 +182,50 @@ class Retriever:
             result.timings["rerank"] = time.monotonic() - t
 
         episode_of = {i: c["episode_id"] for i, c in chunks.items()}
-        for chunk_id, score in limit_per_episode(ranked, episode_of, top_k):
+        for chunk_id, score in limit_per_episode(
+            ranked, episode_of, top_k, per_episode
+        ):
             passage = dict(chunks[chunk_id])
             passage["score"] = score
             passage["rerank_score"] = rerank_scores.get(chunk_id)
             result.passages.append(passage)
         result.timings["total"] = time.monotonic() - started
         return result
+
+
+# Broad questions (overview, comparison, counting) look at episodes rather
+# than single passages: up to this many episodes, each with its summary and
+# its best passages.
+BROAD_EPISODES = 8
+BROAD_PASSAGES_PER_EPISODE = 2
+
+
+def broaden(
+    db: P3Database, retrieval: Retrieval, episodes: int = BROAD_EPISODES
+) -> Retrieval:
+    """Regroup a retrieval by episode for a broad question: the best
+    ``episodes`` episodes in order of their best passage, each represented by
+    its summary passage followed by its best passages."""
+    order: List[int] = []
+    best: Dict[int, List[Dict[str, Any]]] = {}
+    for p in retrieval.passages:
+        if p["episode_id"] not in best:
+            order.append(p["episode_id"])
+            best[p["episode_id"]] = []
+        if (
+            len(best[p["episode_id"]]) < BROAD_PASSAGES_PER_EPISODE
+            and p["kind"] != "summary"
+        ):
+            best[p["episode_id"]].append(p)
+    order = order[:episodes]
+    summaries = db.summary_chunks(order)
+    passages: List[Dict[str, Any]] = []
+    for episode_id in order:
+        top = max((p["score"] for p in best[episode_id]), default=0.0)
+        summary = summaries.get(episode_id)
+        if summary:
+            passages.append({**summary, "score": top, "rerank_score": None})
+        passages.extend(best[episode_id])
+    retrieval.passages = passages
+    retrieval.stages["episodes"] = [(e, 0.0) for e in order]
+    return retrieval
