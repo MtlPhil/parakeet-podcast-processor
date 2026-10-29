@@ -1,6 +1,6 @@
 # Ask: natural-language questions over the library
 
-**Status: planned (2026-10-28).** Nothing has been built yet. This document records the plan and the decisions made so far.
+**Status: in progress on the `ask` branch (started 2026-10-28).** This document records the plan and the decisions made so far; [Progress](#progress) says what is built.
 
 ## Goal
 
@@ -20,11 +20,13 @@ question ─▶ understand (rewrite + keywords EN/FR + filters)
 | Topic | Decision |
 |---|---|
 | Database | Stay on DuckDB. The API is the only process, so its lock isn't a problem, and a Postgres migration would buy nothing at this scale |
-| Keyword search | DuckDB `fts` extension (BM25), accents stripped, no stemmer. The query step produces keywords in both English and French, which covers both languages without one index per language |
+| Keyword search | BM25 computed in SQL over our own term table (`chunk_terms`), accents stripped, no stemmer. Not DuckDB's `fts` extension: it isn't bundled (it downloads on first use, which breaks offline tests) and its index must be rebuilt after every insert, while a term table updates per episode. The query step produces keywords in both English and French, which covers both languages without one index per language |
 | Vector search | Embeddings in a `FLOAT[1024]` column, brute-force `array_cosine_similarity`. A personal library (~100k chunks) scans in well under a second; the `vss` HNSW index is only worth adding if Phase 0 measures otherwise |
 | Embedding model | `bge-m3` through Ollama: multilingual, so a French question finds English passages and vice versa, 8k-token input, 1024 dimensions. Shared setting (`embedding_model`), since the corpus is embedded once for everyone |
 | Reranker | `bge-reranker-v2-m3` cross-encoder (multilingual), through `sentence-transformers`, in a new optional `ask` extra with a guarded import (`RERANKER_AVAILABLE`). Without it, retrieval falls back to the fused order |
 | Answer LLM | The user's writing LLM (`llm_provider` / `llm_model` / `gemini_model`), no new setting |
+| Answer language | The question's language, whatever the user's setting (decided 2026-10-28) |
+| Reranker dependency | `sentence-transformers` and PyTorch accepted as a dependency (decided 2026-10-28), still behind the optional `ask` extra |
 | Chunks | Transcript segments grouped into ~60 s passages on segment boundaries, one segment of overlap, plus the episode's summary, topics and quotes as their own chunks. Each chunk is embedded with a prefix: podcast, episode title, date, and the episode's short summary |
 | Scoping | Every retrieval query joins `user_episodes`, like `search`. Deleting an episode deletes its chunks |
 | Deep links | Citations open Episode Detail scrolled to the cited segment (`/episodes/:id?t=<seconds>`). Audio is deleted after the digest, so there is no playback |
@@ -33,9 +35,28 @@ question ─▶ understand (rewrite + keywords EN/FR + filters)
 ## Data model
 
 - **`chunks`**: `id`, `episode_id`, `kind` (`transcript` | `summary` | `topics` | `quote`), `start`, `end` (seconds, transcript chunks only), `text`, `prefix`, `language`, `embedding FLOAT[1024]`, `embed_model`, `created_at`. `embed_model` lets a model change re-index in the background instead of mixing incomparable vectors.
-- **FTS index** on `chunks.text`. DuckDB's FTS index doesn't update itself: it is rebuilt at the end of every embedding job (to measure in Phase 0).
+- **`chunk_terms`** (`chunk_id`, `term`, `tf`) and each chunk's token count: the BM25 index, written with the chunk and deleted with it. Document frequencies and the average length come from the same tables at query time.
 - **`ask_threads`** (`id`, `username`, `title`, `created_at`) and **`ask_messages`** (`thread_id`, `role`, `content`, `citations` JSON, `retrieval` JSON with chunk IDs and scores per stage, `timings` JSON, `models` JSON, `rating`).
 - `purge_episode` adds `chunks` to the tables it clears.
+
+## Professional additions (decided 2026-10-28)
+
+On top of the phases below, in priority order:
+
+1. **Speakers.** Diarize each transcript as its own queued job, then name the speakers with one LLM call per episode (show notes plus the self-introductions in the first minutes). Passages carry their speaker; citations read "*Name, 14:32*"; "what did X say" becomes a filter.
+2. **Index what is thrown away today.** Store each episode's show notes (the feed description, read during the fetch but not kept) and index them. Build a per-episode vocabulary of names (show notes, the digest's companies) to match transcription misspellings in keyword search. A per-chunk entity index (people, companies, tickers) for structured filters.
+3. **Beyond lookup questions.** Read-only tools for the model (`search_passages`, `list_episodes(filters)`, `get_summary`, `count_mentions`), at most ~5 steps under a time budget, so counting, comparison and overview questions work; overviews summarize each episode's summary and then combine them. Gemini first; Ollama keeps the fixed pipeline until its tool calling passes the evaluation.
+4. **Statistically honest evaluation.** About 200 questions in strata (lookup, who-said-what, counting, comparison, overview, French, mixed-language, no answer), metrics per stratum, paired comparison with a confidence interval (paired bootstrap), the LLM judge checked against ~50 human ratings, and minimum scores per stratum that a prompt, model, chunking or index change must meet.
+5. **Reproducibility.** Prompts in versioned files; every answer records prompt versions, models and index version. A new index is built beside the old one and switched to only after the evaluation passes. Per-stage latency targets (first token < 2 s, full answer < 10 s with Gemini), slow cases on the Admin page.
+6. **Hardening.** Retrieved passages are quoted data, never instructions; tools are read-only and scoped to the user's library. When the LLM fails, show ranked passages instead of an error. Tests that try to reach another user's passages through every tool and filter.
+
+**Revised order:** show notes and the evaluation set first, then Phases 1–4, then tools and question routing, then speakers (the biggest quality gain, but the heaviest load on the 16 GB machine).
+
+## Overnight runs and the Gemini fallback (decided 2026-10-28)
+
+Real-model runs during unattended work use local models only (`bge-m3`, the reranker, `gemma4:12b`), on a copy of the database, only while no P3 job is running, and never after 03:00 local, ahead of the 04:00 daily run that transcribes. Running a model beside a transcription crashed the Mac before.
+
+**Fallback, not yet used:** if local runs can't fit around transcription, or `gemma4:12b` proves too weak for answers or tool calling, switch the query-time models to Gemini (embeddings and answers), which loads nothing on the Mac. The cost is a few dollars of API use and transcript passages sent to Google; the corpus would then be embedded with a Gemini model, so the switch means a full re-index (`embed_model` keeps the two apart). Decide this from the evaluation results.
 
 ## Phases
 
@@ -105,3 +126,7 @@ Change one thing at a time against the evaluation: chunk length (45/60/90 s), nu
 - Inline or queued answers while a transcription runs: Phase 0.
 - Whether `sentence-transformers` (and torch) is acceptable as a dependency, or whether an MLX port of the reranker is mature enough to use instead.
 - Whether the answer should follow the question's language or the user's `language` setting when they differ.
+
+## Progress
+
+- 2026-10-28: plan extended with the professional additions; work started on the `ask` branch.
