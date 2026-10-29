@@ -21,8 +21,11 @@ repo root (the server must be stopped, or point --db at a copy)::
 import argparse
 import json
 import logging
+import os
 import random
 import statistics
+import tempfile
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -108,8 +111,38 @@ def paired_bootstrap(
     }
 
 
-def load_questions(path: Path = QUESTIONS_FILE) -> List[Dict[str, Any]]:
-    return json.loads(path.read_text())
+# Guards every read-modify-write of the question set (the API serves
+# requests on several threads).
+_questions_lock = threading.Lock()
+
+
+def load_questions(path: Optional[Path] = None) -> List[Dict[str, Any]]:
+    return json.loads((path or QUESTIONS_FILE).read_text())
+
+
+def write_json(path: Path, data: Any) -> None:
+    """Write ``data`` to ``path`` atomically: a reader (or a kill midway)
+    never sees half a file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False, default=str)
+        os.replace(tmp, path)
+    except BaseException:
+        os.unlink(tmp)
+        raise
+
+
+def update_questions(change: Any) -> Any:
+    """Apply ``change`` (a function of the question list, which it may
+    modify) under the lock and save the list; returns what it returned."""
+    with _questions_lock:
+        path = QUESTIONS_FILE
+        questions = load_questions(path) if path.exists() else []
+        result = change(questions)
+        write_json(path, questions)
+        return result
 
 
 def scorable(questions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -129,8 +162,13 @@ def question_from_feedback(
     """A rated answer's question as a new evaluation item, flagged for
     review: its cited episodes are only candidates for the relevant ones."""
     cited = [c for c in message.get("citations") or [] if c.get("cited")]
+    numbers = [
+        int(q["id"][1:])
+        for q in existing
+        if str(q.get("id", "")).startswith("f") and q["id"][1:].isdigit()
+    ]
     return {
-        "id": f"f{len(existing) + 1:03d}",
+        "id": f"f{max(numbers, default=0) + 1:03d}",
         "question": message["question"],
         "stratum": "from_feedback",
         "rating": message["rating"],
@@ -203,15 +241,26 @@ def evaluate_retrieval(
     questions: List[Dict[str, Any]],
     username: Optional[str] = None,
     k: int = K,
+    understand: Any = None,
 ) -> Dict[str, Any]:
     """Rank of the first relevant passage for every question at every stage
     (bm25, vector, fused, reranked, final), with recall@k and MRR overall
     and per stratum. No-answer questions are reported by their best
-    reranker score instead (for calibrating the abstain threshold)."""
+    reranker score instead (for calibrating the abstain threshold).
+
+    With ``understand`` (``Asker.understand``) each question first goes
+    through the question step, as in the app: its rewrite, keywords and
+    filters are searched. Without it the question is searched as typed."""
     per_question = []
     for item in scorable(questions):
         started = time.monotonic()
-        result = retriever.retrieve(item["question"], username)
+        if understand is not None:
+            u = understand(item["question"])
+            result = retriever.retrieve(
+                u.question, username, keywords=u.keywords, filters=u.filters
+            )
+        else:
+            result = retriever.retrieve(item["question"], username)
         elapsed = time.monotonic() - started
         ids = {i for ranking in result.stages.values() for i, _ in ranking}
         chunks = db.get_chunks(sorted(ids))
@@ -296,37 +345,73 @@ def judge_answer(
         + f"\nAnswer:\n{done['answer']}\n\nCited passages:\n{passages}"
     )
     data = _extract_json(judge.chat(_JUDGE_SYSTEM, user, max_tokens=300)) or {}
+    correct = _number(data.get("correct"))
+    supported = _number(data.get("supported"))
     return {
-        "correct": data.get("correct"),
-        "supported": data.get("supported"),
-        "unsupported": data.get("unsupported") or [],
+        "correct": correct if correct in (0, 1, 2) else None,
+        "supported": (
+            supported if supported is not None and 0 <= supported <= 1 else None
+        ),
+        "unsupported": [str(u) for u in data.get("unsupported") or []][:3],
+        "judge_raw": None if correct in (0, 1, 2) else data,
     }
 
 
+def _number(value: Any) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def evaluate_answers(
-    asker: Any, judge: LLMClient, questions: List[Dict[str, Any]]
+    asker: Any,
+    judge: LLMClient,
+    questions: List[Dict[str, Any]],
+    progress_file: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Ask every question end to end and grade it. No-answer questions pass
     when the answer is declined; the others are graded by the judge for
-    correctness and for support by the cited passages."""
-    rows = []
+    correctness and for support by the cited passages. A question that fails
+    (or a judge reply that can't be read) is recorded and the run goes on;
+    with ``progress_file`` the rows are saved after each question."""
+    rows: List[Dict[str, Any]] = []
     for item in scorable(questions):
-        done = asker.ask(item["question"])
-        row: Dict[str, Any] = {
-            "id": item["id"],
-            "stratum": item.get("stratum", "lookup"),
-            "mode": done.get("mode"),
-            "seconds": done.get("timings", {}).get("total"),
-            "cited": len(done.get("cited") or []),
-            "invalid_citations": len(done.get("invalid_citations") or []),
-        }
-        if row["stratum"] == "no_answer":
-            row["declined"] = done.get("mode") == "not_covered"
-        elif done.get("mode") == "answer":
-            row.update(judge_answer(judge, item, done))
-        rows.append(row)
+        try:
+            rows.append(_answer_row(asker, judge, item))
+        except Exception as e:
+            logger.warning("Evaluating %s failed: %s", item.get("id"), e)
+            rows.append(
+                {"id": item["id"], "stratum": item.get("stratum"), "error": str(e)}
+            )
+        if progress_file:
+            write_json(progress_file, rows)
+    return _answer_summary(rows)
+
+
+def _answer_row(asker: Any, judge: LLMClient, item: Dict[str, Any]) -> Dict[str, Any]:
+    done = asker.ask(item["question"])
+    row: Dict[str, Any] = {
+        "id": item["id"],
+        "stratum": item.get("stratum", "lookup"),
+        "mode": done.get("mode"),
+        "seconds": done.get("timings", {}).get("total"),
+        "cited": len(done.get("cited") or []),
+        "invalid_citations": len(done.get("invalid_citations") or []),
+    }
+    if row["stratum"] == "no_answer":
+        row["declined"] = done.get("mode") == "not_covered"
+    elif done.get("mode") == "answer":
+        row.update(judge_answer(judge, item, done))
+    return row
+
+
+def _answer_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     answered = [r for r in rows if r.get("correct") is not None]
-    no_answer = [r for r in rows if r["stratum"] == "no_answer"]
+    supported = [r["supported"] for r in answered if r.get("supported") is not None]
+    no_answer = [
+        r for r in rows if r.get("stratum") == "no_answer" and "error" not in r
+    ]
 
     def mean(values: List[float]) -> Optional[float]:
         return statistics.fmean(values) if values else None
@@ -334,16 +419,17 @@ def evaluate_answers(
     return {
         "answered": len(answered),
         "correct": mean([float(r["correct"]) / 2 for r in answered]),
-        "supported": mean(
-            [float(r["supported"]) for r in answered if r.get("supported") is not None]
-        ),
+        "supported": mean([float(v) for v in supported]),
         "uncited": sum(1 for r in answered if not r["cited"]),
         "declined_wrongly": sum(
             1
             for r in rows
-            if r["stratum"] != "no_answer" and r["mode"] == "not_covered"
+            if r.get("stratum") != "no_answer" and r.get("mode") == "not_covered"
         ),
-        "no_answer_declined": mean([1.0 if r["declined"] else 0.0 for r in no_answer]),
+        "no_answer_declined": mean(
+            [1.0 if r.get("declined") else 0.0 for r in no_answer]
+        ),
+        "errors": sum(1 for r in rows if "error" in r),
         "questions": rows,
     }
 
@@ -383,6 +469,11 @@ def main(argv: Optional[List[str]] = None):
     parser.add_argument("--count", type=int, default=60)
     parser.add_argument("--model", default=None, help="Ollama model for generation")
     parser.add_argument("--no-rerank", action="store_true")
+    parser.add_argument(
+        "--understand",
+        action="store_true",
+        help="retrieval: run the question step first, as the app does",
+    )
     parser.add_argument("--out", default=None)
     parser.add_argument("files", nargs="*", help="compare: two result files")
     args = parser.parse_args(argv)
@@ -424,10 +515,21 @@ def main(argv: Optional[List[str]] = None):
             )
             print(f"Full results: {out}")
         else:
+            retriever = _retriever(db, not args.no_rerank)
+            understand = None
+            if args.understand:
+                from .ask import Asker
+                from .llm import DEFAULT_OLLAMA_MODEL
+
+                llm = LLMClient(
+                    "ollama", args.model or DEFAULT_OLLAMA_MODEL, num_ctx=8192
+                )
+                understand = Asker(db, retriever, llm, None).understand
             result = evaluate_retrieval(
                 db,
-                _retriever(db, not args.no_rerank),
+                retriever,
                 load_questions(Path(args.questions)),
+                understand=understand,
             )
             out = Path(
                 args.out

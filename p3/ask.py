@@ -11,9 +11,12 @@ cover the question and lists the closest passages. Prompts carry a version
 that is stored with every answer, so a change of wording can be traced.
 """
 
+import contextlib
 import json
 import logging
+import queue
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import date
@@ -48,8 +51,9 @@ ABSTAIN_THRESHOLD = 0.05
 # token): with the instructions and the answer itself this stays inside an
 # 8k-token window. Ollama silently drops the start of a prompt that
 # overflows, which is where the instructions are.
-PASSAGES_BUDGET_CHARS = 22000
+PASSAGES_BUDGET_TOKENS = 5200
 PASSAGE_MAX_CHARS = 1500
+_CJK_CHAR_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]")
 # Earlier turns of a thread given to the question step.
 _HISTORY_TURNS = 3
 _ANSWER_MAX_TOKENS = 1200
@@ -91,6 +95,7 @@ details. Be concise: no introduction, no closing summary.
 - Write in {language}.{broad}"""
 
 _LANGUAGE_NAMES = {"en": "English", "fr": "French (Quebec usage)"}
+_REMOTE_PROVIDERS = {"gemini", "openai"}
 
 _BROAD_RULES = """
 - This question is broad: the passages are grouped by episode (each \
@@ -154,18 +159,27 @@ def format_passages(passages: List[Dict[str, Any]]) -> str:
     return "\n\n".join(blocks)
 
 
+def estimate_tokens(text: str) -> int:
+    """A cautious token count: a Chinese, Japanese or Korean character is
+    about a token, other text about 3 characters a token (French runs
+    longer than English)."""
+    cjk = len(_CJK_CHAR_RE.findall(text))
+    return cjk + (len(text) - cjk) // 3 + 1
+
+
 def fit_passages(
-    passages: List[Dict[str, Any]], budget: int = PASSAGES_BUDGET_CHARS
+    passages: List[Dict[str, Any]], budget: int = PASSAGES_BUDGET_TOKENS
 ) -> List[Dict[str, Any]]:
-    """The passages, in order, that fit ``budget`` characters, each cut to
-    ``PASSAGE_MAX_CHARS``; the rest (the lowest ranked) are left out."""
+    """The passages, in order, that fit ``budget`` estimated tokens, each cut
+    to ``PASSAGE_MAX_CHARS``; the rest (the lowest ranked) are left out."""
     kept: List[Dict[str, Any]] = []
     used = 0
     for p in passages:
         text = p["text"]
         if len(text) > PASSAGE_MAX_CHARS:
-            text = text[:PASSAGE_MAX_CHARS].rsplit(" ", 1)[0] + " …"
-        cost = len(text) + 150  # its label and fence
+            cut = text[:PASSAGE_MAX_CHARS]
+            text = (cut.rsplit(" ", 1)[0] if " " in cut else cut) + " …"
+        cost = estimate_tokens(text) + 50  # its label and fence
         if kept and used + cost > budget:
             break
         kept.append({**p, "text": text} if text is not p["text"] else p)
@@ -255,6 +269,43 @@ class Asker:
             default_language if default_language in ("en", "fr") else "en"
         )
 
+    def _gate(self):
+        """``model_use`` for a model on this Mac; remote providers (Gemini,
+        OpenAI) take no local memory and aren't held back by transcription."""
+        if self.llm is not None and self.llm.provider in _REMOTE_PROVIDERS:
+            return contextlib.nullcontext()
+        return model_use()
+
+    def _stream_answer(self, system: str, user: str) -> Iterator[str]:
+        """The answer model's reply as it comes. A local model runs on a worker
+        thread inside the gate, so a client slow to read the stream never
+        keeps transcription waiting on the gate: only generation holds it."""
+        assert self.llm is not None
+        if self.llm.provider in _REMOTE_PROVIDERS:
+            yield from self.llm.chat_stream(system, user, _ANSWER_MAX_TOKENS)
+            return
+        pieces: "queue.Queue[tuple]" = queue.Queue()
+        llm = self.llm
+
+        def generate():
+            try:
+                with model_use():
+                    for piece in llm.chat_stream(system, user, _ANSWER_MAX_TOKENS):
+                        pieces.put(("piece", piece))
+                pieces.put(("end", None))
+            except BaseException as e:  # handed to the reader below
+                pieces.put(("error", e))
+
+        threading.Thread(target=generate, name="ask-answer", daemon=True).start()
+        while True:
+            kind, value = pieces.get()
+            if kind == "piece":
+                yield value
+            elif kind == "end":
+                return
+            else:
+                raise value
+
     def _language_of(self, question: str) -> str:
         return _detect_language(question) or self.default_language
 
@@ -283,7 +334,7 @@ class Asker:
             + f"Latest question: {question}"
         )
         try:
-            with model_use():
+            with self._gate():
                 reply = self.llm.chat(_UNDERSTAND_SYSTEM, user, max_tokens=400)
             data = _extract_json(reply)
         except ModelsPaused:
@@ -318,11 +369,25 @@ class Asker:
         if names:
             # Whole words, either way round: "lenny" names "Lenny's Podcast",
             # but a podcast called "AI" isn't named by "The Daily Show".
-            ids = []
-            for p in self.db.get_all_podcasts(self.username):
-                title = set(tokenize(p["title"]))
-                if title and any(n <= title or title <= n for n in names):
-                    ids.append(p["id"])
+            titles = [
+                (p["id"], set(tokenize(p["title"])))
+                for p in self.db.get_all_podcasts(self.username)
+            ]
+            ids: List[int] = []
+            for name in names:
+                # The closest kind of match wins: the same words, else a
+                # fragment of the title ("lenny"), else a title inside the
+                # name ("the hard fork podcast"), so "Planet Money" doesn't
+                # also pick "Money".
+                for test in (
+                    lambda t: t == name,
+                    lambda t: name < t,
+                    lambda t: t < name,
+                ):
+                    found = [i for i, t in titles if t and test(t)]
+                    if found:
+                        ids.extend(i for i in found if i not in ids)
+                        break
             # A podcast the user doesn't have can't narrow the search to nothing.
             if ids:
                 filters["podcast_ids"] = ids
@@ -408,6 +473,8 @@ class Asker:
         if broad and use_models and covered:
             retrieval = broaden(self.db, retrieval)
         passages = fit_passages(retrieval.passages)
+        # The stored record lists exactly the passages the model is given.
+        retrieval.passages = passages
 
         mode = "answer"
         answer = ""
@@ -445,12 +512,11 @@ class Asker:
             )
             parts: List[str] = []
             try:
-                with model_use():
-                    for piece in self.llm.chat_stream(system, user, _ANSWER_MAX_TOKENS):  # type: ignore[union-attr]
-                        if "first_token" not in timings:
-                            timings["first_token"] = time.monotonic() - started
-                        parts.append(piece)
-                        yield {"event": "token", "text": piece}
+                for piece in self._stream_answer(system, user):
+                    if "first_token" not in timings:
+                        timings["first_token"] = time.monotonic() - started
+                    parts.append(piece)
+                    yield {"event": "token", "text": piece}
                 checked = validate_citations("".join(parts).strip(), len(passages))
                 answer, cited, invalid = (
                     checked["answer"],

@@ -82,7 +82,9 @@ def notes_text(description: Optional[str]) -> str:
     collapsed, cut to ``NOTES_MAX_CHARS``."""
     if not description:
         return ""
-    text = re.sub(r"<(br|p|li|div)[^>]*>", "\n", description, flags=re.I)
+    # Feeds often escape their HTML once more: decode first, then strip.
+    text = html.unescape(description)
+    text = re.sub(r"<(br|p|li|div)[^>]*>", "\n", text, flags=re.I)
     text = html.unescape(re.sub(r"<[^>]+>", " ", text))
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\s*\n\s*", "\n", text).strip()

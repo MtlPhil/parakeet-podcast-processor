@@ -13,6 +13,14 @@ import duckdb
 logger = logging.getLogger(__name__)
 
 
+def _has_notes(description: Optional[str]) -> bool:
+    """Whether show notes hold any text once markup is removed (blank ones are
+    not stored, so they can't keep an episode waiting to be indexed)."""
+    from p3.chunker import notes_text
+
+    return bool(notes_text(description))
+
+
 # Error recorded on jobs a server restart cut short (see fail_stale_jobs).
 INTERRUPTED_ERROR = "interrupted: server restarted"
 
@@ -462,6 +470,8 @@ class P3Database:
         """
         if date is not None and date.tzinfo is not None:
             date = date.astimezone(timezone.utc).replace(tzinfo=None)
+        if not _has_notes(description):
+            description = None
         next_id = self.conn.execute("SELECT nextval('episode_id_seq')").fetchone()[0]
         self.conn.execute(
             """
@@ -476,7 +486,7 @@ class P3Database:
     def set_missing_description(self, url: str, description: Optional[str]) -> bool:
         """Store the show notes of an episode that has none yet (episodes
         added before they were kept). True if it changed."""
-        if not description or not description.strip():
+        if not _has_notes(description):
             return False
         row = self.conn.execute(
             "SELECT id FROM episodes WHERE url = ? "
@@ -1434,13 +1444,17 @@ class P3Database:
         return remaining
 
     def purge_episode(self, episode_id: int):
-        """Erase an episode nobody has, with everything that hangs off it."""
+        """Erase an episode nobody has, with everything that hangs off it,
+        after any rewrite of its Ask passages finishes. (Not one transaction:
+        DuckDB's foreign-key check doesn't see rows deleted earlier in the
+        same transaction, so the episode row couldn't go.)"""
         self.remove_audio(episode_id)
-        for table in ("transcripts", "summaries", "jobs", "chunk_terms", "chunks"):
-            self.conn.execute(
-                f"DELETE FROM {table} WHERE episode_id = ?", (episode_id,)
-            )
-        self.conn.execute("DELETE FROM episodes WHERE id = ?", (episode_id,))
+        with self._chunk_lock:
+            for table in ("transcripts", "summaries", "jobs", "chunk_terms", "chunks"):
+                self.conn.execute(
+                    f"DELETE FROM {table} WHERE episode_id = ?", (episode_id,)
+                )
+            self.conn.execute("DELETE FROM episodes WHERE id = ?", (episode_id,))
 
     def user_has_episode(self, username: str, episode_id: int) -> bool:
         return (
@@ -2014,7 +2028,13 @@ class P3Database:
         )
         return True
 
-    def rated_ask_messages(self, limit: int = 50) -> List[Dict[str, Any]]:
+    def rated_ask_message(self, message_id: str) -> Optional[Dict[str, Any]]:
+        rows = self.rated_ask_messages(1, message_id)
+        return rows[0] if rows else None
+
+    def rated_ask_messages(
+        self, limit: int = 50, message_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """Answers users rated, newest first, each with the question asked
         just before it (for the Admin page and the evaluation set)."""
         cursor = self.conn.execute(
@@ -2027,10 +2047,11 @@ class P3Database:
                     ORDER BY q.created_at DESC LIMIT 1) AS question
             FROM ask_messages m JOIN ask_threads t ON t.id = m.thread_id
             WHERE m.role = 'assistant' AND m.rating IS NOT NULL
+              AND (? IS NULL OR m.id = ?)
             ORDER BY m.created_at DESC
             LIMIT ?
         """,
-            (limit,),
+            (message_id, message_id, limit),
         )
         rows = self._fetchall_as_dicts(cursor)
         for row in rows:
