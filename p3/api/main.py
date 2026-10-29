@@ -84,6 +84,12 @@ async def lifespan(app: FastAPI):
     # Warm up database and clear jobs orphaned by a previous process
     db = get_db()
     stale = db.fail_stale_jobs()
+    # Questions a restart left without a reply get one saying so.
+    closed = db.close_unanswered_ask_turns(
+        "(The server restarted before this question was answered; ask it again.)"
+    )
+    if closed:
+        logger.info("Closed %d Ask question(s) a restart left unanswered", closed)
     if stale:
         logger.warning("Marked %d interrupted job(s) as failed", stale)
     # Start the serial pipeline worker, then the daily run that feeds it

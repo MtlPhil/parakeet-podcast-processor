@@ -403,7 +403,7 @@ class TestAsker:
         done = self._asker(db, llm).ask("What has been said about rates overall?")
         assert done["understanding"]["scope"] == "broad"
         kinds = [s["kind"] for s in done["sources"] if s["episode_id"] == e1]
-        assert kinds[0] == "summary"
+        assert kinds[-1] == "summary" and kinds[0] != "summary"
         assert (
             "This question is broad" not in llm.prompts[-1]
         )  # it's in the system prompt
@@ -766,9 +766,11 @@ def test_fit_passages_keeps_the_prompt_inside_the_window():
     passages = [{"text": "word " * 1000, "n": i} for i in range(30)]
     kept = fit_passages(passages, budget=10000)
     assert 1 <= len(kept) < 30
-    assert all(len(p["text"]) <= PASSAGE_MAX_CHARS + 2 for p in kept)
+    assert all(len(p["prompt_text"]) <= PASSAGE_MAX_CHARS + 2 for p in kept)
     assert [p["n"] for p in kept] == list(range(len(kept)))  # best first, in order
-    assert fit_passages([{"text": "short"}]) == [{"text": "short"}]
+    assert fit_passages([{"text": "short"}]) == [
+        {"text": "short", "prompt_text": "short"}
+    ]
 
 
 def test_evaluate_answers_grades_and_counts_declines(db):
@@ -1001,3 +1003,43 @@ def test_support_check_flags_citations_their_passage_does_not_back():
     assert [n for n, _ in claims] == [1, 2]  # the heading is skipped
     weak = check_support(answer, passages, FakeReranker())
     assert [w["n"] for w in weak] == [2]
+
+
+def test_fit_passages_trims_only_the_prompt_copy_and_keeps_smaller_ones():
+    from p3.ask import fit_passages
+
+    big, small = {"text": "word " * 2000, "n": 1}, {"text": "short passage", "n": 2}
+    kept = fit_passages([{"text": "x " * 500, "n": 0}, big, small], budget=600)
+    assert [p["n"] for p in kept] == [0, 2]  # the big one is skipped, not the rest
+    assert kept[0]["text"] == "x " * 500 and len(kept[0]["prompt_text"]) <= 1502
+
+
+def test_restart_leaves_no_question_without_a_reply(db):
+    thread = db.create_ask_thread("u", "q")
+    db.add_ask_message(thread, "user", "q")
+    answered = db.create_ask_thread("u", "q2")
+    db.add_ask_message(answered, "user", "q2")
+    db.add_ask_message(answered, "assistant", "a2")
+    assert db.close_unanswered_ask_turns("(restarted)") == 1
+    roles = [m["role"] for m in db.get_ask_thread(thread, "u")["messages"]]
+    assert roles == ["user", "assistant"]
+    assert db.close_unanswered_ask_turns("(restarted)") == 0
+
+
+def test_stop_keeps_what_was_written(db):
+    _library(db)
+    cancel = threading.Event()
+
+    class Endless(FakeLLM):
+        def chat_stream(self, system, user, max_tokens=2000):
+            for i in range(1000):
+                if i == 3:
+                    cancel.set()
+                yield f"word{i} "
+
+    asker = Asker(db, Retriever(db, FakeEmbedder(), FakeReranker()), Endless(), None)
+    done = list(asker.answer_stream("bank rates", cancel=cancel))[-1]
+    assert done["mode"] == "stopped"
+    assert done["answer"].startswith("word0") and done["answer"].endswith(
+        "(Stopped before the end.)"
+    )

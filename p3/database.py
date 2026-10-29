@@ -1684,7 +1684,11 @@ class P3Database:
         term_counts: Any,
     ) -> int:
         self.delete_chunks(episode_id)
-        if not chunks:
+        # Erased while it was being indexed (purge takes the same lock).
+        exists = self.conn.execute(
+            "SELECT 1 FROM episodes WHERE id = ?", (episode_id,)
+        ).fetchone()
+        if not chunks or not exists:
             return 0
         # Ids are never reused (stored answers refer to them): the next one is
         # past both the current rows and the highest id ever handed out.
@@ -2033,6 +2037,25 @@ class P3Database:
             ),
         )
         return message_id
+
+    def close_unanswered_ask_turns(self, note: str) -> int:
+        """Give every question left without a reply (the server stopped while
+        answering it) a stored reply saying so, so a thread never holds two
+        user turns in a row. Returns how many were closed."""
+        rows = self.conn.execute("""
+            SELECT thread_id FROM (
+                SELECT thread_id, role,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY thread_id ORDER BY created_at DESC, id DESC
+                       ) AS rn
+                FROM ask_messages
+            ) WHERE rn = 1 AND role = 'user'
+        """).fetchall()
+        for (thread_id,) in rows:
+            self.add_ask_message(
+                thread_id, "assistant", note, retrieval={"mode": "interrupted"}
+            )
+        return len(rows)
 
     def delete_ask_thread(self, thread_id: str, username: str) -> bool:
         if not self.get_ask_thread(thread_id, username):

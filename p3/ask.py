@@ -152,6 +152,11 @@ _PAUSED = {
 
 # [3], [3, 5], [3; 5], [3-5]. Brackets holding a number above this aren't
 # citations (years, amounts) and are left alone.
+_STOPPED = {
+    "en": "(Stopped before the end.)",
+    "fr": "(Arrêtée avant la fin.)",
+}
+
 _CITATION_RE = re.compile(r"\[\s*(\d+(?:\s*[-–,;]\s*\d+)*)\s*\]")
 _MAX_CITATION = 999
 _FENCE_RE = re.compile(r"[<>]{3,}")
@@ -173,12 +178,12 @@ def format_passages(passages: List[Dict[str, Any]]) -> str:
     blocks = []
     for n, p in enumerate(passages, start=1):
         where = passage_label(p)
+        if p["kind"] != "transcript":
+            where += f", {_KIND_IN_PROMPT.get(p['kind'], p['kind'])}"
         if p.get("start_s") is not None:
             where += f", {format_time(p['start_s'])}–{format_time(p['end_s'])}"
-        elif p["kind"] != "transcript":
-            where += f", {_KIND_IN_PROMPT.get(p['kind'], p['kind'])}"
         # The text can't close its fence early: runs of < or > are dropped.
-        text = _FENCE_RE.sub("", p["text"])
+        text = _FENCE_RE.sub("", p.get("prompt_text") or p["text"])
         blocks.append(f"[{n}] {where}\n<<<\n{text}\n>>>")
     return "\n\n".join(blocks)
 
@@ -194,8 +199,10 @@ def estimate_tokens(text: str) -> int:
 def fit_passages(
     passages: List[Dict[str, Any]], budget: int = PASSAGES_BUDGET_TOKENS
 ) -> List[Dict[str, Any]]:
-    """The passages, in order, that fit ``budget`` estimated tokens, each cut
-    to ``PASSAGE_MAX_CHARS``; the rest (the lowest ranked) are left out."""
+    """The passages, in order, that fit ``budget`` estimated tokens. Each
+    gets a ``prompt_text`` cut to ``PASSAGE_MAX_CHARS`` (its ``text`` stays
+    whole for the page); one too big for what's left is skipped, and smaller
+    ones after it can still fit."""
     kept: List[Dict[str, Any]] = []
     used = 0
     for p in passages:
@@ -205,8 +212,8 @@ def fit_passages(
             text = (cut.rsplit(" ", 1)[0] if " " in cut else cut) + " …"
         cost = estimate_tokens(text) + 50  # its label and fence
         if kept and used + cost > budget:
-            break
-        kept.append({**p, "text": text} if text is not p["text"] else p)
+            continue
+        kept.append({**p, "prompt_text": text})
         used += cost
     return kept
 
@@ -351,13 +358,18 @@ class Asker:
             return contextlib.nullcontext()
         return model_use()
 
-    def _stream_answer(self, system: str, user: str) -> Iterator[str]:
+    def _stream_answer(
+        self, system: str, user: str, cancel: Optional[threading.Event] = None
+    ) -> Iterator[str]:
         """The answer model's reply as it comes. A local model runs on a worker
         thread inside the gate, so a client slow to read the stream never
         keeps transcription waiting on the gate: only generation holds it."""
         assert self.llm is not None
         if self.llm.provider in _REMOTE_PROVIDERS:
-            yield from self.llm.chat_stream(system, user, _ANSWER_MAX_TOKENS)
+            for piece in self.llm.chat_stream(system, user, _ANSWER_MAX_TOKENS):
+                if cancel is not None and cancel.is_set():
+                    return
+                yield piece
             return
         pieces: "queue.Queue[tuple]" = queue.Queue()
         llm = self.llm
@@ -366,6 +378,8 @@ class Asker:
             try:
                 with model_use():
                     for piece in llm.chat_stream(system, user, _ANSWER_MAX_TOKENS):
+                        if cancel is not None and cancel.is_set():
+                            break  # closing the stream stops the model
                         pieces.put(("piece", piece))
                 pieces.put(("end", None))
             except BaseException as e:  # handed to the reader below
@@ -572,6 +586,7 @@ class Asker:
         history: Optional[List[Dict[str, str]]] = None,
         use_models: bool = True,
         filters: Optional[Dict[str, Any]] = None,
+        cancel: Optional[threading.Event] = None,
     ) -> Iterator[Dict[str, Any]]:
         """Run a question end to end, yielding events: ``status`` (stage),
         ``sources`` (the passages, numbered), ``token`` (answer text), then
@@ -579,7 +594,8 @@ class Asker:
         store. ``use_models=False`` (during a transcription) skips every
         model and returns keyword search results. ``filters`` (podcast_ids,
         after, before), chosen by the user, replace those read from the
-        question."""
+        question. Setting ``cancel`` stops the answer where it is (mode
+        ``stopped``)."""
         timings: Dict[str, float] = {}
         started = time.monotonic()
 
@@ -651,7 +667,7 @@ class Asker:
             )
             parts: List[str] = []
             try:
-                for piece in self._stream_answer(system, user):
+                for piece in self._stream_answer(system, user, cancel):
                     if "first_token" not in timings:
                         timings["first_token"] = time.monotonic() - started
                     parts.append(piece)
@@ -663,6 +679,9 @@ class Asker:
                     checked["invalid"],
                 )
                 weak = self._weak_citations(answer, passages)
+                if cancel is not None and cancel.is_set():
+                    mode = "stopped"
+                    answer = f"{answer}\n\n{_STOPPED[language]}".strip()
             except ModelsPaused:
                 mode = "paused"
                 answer = _PAUSED[language]
