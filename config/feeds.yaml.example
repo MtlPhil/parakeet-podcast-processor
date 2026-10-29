@@ -41,6 +41,9 @@ settings:
   # writing LLM.
   embedding_model: bge-m3
   ask_rerank: true
+  # A local answer model is only loaded with this much memory free (and its
+  # size plus 5.5 GB); otherwise Ask returns the passages found.
+  ask_min_free_memory: 25
 
   # Mail server for the daily run's emailed report (each user turns it on and
   # sets their address in Settings). The password is read from SMTP_PASSWORD

@@ -146,18 +146,20 @@ Change one thing at a time against the evaluation: chunk length (45/60/90 s), nu
   - **Gemini fallback, evidence for the decision:** the time goes to memory pressure, not to the pipeline. Setting a user's *writing LLM* to Gemini (Settings, no code change) keeps embeddings and reranking local and sends only the retrieved passages (about 12 per question) to Google. Not switched: the owner chose local models.
 - 2026-10-29, night (continued): two red-team passes (21 confirmed defects, each with a failing probe test, all fixed; probes kept in `tests/test_ask_redteam*.py`) and a client-experience review from a research listener's point of view (attribution, AI-summary citations, padded broad answers, the wait, hidden scope, copy to notes; fixed except the larger items below). Added since: rerank with the question's translation (cross-language), manual show and date filters, answers that finish and are stored when the page is closed, passages shown while the answer is written, "AI summary" badges, quotes placed at their transcript moment, French summaries for French episodes.
 
+- 00:55: a final guarded verification run (3 questions, reranker released before each answer) was killed by its watchdog when free memory fell to **1%** as gemma4:12b loaded beside the Ask models (it started at 80% free). No harm done; the P3 server kept running. The new prompt rules are therefore **not yet verified on a real broad answer**. Ask now refuses to load a local answer model unless free memory exceeds its size plus 5.5 GB (`room_for_ollama_model`; floor `ask_min_free_memory`, default 25%), and returns the passages instead.
+
 ## Trying it (morning of 2026-10-29)
 
 1. Stop the server. `git switch ask`, then `pip install -e ".[web,ask]"` (sentence-transformers is already in the venv) and `cd frontend && npm run build`.
 2. Start the server. The first open adds the new tables and checkpoints at once.
 3. Admin → Ask quality → **Index the library**: a queued job, about 15 to 20 minutes for 100 episodes, which gives way to the daily run.
-4. Ask a few questions. With gemma4:12b expect 1.5 to 3 minutes per answer and heavy memory pressure; setting your **writing LLM to Gemini** in Settings makes answers take seconds (see the measurements above).
+4. Ask a few questions. With gemma4:12b expect 1.5 to 3 minutes per answer, and often a "not enough free memory" reply with the passages only: on this Mac the 12B model barely fits beside Ask's models. Setting your **writing LLM to Gemini** in Settings makes answers take seconds and avoids the memory problem (see the measurements above).
 5. Admin → Ask quality → **Evaluate retrieval** reruns the baseline on the live library (the question set is in `data/eval/questions.json`).
 6. Merge `ask` into `main` once it holds up.
 
 ## Still open
 
-- **Decide local vs Gemini for answers**, from the measurements above.
+- **Decide local vs Gemini for answers**, from the measurements above, or try a smaller local answer model. Then check the new attribution rules on a broad question (the run meant to verify them was stopped by the memory watchdog).
 - **Speakers** (professional addition 1): diarization and speaker names, so citations say who said it. The biggest remaining trust gap: the review found host lines credited to guests.
 - **Counting and "which episodes" questions** from the database instead of the top passages (broad answers stop at 8 episodes).
 - **A support check** that marks citations the passage doesn't back (the review found about 6 in 20 overstated before the prompt changes; measure again with `python -m p3.eval_ask answers`).
