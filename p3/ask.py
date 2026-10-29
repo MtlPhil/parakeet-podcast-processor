@@ -44,6 +44,12 @@ ANSWER_PROMPT_VERSION = "answer-v2"
 # and the question as not covered by the library. To be calibrated on the
 # evaluation set's no-answer questions.
 ABSTAIN_THRESHOLD = 0.05
+# What the passages may take in the answer prompt (about 4 characters a
+# token): with the instructions and the answer itself this stays inside an
+# 8k-token window. Ollama silently drops the start of a prompt that
+# overflows, which is where the instructions are.
+PASSAGES_BUDGET_CHARS = 22000
+PASSAGE_MAX_CHARS = 1500
 # Earlier turns of a thread given to the question step.
 _HISTORY_TURNS = 3
 _ANSWER_MAX_TOKENS = 1200
@@ -146,6 +152,25 @@ def format_passages(passages: List[Dict[str, Any]]) -> str:
         text = _FENCE_RE.sub("", p["text"])
         blocks.append(f"[{n}] {where}\n<<<\n{text}\n>>>")
     return "\n\n".join(blocks)
+
+
+def fit_passages(
+    passages: List[Dict[str, Any]], budget: int = PASSAGES_BUDGET_CHARS
+) -> List[Dict[str, Any]]:
+    """The passages, in order, that fit ``budget`` characters, each cut to
+    ``PASSAGE_MAX_CHARS``; the rest (the lowest ranked) are left out."""
+    kept: List[Dict[str, Any]] = []
+    used = 0
+    for p in passages:
+        text = p["text"]
+        if len(text) > PASSAGE_MAX_CHARS:
+            text = text[:PASSAGE_MAX_CHARS].rsplit(" ", 1)[0] + " …"
+        cost = len(text) + 150  # its label and fence
+        if kept and used + cost > budget:
+            break
+        kept.append({**p, "text": text} if text is not p["text"] else p)
+        used += cost
+    return kept
 
 
 def validate_citations(answer: str, passage_count: int) -> Dict[str, Any]:
@@ -382,7 +407,7 @@ class Asker:
         covered = self.covered(retrieval)
         if broad and use_models and covered:
             retrieval = broaden(self.db, retrieval)
-        passages = retrieval.passages
+        passages = fit_passages(retrieval.passages)
 
         mode = "answer"
         answer = ""

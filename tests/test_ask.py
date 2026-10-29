@@ -757,3 +757,14 @@ class TestQualityAPI:
         assert client.post("/api/ask/eval/run").status_code == 400  # no questions yet
         assert client.post("/api/ask/eval/generate?count=10").status_code == 200
         assert self.queued == ["task_eval_generate"]
+
+
+def test_fit_passages_keeps_the_prompt_inside_the_window():
+    from p3.ask import PASSAGE_MAX_CHARS, fit_passages
+
+    passages = [{"text": "word " * 1000, "n": i} for i in range(30)]
+    kept = fit_passages(passages, budget=10000)
+    assert 1 <= len(kept) < 30
+    assert all(len(p["text"]) <= PASSAGE_MAX_CHARS + 2 for p in kept)
+    assert [p["n"] for p in kept] == list(range(len(kept)))  # best first, in order
+    assert fit_passages([{"text": "short"}]) == [{"text": "short"}]
