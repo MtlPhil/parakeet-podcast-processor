@@ -35,6 +35,13 @@ settings:
   # config/gemini_api_key.txt). OpenAI reads OPENAI_API_KEY.
   gemini_model: "gemini-3.8-flash"
 
+  # Ask (questions over the library). Passages are embedded with this Ollama
+  # model (ollama pull bge-m3); changing it means re-indexing. The reranker
+  # needs the "ask" extra (pip install -e ".[ask]"). Answers use each user's
+  # writing LLM.
+  embedding_model: bge-m3
+  ask_rerank: true
+
   # Mail server for the daily run's emailed report (each user turns it on and
   # sets their address in Settings). The password is read from SMTP_PASSWORD
   # or config/smtp_password.txt. Port 587 uses STARTTLS, 465 implicit TLS.
