@@ -768,3 +768,39 @@ def test_fit_passages_keeps_the_prompt_inside_the_window():
     assert all(len(p["text"]) <= PASSAGE_MAX_CHARS + 2 for p in kept)
     assert [p["n"] for p in kept] == list(range(len(kept)))  # best first, in order
     assert fit_passages([{"text": "short"}]) == [{"text": "short"}]
+
+
+def test_evaluate_answers_grades_and_counts_declines(db):
+    from p3.eval_ask import evaluate_answers
+
+    e1, _ = _library(db)
+
+    class Judge:
+        provider, model, is_configured = "fake", "judge", True
+
+        def chat(self, system, user, max_tokens=300):
+            return '{"correct": 2, "supported": 1.0, "unsupported": []}'
+
+    asker = Asker(db, Retriever(db, FakeEmbedder(), FakeReranker()), FakeLLM(), None)
+    questions = [
+        {
+            "id": "q1",
+            "question": "bank rates",
+            "stratum": "lookup",
+            "relevant": [{"episode_id": e1}],
+            "reference": "They went up.",
+        },
+        {
+            "id": "q2",
+            "question": "football scores",
+            "stratum": "no_answer",
+            "relevant": [],
+        },
+    ]
+    result = evaluate_answers(asker, Judge(), questions)
+    assert (
+        result["answered"] == 1
+        and result["correct"] == 1.0
+        and result["supported"] == 1.0
+    )
+    assert result["questions"][1]["stratum"] == "no_answer"
