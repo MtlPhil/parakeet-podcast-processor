@@ -150,6 +150,7 @@ def ask(body: AskRequest, username: str = Depends(current_username)):
                             "understanding": event["understanding"],
                             "scope": event["scope"],
                             "invalid_citations": event["invalid_citations"],
+                            "weak_citations": event["weak_citations"],
                         },
                         timings=event["timings"],
                         models=event["models"],
@@ -230,6 +231,7 @@ def get_thread(thread_id: str, username: str = Depends(current_username)):
         message["mode"] = record.get("mode")
         message["standalone"] = (record.get("understanding") or {}).get("question")
         message["scope"] = record.get("scope")
+        message["weak_citations"] = record.get("weak_citations") or []
     return thread
 
 

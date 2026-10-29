@@ -52,8 +52,9 @@ const sourceLine = (s) =>
     .join(' · ');
 
 // Answer text with [n] citations turned into links to their sources.
-function AnswerText({ text, sources }) {
+function AnswerText({ text, sources, weak }) {
   const byNumber = Object.fromEntries((sources || []).map((s) => [s.n, s]));
+  const weakNumbers = new Set((weak || []).map((w) => w.n));
   const renderLine = (line, key) => {
     const parts = line.split(/(\[\d+\])/g);
     return (
@@ -66,8 +67,16 @@ function AnswerText({ text, sources }) {
             <Link
               key={i}
               to={sourceLink(source)}
-              title={sourceLine(source)}
-              className="inline-block align-super text-[10px] font-semibold text-blue-700 bg-blue-50 rounded px-1 mx-0.5 no-underline hover:bg-blue-100"
+              title={
+                weakNumbers.has(source.n)
+                  ? `${sourceLine(source)} — this passage may not support the sentence`
+                  : sourceLine(source)
+              }
+              className={`inline-block align-super text-[10px] font-semibold rounded px-1 mx-0.5 no-underline ${
+                weakNumbers.has(source.n)
+                  ? 'text-amber-800 bg-amber-100 hover:bg-amber-200'
+                  : 'text-blue-700 bg-blue-50 hover:bg-blue-100'
+              }`}
             >
               {source.n}
             </Link>
@@ -246,7 +255,15 @@ function AssistantMessage({ message, question }) {
           {NOTICES[message.mode]}
         </p>
       )}
-      {message.answer && <AnswerText text={message.answer} sources={message.sources} />}
+      {message.answer && (
+        <AnswerText text={message.answer} sources={message.sources} weak={message.weak} />
+      )}
+      {message.weak?.length > 0 && (
+        <p className="text-xs text-amber-800 mt-2">
+          {message.weak.length === 1 ? 'One citation (in amber) points' : `${message.weak.length} citations (in amber) point`} to a
+          passage that may not support its sentence: check it before relying on it.
+        </p>
+      )}
       {message.uncited && (
         <p className="text-xs text-amber-700 mt-2">
           This answer cites no passage: check it against the sources before relying on it.
@@ -308,6 +325,7 @@ const fromStored = (m) => ({
   mode: m.mode || 'answer',
   scope: m.scope,
   standalone: m.standalone,
+  weak: m.weak_citations,
   uncited: (m.mode || 'answer') === 'answer' && m.role === 'assistant' && !m.citations?.some((c) => c.cited),
   rating: m.rating,
 });
@@ -416,6 +434,7 @@ export default function Ask() {
               mode: event.mode,
               scope: event.scope,
               standalone: event.understanding?.question,
+              weak: event.weak_citations,
               uncited: event.uncited_answer,
               streaming: false,
             });
