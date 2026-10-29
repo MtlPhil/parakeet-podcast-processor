@@ -15,6 +15,7 @@ repo root (the server must be stopped, or point --db at a copy)::
 
     python -m p3.eval_ask generate --db data/p3.duckdb --count 60
     python -m p3.eval_ask retrieval --db data/p3.duckdb
+    python -m p3.eval_ask answers --db data/p3.duckdb   # slow: asks every question
 """
 
 import argparse
@@ -269,6 +270,84 @@ def evaluate_retrieval(
     }
 
 
+_JUDGE_SYSTEM = """You grade answers from a question-answering system over \
+podcast transcripts. You get the question, possibly a reference answer, the \
+system's answer with citations like [3], and the cited passages. Reply with \
+JSON only:
+{
+  "correct": 2 if the answer matches the reference (or, with no reference, \
+plainly answers the question), 1 if partly, 0 if not,
+  "supported": the share (0 to 1) of the answer's factual sentences that are \
+backed by the passage they cite,
+  "unsupported": up to 3 short quotes of sentences the cited passages don't back
+}
+Judge only against the passages and the reference, not your own knowledge."""
+
+
+def judge_answer(
+    judge: LLMClient, item: Dict[str, Any], done: Dict[str, Any]
+) -> Dict[str, Any]:
+    """The judge's grades for one answer (``done`` from ``Asker.ask``)."""
+    cited = [s for s in done["sources"] if s["cited"]]
+    passages = "\n\n".join(f"[{s['n']}] {s['text']}" for s in cited) or "(none)"
+    user = (
+        f"Question: {item['question']}\n"
+        + (f"Reference answer: {item['reference']}\n" if item.get("reference") else "")
+        + f"\nAnswer:\n{done['answer']}\n\nCited passages:\n{passages}"
+    )
+    data = _extract_json(judge.chat(_JUDGE_SYSTEM, user, max_tokens=300)) or {}
+    return {
+        "correct": data.get("correct"),
+        "supported": data.get("supported"),
+        "unsupported": data.get("unsupported") or [],
+    }
+
+
+def evaluate_answers(
+    asker: Any, judge: LLMClient, questions: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Ask every question end to end and grade it. No-answer questions pass
+    when the answer is declined; the others are graded by the judge for
+    correctness and for support by the cited passages."""
+    rows = []
+    for item in scorable(questions):
+        done = asker.ask(item["question"])
+        row: Dict[str, Any] = {
+            "id": item["id"],
+            "stratum": item.get("stratum", "lookup"),
+            "mode": done.get("mode"),
+            "seconds": done.get("timings", {}).get("total"),
+            "cited": len(done.get("cited") or []),
+            "invalid_citations": len(done.get("invalid_citations") or []),
+        }
+        if row["stratum"] == "no_answer":
+            row["declined"] = done.get("mode") == "not_covered"
+        elif done.get("mode") == "answer":
+            row.update(judge_answer(judge, item, done))
+        rows.append(row)
+    answered = [r for r in rows if r.get("correct") is not None]
+    no_answer = [r for r in rows if r["stratum"] == "no_answer"]
+
+    def mean(values: List[float]) -> Optional[float]:
+        return statistics.fmean(values) if values else None
+
+    return {
+        "answered": len(answered),
+        "correct": mean([float(r["correct"]) / 2 for r in answered]),
+        "supported": mean(
+            [float(r["supported"]) for r in answered if r.get("supported") is not None]
+        ),
+        "uncited": sum(1 for r in answered if not r["cited"]),
+        "declined_wrongly": sum(
+            1
+            for r in rows
+            if r["stratum"] != "no_answer" and r["mode"] == "not_covered"
+        ),
+        "no_answer_declined": mean([1.0 if r["declined"] else 0.0 for r in no_answer]),
+        "questions": rows,
+    }
+
+
 def reciprocal_ranks(result: Dict[str, Any], stage: str = "final") -> Dict[str, float]:
     """Per-question 1/rank at ``stage`` (0 when not found), for comparisons."""
     return {
@@ -296,7 +375,9 @@ def _retriever(db: P3Database, rerank: bool) -> Retriever:
 
 def main(argv: Optional[List[str]] = None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("command", choices=["generate", "retrieval", "compare"])
+    parser.add_argument(
+        "command", choices=["generate", "retrieval", "answers", "compare"]
+    )
     parser.add_argument("--db", default="data/p3.duckdb")
     parser.add_argument("--questions", default=str(QUESTIONS_FILE))
     parser.add_argument("--count", type=int, default=60)
@@ -323,6 +404,25 @@ def main(argv: Optional[List[str]] = None):
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text(json.dumps(questions, indent=2, ensure_ascii=False))
             print(f"Wrote {len(questions)} questions to {out}")
+        elif args.command == "answers":
+            from .ask import Asker
+            from .llm import DEFAULT_OLLAMA_MODEL
+
+            llm = LLMClient("ollama", args.model or DEFAULT_OLLAMA_MODEL, num_ctx=8192)
+            asker = Asker(db, _retriever(db, not args.no_rerank), llm, None)
+            result = evaluate_answers(asker, llm, load_questions(Path(args.questions)))
+            out = Path(
+                args.out
+                or EVAL_DIR / "results" / f"answers-{datetime.now():%Y%m%d-%H%M}.json"
+            )
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps(result, indent=2, default=str))
+            print(
+                json.dumps(
+                    {k: v for k, v in result.items() if k != "questions"}, indent=2
+                )
+            )
+            print(f"Full results: {out}")
         else:
             result = evaluate_retrieval(
                 db,
