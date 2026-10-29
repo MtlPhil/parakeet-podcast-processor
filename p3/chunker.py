@@ -9,6 +9,7 @@ passage carries a short ``prefix`` (podcast, episode, date) that is embedded
 with it, so a passage that never names its subject still lands near it.
 """
 
+import html
 import json
 import re
 import unicodedata
@@ -24,6 +25,9 @@ KIND_TRANSCRIPT = "transcript"
 KIND_SUMMARY = "summary"
 KIND_TOPICS = "topics"
 KIND_QUOTE = "quote"
+KIND_NOTES = "notes"
+# Show notes beyond this are mostly sponsor lists and links.
+NOTES_MAX_CHARS = 3000
 
 # Function words carry no meaning for keyword search, in either language.
 _STOPWORDS = set("""
@@ -54,6 +58,18 @@ def tokenize(text: str) -> List[str]:
 
 def term_counts(text: str) -> Counter:
     return Counter(tokenize(text))
+
+
+def notes_text(description: Optional[str]) -> str:
+    """Show notes as plain text: tags dropped, entities decoded, whitespace
+    collapsed, cut to ``NOTES_MAX_CHARS``."""
+    if not description:
+        return ""
+    text = re.sub(r"<(br|p|li|div)[^>]*>", "\n", description, flags=re.I)
+    text = html.unescape(re.sub(r"<[^>]+>", " ", text))
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\s*\n\s*", "\n", text).strip()
+    return text[:NOTES_MAX_CHARS]
 
 
 def _prefix(podcast_title: str, episode_title: str, date: Optional[datetime]) -> str:
@@ -116,12 +132,16 @@ def build_chunks(
     summary: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Every passage of an episode, numbered in ``seq`` order: transcript
-    passages first, then the summary, topics and quotes. ``episode`` needs
-    ``title``, ``podcast_title``, ``date`` and ``language``."""
+    passages first, then the show notes, summary, topics and quotes.
+    ``episode`` needs ``title``, ``podcast_title``, ``date``, ``language``
+    and ``description``."""
     prefix = _prefix(
         episode.get("podcast_title") or "", episode["title"], episode.get("date")
     )
     chunks = transcript_chunks(segments)
+    notes = notes_text(episode.get("description"))
+    if notes:
+        chunks.append({"kind": KIND_NOTES, "text": notes})
     if summary:
         if (summary.get("full_summary") or "").strip():
             chunks.append({"kind": KIND_SUMMARY, "text": summary["full_summary"]})
