@@ -233,6 +233,7 @@ function ScopeLine({ scope }) {
 
 const NOTICES = {
   paused: 'An episode is being transcribed: these are keyword matches only.',
+  low_memory: 'Not enough free memory for the answer model: these are the passages found.',
   llm_failed: 'The answer model failed; the passages it would have used are below.',
   no_llm: 'No answer model is configured; these are the passages found.',
 };
