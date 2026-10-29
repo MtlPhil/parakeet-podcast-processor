@@ -10,6 +10,8 @@ search, which loads no model.
 
 import json
 import logging
+import queue
+import threading
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -73,14 +75,26 @@ def _models_allowed() -> bool:
 
 _FAILED = {
     "error": "Something went wrong while answering; the error was logged.",
-    "interrupted": "(The answer was stopped before it finished.)",
 }
+
+# Users with an answer being written, and the thread it's for. Answers run on
+# their own thread, so a closed tab or a phone gone to sleep doesn't lose
+# them: the reply is stored when it's done and shows when the thread is
+# opened again. One at a time per user.
+_answering: dict = {}
+_answering_lock = threading.Lock()
+
+
+def answering_thread(username: str):
+    with _answering_lock:
+        return _answering.get(username)
 
 
 @router.post("")
 def ask(body: AskRequest, username: str = Depends(current_username)):
     """Answer a question, streamed. Continues ``thread_id`` when given (the
-    question step uses its earlier turns), else starts a thread."""
+    question step uses its earlier turns), else starts a thread. The first
+    event, ``thread``, names the thread, so the page can come back to it."""
     from p3.ask import dumps, history_of
 
     db = get_db()
@@ -94,33 +108,26 @@ def ask(body: AskRequest, username: str = Depends(current_username)):
             raise HTTPException(404, "Conversation not found")
     asker = _asker(username)
     use_models = _models_allowed()
-
-    def events():
+    with _answering_lock:
+        if username in _answering:
+            raise HTTPException(409, "An answer is still being written; wait for it")
         thread_id = thread["id"] if thread else db.create_ask_thread(username, question)
-        history = history_of(thread)
+        _answering[username] = thread_id
+    try:
         db.add_ask_message(thread_id, "user", question)
-        # Every question gets a stored reply, so a thread never holds two user
-        # turns in a row: on an error or a closed connection, what there is.
-        stored = False
-        partial: list = []
-        sources: list = []
+    except Exception:
+        with _answering_lock:
+            _answering.pop(username, None)
+        raise
+    history = history_of(thread)
+    # The worker's events for this request's stream (None ends it).
+    out: "queue.Queue[Optional[dict]]" = queue.Queue()
 
-        def store_failure(mode: str) -> str:
-            text = "".join(partial).strip()
-            return db.add_ask_message(
-                thread_id,
-                "assistant",
-                f"{text}\n\n{_FAILED[mode]}" if text else _FAILED[mode],
-                citations=sources,
-                retrieval={"mode": mode},
-            )
-
+    def work():
+        # Every question gets a stored reply, so a thread never holds two
+        # user turns in a row.
         try:
             for event in asker.answer_stream(question, history, use_models):
-                if event["event"] == "token":
-                    partial.append(event["text"])
-                elif event["event"] == "sources":
-                    sources[:] = event["sources"]
                 if event["event"] == "done":
                     event["thread_id"] = thread_id
                     event["message_id"] = db.add_ask_message(
@@ -138,15 +145,15 @@ def ask(body: AskRequest, username: str = Depends(current_username)):
                         timings=event["timings"],
                         models=event["models"],
                     )
-                    stored = True
                     # The stored record is for review, not for the page.
                     event.pop("retrieval", None)
-                yield dumps(event)
-        except Exception:  # the stream has started: report in-band
+                out.put(event)
+        except Exception:
             logger.exception("Answering failed")
-            message_id = store_failure("error")
-            stored = True
-            yield dumps(
+            message_id = db.add_ask_message(
+                thread_id, "assistant", _FAILED["error"], retrieval={"mode": "error"}
+            )
+            out.put(
                 {
                     "event": "error",
                     "detail": _FAILED["error"],
@@ -155,8 +162,19 @@ def ask(body: AskRequest, username: str = Depends(current_username)):
                 }
             )
         finally:
-            if not stored:  # the client went away mid-answer
-                store_failure("interrupted")
+            with _answering_lock:
+                _answering.pop(username, None)
+            out.put(None)
+
+    threading.Thread(target=work, name="ask", daemon=True).start()
+
+    def events():
+        yield dumps({"event": "thread", "thread_id": thread_id})
+        while True:
+            event = out.get()
+            if event is None:
+                return
+            yield dumps(event)
 
     return StreamingResponse(
         events(),
@@ -195,6 +213,7 @@ def get_thread(thread_id: str, username: str = Depends(current_username)):
     thread = get_db().get_ask_thread(thread_id, username)
     if not thread:
         raise HTTPException(404, "Conversation not found")
+    thread["answering"] = answering_thread(username) == thread_id
     for message in thread["messages"]:
         # The retrieval record is for review; the page needs only the mode
         # and the question as the search understood it.
