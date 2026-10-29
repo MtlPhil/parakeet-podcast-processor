@@ -9,6 +9,7 @@ import EpisodeDetail from './pages/EpisodeDetail';
 import BlogPosts from './pages/BlogPosts';
 import Settings from './pages/Settings';
 import Search from './pages/Search';
+import Ask from './pages/Ask';
 import Admin from './pages/Admin';
 import Setup from './pages/Setup';
 import { CreateAdmin, Login } from './pages/SignIn';
@@ -86,6 +87,7 @@ export default function App() {
           <Route path="/episodes/:id" element={<EpisodeDetail />} />
           <Route path="/blogs" element={<BlogPosts />} />
           <Route path="/search" element={<Search />} />
+          <Route path="/ask" element={<Ask />} />
           <Route path="/settings" element={<Settings />} />
           {me.role === 'admin' && <Route path="/admin" element={<Admin />} />}
         </Route>

@@ -160,6 +160,47 @@ export const createLinkedInPost = (data) =>
 // Search
 export const search = (q) => request(`/search?${new URLSearchParams({ q })}`);
 
+// Ask: questions answered from the library, streamed as Server-Sent Events.
+// Calls onEvent with each event ({ event: 'status' | 'sources' | 'token' |
+// 'done' | 'error', ... }) as it arrives.
+export async function askStream(question, threadId, onEvent, signal) {
+  const res = await fetch(`${BASE}/ask`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question, thread_id: threadId || undefined }),
+    signal,
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail || `API error ${res.status}`);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let end;
+    while ((end = buffer.indexOf('\n\n')) !== -1) {
+      const block = buffer.slice(0, end);
+      buffer = buffer.slice(end + 2);
+      const data = block.split('\n').find((line) => line.startsWith('data: '));
+      if (data) onEvent(JSON.parse(data.slice(6)));
+    }
+  }
+}
+export const getAskStatus = () => request('/ask/status');
+export const getAskThreads = () => request('/ask/threads');
+export const getAskThread = (id) => request(`/ask/threads/${id}`);
+export const deleteAskThread = (id) => request(`/ask/threads/${id}`, { method: 'DELETE' });
+export const rateAskAnswer = (messageId, rating) =>
+  request(`/ask/messages/${messageId}/rating`, {
+    method: 'POST',
+    body: JSON.stringify({ rating }),
+  });
+export const indexLibrary = () => request('/ask/index', { method: 'POST' });
+
 // Daily run
 export const getDailyRun = () => request('/daily-run');
 

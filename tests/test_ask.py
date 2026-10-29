@@ -530,3 +530,87 @@ class TestAskAPI:
         )
         assert client.post("/api/ask/index").status_code == 200
         assert queued == ["task_index"]
+
+
+# ----------------------------------------------------------------------
+# Evaluation
+# ----------------------------------------------------------------------
+
+
+class TestEvaluation:
+    def test_relevance_by_episode_and_time(self):
+        from p3.eval_ask import is_relevant
+
+        item = {"relevant": [{"episode_id": 1, "start_s": 100.0, "end_s": 160.0}]}
+        assert is_relevant(
+            {"episode_id": 1, "start_s": 170, "end_s": 230, "kind": "transcript"}, item
+        )
+        assert not is_relevant(
+            {"episode_id": 1, "start_s": 300, "end_s": 360, "kind": "transcript"}, item
+        )
+        assert not is_relevant(
+            {"episode_id": 1, "start_s": None, "end_s": None, "kind": "summary"}, item
+        )
+        assert not is_relevant(
+            {"episode_id": 2, "start_s": 100, "end_s": 160, "kind": "transcript"}, item
+        )
+        whole = {"relevant": [{"episode_id": 1}]}
+        assert is_relevant(
+            {"episode_id": 1, "start_s": None, "end_s": None, "kind": "summary"}, whole
+        )
+
+    def test_summarize_and_bootstrap(self):
+        from p3.eval_ask import paired_bootstrap, summarize
+
+        assert summarize([1, 3, None, 20], k=12) == {
+            "n": 4,
+            "recall": 0.5,
+            "mrr": (1 + 1 / 3 + 1 / 20) / 4,
+        }
+        same = paired_bootstrap([0.5, 1.0, 0.0], [0.5, 1.0, 0.0])
+        assert same == {"mean_diff": 0.0, "low": 0.0, "high": 0.0}
+        better = paired_bootstrap([0.0] * 30, [1.0] * 30)
+        assert better["low"] > 0
+        with pytest.raises(ValueError):
+            paired_bootstrap([], [])
+
+    def test_evaluate_retrieval_reports_every_stage(self, db):
+        from p3.eval_ask import evaluate_retrieval
+
+        e1, e2 = _library(db)
+        questions = [
+            {
+                "id": "q1",
+                "question": "bank interest rates",
+                "language": "en",
+                "stratum": "lookup",
+                "relevant": [{"episode_id": e1}],
+            },
+            {
+                "id": "q2",
+                "question": "phone camera",
+                "language": "en",
+                "stratum": "lookup",
+                "relevant": [{"episode_id": e2, "start_s": 20.0, "end_s": 40.0}],
+            },
+            {
+                "id": "q3",
+                "question": "football scores",
+                "language": "en",
+                "stratum": "no_answer",
+                "relevant": [],
+            },
+        ]
+        result = evaluate_retrieval(
+            db, Retriever(db, FakeEmbedder(), FakeReranker()), questions
+        )
+        assert result["overall"]["final"] == {"n": 2, "recall": 1.0, "mrr": 1.0}
+        assert set(result["overall"]) == {
+            "bm25",
+            "vector",
+            "fused",
+            "reranked",
+            "final",
+        }
+        assert "lookup" in result["strata"] and "lang:en" in result["strata"]
+        assert len(result["questions"]) == 3

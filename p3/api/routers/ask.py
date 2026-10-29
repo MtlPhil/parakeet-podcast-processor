@@ -136,7 +136,8 @@ def get_thread(thread_id: str, username: str = Depends(current_username)):
     if not thread:
         raise HTTPException(404, "Conversation not found")
     for message in thread["messages"]:
-        message.pop("retrieval", None)
+        # The retrieval record is for review; the page only needs the mode.
+        message["mode"] = (message.pop("retrieval", None) or {}).get("mode")
     return thread
 
 
