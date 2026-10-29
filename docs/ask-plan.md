@@ -130,3 +130,12 @@ Change one thing at a time against the evaluation: chunk length (45/60/90 s), nu
 ## Progress
 
 - 2026-10-28: plan extended with the professional additions; work started on the `ask` branch.
+- 2026-10-28, night: built on `ask` (nothing merged to main):
+  - **Index** (Phase 1): `p3/chunker.py` (~60 s passages with one-segment overlap, plus show notes, summary, topics, quotes), `p3/embedder.py` (bge-m3 via Ollama; bge-reranker-v2-m3 via sentence-transformers, loaded lazily, released before transcription and after 10 idle minutes), `p3/indexer.py`, BM25 in SQL (`chunk_terms`). Indexing runs after every digest and as an admin backfill job (`POST /api/ask/index`) that yields to the daily run; a catch-up index job is queued behind each daily backlog.
+  - **Retrieval** (Phase 2): `p3/retriever.py`, BM25 + vector top 50, reciprocal rank fusion, rerank of the top 40, at most 4 passages per episode, top 12. Each stage degrades on its own. Admin endpoint `GET /api/ask/retrieve`.
+  - **Evaluation** (Phase 3): `p3/eval_ask.py` (question generation from passages, recall@12 and MRR per stage and stratum, paired bootstrap).
+  - **Answers** (Phase 4): `p3/ask.py` (question step with keywords and filters, fenced passages, citation validation, abstain below a reranker threshold, streaming), threads and ratings stored with retrieval records, timings, model and prompt versions.
+  - **Page** (Phase 5): `frontend/src/pages/Ask.jsx`; Episode Detail opens at `?t=seconds`.
+  - **Show notes** (addition 2) stored and indexed.
+  - **Transcription guard**: while transcription models are loaded, Ask answers with keyword search only and loads nothing.
+  - Measured: indexing ≈ 6 passages/s with bge-m3 (~8–20 s per episode).

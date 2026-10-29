@@ -1851,6 +1851,21 @@ class P3Database:
         )
         return {row["id"]: row for row in self._fetchall_as_dicts(cursor)}
 
+    def summary_chunks(self, episode_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+        """Each listed episode's summary passage (as ``get_chunks`` returns
+        it), by episode id."""
+        if not episode_ids:
+            return {}
+        ids = [
+            r[0]
+            for r in self.conn.execute(
+                "SELECT id FROM chunks WHERE kind = 'summary' "
+                "AND episode_id IN (SELECT unnest(?::INTEGER[]))",
+                [list(episode_ids)],
+            ).fetchall()
+        ]
+        return {c["episode_id"]: c for c in self.get_chunks(ids).values()}
+
     # ------------------------------------------------------------------
     # Ask conversations
     # ------------------------------------------------------------------
