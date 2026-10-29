@@ -1043,3 +1043,19 @@ def test_stop_keeps_what_was_written(db):
     assert done["answer"].startswith("word0") and done["answer"].endswith(
         "(Stopped before the end.)"
     )
+
+
+def test_no_local_answer_model_when_memory_is_low(db, monkeypatch):
+    from p3 import ask as ask_module
+
+    _library(db)
+    llm = FakeLLM()
+    llm.provider = "ollama"
+    llm.ollama_base_url = "http://localhost:11434"
+    monkeypatch.setattr(ask_module, "room_for_ollama_model", lambda *a: False)
+    asker = Asker(
+        db, Retriever(db, FakeEmbedder(), FakeReranker()), llm, None, min_free_memory=25
+    )
+    done = asker.ask("bank rates")
+    assert done["mode"] == "low_memory" and done["sources"]
+    assert not any("<<<" in p for p in llm.prompts)  # the answer model never ran

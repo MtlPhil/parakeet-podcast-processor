@@ -26,7 +26,12 @@ from .chunker import tokenize
 from .cleaner import _extract_json
 from .database import P3Database
 from .llm import LLMClient
-from .model_gate import ModelsPaused, model_use, models_allowed
+from .model_gate import (
+    ModelsPaused,
+    model_use,
+    models_allowed,
+    room_for_ollama_model,
+)
 from .retriever import (
     MAX_PER_EPISODE,
     TOP_K,
@@ -152,6 +157,20 @@ _PAUSED = {
 
 # [3], [3, 5], [3; 5], [3-5]. Brackets holding a number above this aren't
 # citations (years, amounts) and are left alone.
+_LOW_MEMORY = {
+    "en": (
+        "There isn't enough free memory on the Mac to load the answer model "
+        "right now, so here are the passages found. Closing other apps helps; "
+        "a cloud writing LLM (Settings) avoids this altogether."
+    ),
+    "fr": (
+        "Il n'y a pas assez de mémoire libre sur le Mac pour charger le modèle "
+        "de réponse en ce moment; voici les passages trouvés. Fermer d'autres "
+        "applications aide; un modèle d'écriture infonuagique (Paramètres) "
+        "évite le problème."
+    ),
+}
+
 _STOPPED = {
     "en": "(Stopped before the end.)",
     "fr": "(Arrêtée avant la fin.)",
@@ -339,6 +358,7 @@ class Asker:
         username: Optional[str],
         abstain_threshold: float = ABSTAIN_THRESHOLD,
         default_language: str = "en",
+        min_free_memory: int = 0,
     ):
         """``default_language`` (the user's setting) is used when the
         question's own language can't be told."""
@@ -349,6 +369,21 @@ class Asker:
         self.abstain_threshold = abstain_threshold
         self.default_language = (
             default_language if default_language in ("en", "fr") else "en"
+        )
+        # Below this free-memory percentage a local answer model isn't loaded
+        # (0: no check). On a 16 GB Mac gemma4:12b beside the Ask models has
+        # taken free memory down to 1%.
+        self.min_free_memory = min_free_memory
+
+    def _room_for_local_model(self) -> bool:
+        if (
+            self.llm is None
+            or self.llm.provider in _REMOTE_PROVIDERS
+            or not self.min_free_memory
+        ):
+            return True
+        return room_for_ollama_model(
+            self.llm.model, self.llm.ollama_base_url, self.min_free_memory
         )
 
     def _gate(self):
@@ -646,6 +681,9 @@ class Asker:
         elif self.llm is None:
             mode = "no_llm"
             answer = ""
+        elif not self._room_for_local_model():
+            mode = "low_memory"
+            answer = _LOW_MEMORY[language]
 
         yield {
             "event": "sources",

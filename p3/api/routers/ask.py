@@ -65,6 +65,7 @@ def _asker(username: str):
         ),
         username,
         default_language=settings.get("language") or "en",
+        min_free_memory=int(settings.get("ask_min_free_memory", 25)),
     )
 
 
