@@ -13,6 +13,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Optional
 
+from p3 import model_gate
 from p3.api.deps import content_dir, get_db, load_config, user_settings
 from p3.api.job_queue import job_runner
 from p3.database import INTERRUPTED_ERROR
@@ -55,16 +56,18 @@ def _release_ollama(settings: dict) -> None:
         release_ollama_models(settings.get("ollama_base_url", DEFAULT_OLLAMA_URL))
 
 
-# Set while transcription models are loaded. Ask then answers with keyword
-# search only: its models and the transcription models don't fit in 16 GB
-# together.
-transcribing = threading.Event()
+# Set while transcription models are loaded (see p3/model_gate.py). Ask then
+# answers with keyword search only: its models and the transcription models
+# don't fit in 16 GB together.
+transcribing = model_gate.transcribing
 
 
 def _begin_transcription(settings: dict) -> None:
-    """Stop Ask from loading models, then free theirs and Ollama's. The caller
-    clears ``transcribing`` once the transcription models are unloaded."""
-    transcribing.set()
+    """Stop Ask's model calls (waiting for those in flight), then free its
+    reranker and Ollama's models. Call it inside the ``try`` whose
+    ``finally`` calls ``model_gate.resume()``."""
+    if not model_gate.pause_for_transcription():
+        logger.warning("Ask model calls still running as transcription starts")
     from p3.embedder import release_ask_models
 
     release_ask_models()
@@ -435,8 +438,9 @@ def task_transcribe(job_id: str, episode_id: int):
         )
 
         settings = _get_settings()
-        _begin_transcription(settings)
+        transcriber = None
         try:
+            _begin_transcription(settings)
             transcriber = _make_transcriber(db, settings)
 
             db.update_job(job_id, progress=0.2, message=f"Transcribing: {title}")
@@ -445,9 +449,10 @@ def task_transcribe(job_id: str, episode_id: int):
                 success = transcriber.transcribe_episode(episode_id)
             finally:
                 stop_heartbeat()
-            transcriber.unload_models()
         finally:
-            transcribing.clear()
+            if transcriber is not None:
+                transcriber.unload_models()
+            model_gate.resume()
 
         if success:
             db.update_job(
@@ -1132,13 +1137,15 @@ def task_full_pipeline(job_id: str, episode_id: int):
         # Step 1: Transcribe (if needed)
         if episode["status"] == "downloaded":
             db.update_job(job_id, progress=0.1, message="Transcribing...")
-            _begin_transcription(settings)
+            transcriber = None
             try:
+                _begin_transcription(settings)
                 transcriber = _make_transcriber(db, settings)
                 success = transcriber.transcribe_episode(episode_id)
-                transcriber.unload_models()
             finally:
-                transcribing.clear()
+                if transcriber is not None:
+                    transcriber.unload_models()
+                model_gate.resume()
             if not success:
                 db.update_job(job_id, status="failed", error="Transcription failed")
                 return

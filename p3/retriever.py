@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from .chunker import tokenize
 from .database import P3Database
 from .embedder import Embedder, Reranker
+from .model_gate import ModelsPaused, model_use
 
 logger = logging.getLogger(__name__)
 
@@ -62,11 +63,20 @@ def limit_per_episode(
     return kept
 
 
+def clean_title(title: str, limit: int = 200) -> str:
+    """A feed-supplied title on one line, capped: titles go into prompts
+    outside the quoted passages, and any publisher controls them."""
+    return " ".join(str(title or "").split())[:limit]
+
+
 def passage_label(chunk: Dict[str, Any]) -> str:
     """How a passage is introduced to the reranker and the answer model."""
     date = chunk.get("episode_date")
     day = f" ({date:%Y-%m-%d})" if hasattr(date, "strftime") else ""
-    return f"{chunk['podcast_title']}: {chunk['episode_title']}{day}"
+    return (
+        f"{clean_title(chunk['podcast_title'])}: "
+        f"{clean_title(chunk['episode_title'])}{day}"
+    )
 
 
 @dataclass
@@ -141,10 +151,13 @@ class Retriever:
         else:
             t = time.monotonic()
             try:
-                [query_vector] = self.embedder.embed([question])
+                with model_use():
+                    [query_vector] = self.embedder.embed([question])
                 vector = self.db.vector_search(
                     query_vector, self.embedder.model, username, filters, CANDIDATES
                 )
+            except ModelsPaused:
+                result.skipped["vector"] = "models paused"
             except Exception as e:  # Ollama down, model missing
                 logger.warning("Embedding search skipped: %s", e)
                 result.skipped["vector"] = str(e)
@@ -169,13 +182,19 @@ class Retriever:
             t = time.monotonic()
             ids = [i for i, _ in candidates if i in chunks]
             try:
-                scores = self.reranker.score(
-                    question,
-                    [f"{passage_label(chunks[i])}\n{chunks[i]['text']}" for i in ids],
-                )
+                with model_use():
+                    scores = self.reranker.score(
+                        question,
+                        [
+                            f"{passage_label(chunks[i])}\n{chunks[i]['text']}"
+                            for i in ids
+                        ],
+                    )
                 rerank_scores = dict(zip(ids, scores))
                 ranked = sorted(rerank_scores.items(), key=lambda kv: -kv[1])
                 result.stages["reranked"] = ranked
+            except ModelsPaused:
+                result.skipped["rerank"] = "models paused"
             except Exception as e:
                 logger.warning("Reranking skipped: %s", e)
                 result.skipped["rerank"] = str(e)

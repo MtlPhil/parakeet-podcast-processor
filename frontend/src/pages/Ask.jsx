@@ -308,6 +308,8 @@ export default function Ask() {
             });
             if (event.thread_id !== threadId) setParams({ thread: event.thread_id }, { replace: !threadId });
           } else if (event.event === 'error') {
+            // The question and this failure are stored in the thread: stay in it.
+            if (event.thread_id !== threadId) setParams({ thread: event.thread_id }, { replace: !threadId });
             throw new Error(event.detail);
           }
         },
@@ -339,7 +341,8 @@ export default function Ask() {
         <div className="flex items-center justify-between lg:block">
           <button
             onClick={() => { setParams({}); setShowThreads(false); }}
-            className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 lg:w-full"
+            disabled={busy}
+            className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 lg:w-full"
           >
             New question
           </button>
@@ -352,6 +355,7 @@ export default function Ask() {
             <li key={t.id} className="group flex items-center gap-1">
               <button
                 onClick={() => { setParams({ thread: t.id }); setShowThreads(false); }}
+                disabled={busy}
                 className={`flex-1 text-left text-sm truncate px-2 py-1 rounded ${t.id === threadId ? 'bg-gray-200 text-gray-900' : 'text-gray-600 hover:bg-gray-100'}`}
                 title={t.title}
               >

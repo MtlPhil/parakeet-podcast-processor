@@ -177,17 +177,22 @@ export async function askStream(question, threadId, onEvent, signal) {
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let end;
-    while ((end = buffer.indexOf('\n\n')) !== -1) {
-      const block = buffer.slice(0, end);
-      buffer = buffer.slice(end + 2);
-      const data = block.split('\n').find((line) => line.startsWith('data: '));
-      if (data) onEvent(JSON.parse(data.slice(6)));
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let end;
+      while ((end = buffer.indexOf('\n\n')) !== -1) {
+        const block = buffer.slice(0, end);
+        buffer = buffer.slice(end + 2);
+        const data = block.split('\n').find((line) => line.startsWith('data: '));
+        if (data) onEvent(JSON.parse(data.slice(6)));
+      }
     }
+  } finally {
+    // Also when onEvent throws: stop reading so the server sees the close.
+    reader.cancel().catch(() => {});
   }
 }
 export const getAskStatus = () => request('/ask/status');
