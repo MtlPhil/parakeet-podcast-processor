@@ -178,8 +178,25 @@ class Retriever:
             result.timings["total"] = time.monotonic() - started
             return result
 
-        candidates = fused[:RERANK_CANDIDATES]
-        chunks = self.db.get_chunks([i for i, _ in candidates])
+        # The same episode can be in the library twice (republished under a
+        # new link): a passage whose words repeat one kept already is
+        # dropped before reranking, so copies don't take the reranker's slots.
+        pool = fused[: 2 * RERANK_CANDIDATES]
+        chunks = self.db.get_chunks([i for i, _ in pool])
+        seen: set = set()
+        candidates = []
+        for chunk_id, score in pool:
+            if chunk_id not in chunks:
+                continue
+            fingerprint = hashlib.sha1(
+                " ".join(tokenize(chunks[chunk_id]["text"])).encode()
+            ).hexdigest()
+            if fingerprint in seen:
+                continue
+            seen.add(fingerprint)
+            candidates.append((chunk_id, score))
+            if len(candidates) >= RERANK_CANDIDATES:
+                break
         ranked = candidates
         rerank_scores: Dict[int, float] = {}
         if not use_models:
@@ -218,23 +235,9 @@ class Retriever:
                 result.skipped["rerank"] = str(e)
             result.timings["rerank"] = time.monotonic() - t
 
-        # The same episode can be in the library twice (republished under a
-        # new link): a passage whose words repeat one kept already is dropped.
-        seen: set = set()
-        unique = []
-        for chunk_id, score in ranked:
-            if chunk_id not in chunks:
-                continue
-            fingerprint = hashlib.sha1(
-                " ".join(tokenize(chunks[chunk_id]["text"])).encode()
-            ).hexdigest()
-            if fingerprint in seen:
-                continue
-            seen.add(fingerprint)
-            unique.append((chunk_id, score))
         episode_of = {i: c["episode_id"] for i, c in chunks.items()}
         for chunk_id, score in limit_per_episode(
-            unique, episode_of, top_k, per_episode
+            ranked, episode_of, top_k, per_episode
         ):
             passage = dict(chunks[chunk_id])
             passage["score"] = score
@@ -252,14 +255,21 @@ BROAD_PASSAGES_PER_EPISODE = 2
 
 
 def broaden(
-    db: P3Database, retrieval: Retrieval, episodes: int = BROAD_EPISODES
+    db: P3Database,
+    retrieval: Retrieval,
+    episodes: int = BROAD_EPISODES,
+    min_rerank: float = 0.0,
 ) -> Retrieval:
     """Regroup a retrieval by episode for a broad question: the best
     ``episodes`` episodes in order of their best passage, each represented by
-    its summary passage followed by its best passages."""
+    its summary passage followed by its best passages. With reranker scores,
+    episodes whose best passage scores under ``min_rerank`` are left out
+    rather than padding the answer."""
     order: List[int] = []
     best: Dict[int, List[Dict[str, Any]]] = {}
     for p in retrieval.passages:
+        if p.get("rerank_score") is not None and p["rerank_score"] < min_rerank:
+            continue
         if p["episode_id"] not in best:
             order.append(p["episode_id"])
             best[p["episode_id"]] = []

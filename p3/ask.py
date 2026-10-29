@@ -41,7 +41,7 @@ from .writer import _detect_language
 logger = logging.getLogger(__name__)
 
 UNDERSTAND_PROMPT_VERSION = "understand-v3"
-ANSWER_PROMPT_VERSION = "answer-v2"
+ANSWER_PROMPT_VERSION = "answer-v3"
 
 # Below this reranker score (0 to 1) the best passage is taken as unrelated
 # and the question as not covered by the library. To be calibrated on the
@@ -90,14 +90,36 @@ that wasn't given.
 - Use no outside knowledge. If the passages don't answer the question, say \
 plainly that the library doesn't seem to cover it, then mention what the \
 closest passages do discuss.
-- Say who holds a view when the passage shows it (the show, the episode, a \
-guest), and point out when episodes disagree or when a view changed over time.
+- Name the source of every view in the sentence itself: the person when the \
+passage or the episode title names them, otherwise the show, with the \
+episode's date, e.g. "Cathie Wood, on The AI Daily Brief (2026-10-19), \
+says...". Never write "one podcast", "one analyst", "a participant" or \
+"experts".
+- Transcripts don't mark who is speaking. When a passage is a conversation, \
+write "in the conversation with X" rather than putting a line in X's mouth, \
+and keep a host's objection apart from the guest's view.
+- Keep the passage's certainty: "could", "might" and questions stay hedged. \
+Keep exact figures and who or what they apply to. Cite a passage only for \
+what it actually says.
+- Prefer transcript passages. Use an episode summary, topic list or quote \
+only when no transcript passage says the same, and then write "according to \
+the episode summary".
+- Point out when episodes disagree or when a view changed over time. If the \
+passages cover only one side of a comparison, say so instead of filling the \
+other side with whatever that show discussed.
 - Start with a direct answer in one or two sentences, then the supporting \
 details. Be concise: no introduction, no closing summary.
 - Write in {language}.{broad}"""
 
 _LANGUAGE_NAMES = {"en": "English", "fr": "French (Quebec usage)"}
 _REMOTE_PROVIDERS = {"gemini", "openai"}
+# How non-transcript passages are introduced to the answer model.
+_KIND_IN_PROMPT = {
+    "summary": "episode summary (written by an AI, not said in the episode)",
+    "topics": "episode topic list (written by an AI)",
+    "quote": "quote picked from the episode",
+    "notes": "the episode's show notes (from the publisher)",
+}
 
 _BROAD_RULES = """
 - This question is broad: the passages are grouped by episode (each \
@@ -154,7 +176,7 @@ def format_passages(passages: List[Dict[str, Any]]) -> str:
         if p.get("start_s") is not None:
             where += f", {format_time(p['start_s'])}–{format_time(p['end_s'])}"
         elif p["kind"] != "transcript":
-            where += f", episode {p['kind']}"
+            where += f", {_KIND_IN_PROMPT.get(p['kind'], p['kind'])}"
         # The text can't close its fence early: runs of < or > are dropped.
         text = _FENCE_RE.sub("", p["text"])
         blocks.append(f"[{n}] {where}\n<<<\n{text}\n>>>")
@@ -436,6 +458,23 @@ class Asker:
 
     # -- answer step ---------------------------------------------------
 
+    def _scope_of(self, understanding: Understanding) -> Dict[str, Any]:
+        """What was searched, for the line under the answer: the shows and
+        dates the question was read as limited to, and the library's size."""
+        filters = understanding.filters
+        titles = {p["id"]: p["title"] for p in self.db.get_all_podcasts(self.username)}
+        stats = self.db.index_stats(self.username)
+        return {
+            "podcasts": [
+                titles[i] for i in filters.get("podcast_ids", []) if i in titles
+            ],
+            "after": filters.get("after"),
+            "before": filters.get("before"),
+            "inferred": bool(filters),
+            "episodes_indexed": stats["episodes"],
+            "episodes_processed": stats["processed_episodes"],
+        }
+
     def covered(self, retrieval: Retrieval) -> bool:
         if not retrieval.passages:
             return False
@@ -479,7 +518,7 @@ class Asker:
         timings.update({f"retrieve_{k}": v for k, v in retrieval.timings.items()})
         covered = self.covered(retrieval)
         if broad and use_models and covered:
-            retrieval = broaden(self.db, retrieval)
+            retrieval = broaden(self.db, retrieval, min_rerank=self.abstain_threshold)
         passages = fit_passages(retrieval.passages)
         # The stored record lists exactly the passages the model is given.
         retrieval.passages = passages
@@ -557,6 +596,7 @@ class Asker:
             "cited": cited,
             "invalid_citations": invalid,
             "uncited_answer": mode == "answer" and not cited,
+            "scope": self._scope_of(understanding),
             "understanding": {
                 "question": understanding.question,
                 "scope": understanding.scope,
