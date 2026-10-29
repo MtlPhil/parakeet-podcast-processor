@@ -1,5 +1,19 @@
 import { useEffect, useState } from 'react';
-import { cleanupAudio, createUser, getUsers, resetPassword, setUserRole, translateAll } from '../api/client';
+import {
+  addFeedbackToEval,
+  cleanupAudio,
+  createUser,
+  generateAskQuestions,
+  getAskEval,
+  getAskFeedback,
+  getAskStatus,
+  getUsers,
+  indexLibrary,
+  resetPassword,
+  runAskEval,
+  setUserRole,
+  translateAll,
+} from '../api/client';
 import { Field, inputClass, primaryButton } from '../components/Form';
 import { useMe } from '../hooks/useMe';
 
@@ -57,6 +71,122 @@ function AddPerson({ onAdded }) {
         Add person
       </button>
     </form>
+  );
+}
+
+const pct = (x) => (x == null ? '–' : `${Math.round(x * 100)}%`);
+
+// Ask's index, its evaluation runs and the answers people rated.
+function AskQuality() {
+  const [status, setStatus] = useState(null);
+  const [evalInfo, setEvalInfo] = useState(null);
+  const [feedback, setFeedback] = useState([]);
+  const [notice, setNotice] = useState(null);
+  const [error, setError] = useState(null);
+
+  const load = () => {
+    getAskStatus().then(setStatus).catch(() => {});
+    getAskEval().then(setEvalInfo).catch((e) => setError(e.message));
+    getAskFeedback().then(setFeedback).catch(() => {});
+  };
+  useEffect(load, []);
+
+  const run = async (action, message) => {
+    setError(null);
+    try {
+      await action();
+      setNotice(message);
+      load();
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  const index = status?.index;
+  const latest = evalInfo?.results?.[0];
+  return (
+    <section className="mb-8">
+      <h2 className="text-lg font-semibold text-gray-800 mb-1">Ask quality</h2>
+      {index && (
+        <p className="text-sm text-gray-600 mb-3">
+          {index.episodes} of {index.processed_episodes} processed episodes indexed ({index.chunks} passages,{' '}
+          {index.embedded} embedded).
+        </p>
+      )}
+      <div className="flex flex-wrap gap-3 mb-3">
+        <button onClick={() => run(indexLibrary, 'Indexing queued.')} className="px-4 py-2 border text-sm rounded-lg hover:bg-gray-50">
+          Index the library
+        </button>
+        <button
+          onClick={() => run(() => generateAskQuestions(60), 'Question generation queued; review the file it writes in data/eval/.')}
+          title="Writes test questions from random passages with the summarizing LLM. Review them before relying on the scores."
+          className="px-4 py-2 border text-sm rounded-lg hover:bg-gray-50"
+        >
+          Generate test questions
+        </button>
+        <button
+          onClick={() => run(runAskEval, 'Evaluation queued.')}
+          disabled={!evalInfo?.questions}
+          className="px-4 py-2 border text-sm rounded-lg hover:bg-gray-50 disabled:opacity-50"
+        >
+          Evaluate retrieval
+        </button>
+      </div>
+      {evalInfo && (
+        <p className="text-xs text-gray-500 mb-2">
+          Question set: {evalInfo.questions} questions, {evalInfo.scorable} ready to score
+          {evalInfo.needs_review > 0 && `, ${evalInfo.needs_review} to review`}.
+        </p>
+      )}
+      {latest && (
+        <div className="overflow-x-auto mb-4">
+          <table className="text-xs border">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-2 py-1 text-left">Stage ({latest.file})</th>
+                <th className="px-2 py-1">Found in top 12</th>
+                <th className="px-2 py-1">MRR</th>
+              </tr>
+            </thead>
+            <tbody>
+              {['bm25', 'vector', 'fused', 'reranked', 'final'].filter((k) => latest.overall[k]).map((k) => (
+                <tr key={k} className="border-t">
+                  <td className="px-2 py-1">{k}</td>
+                  <td className="px-2 py-1 text-center">{pct(latest.overall[k].recall)}</td>
+                  <td className="px-2 py-1 text-center">{latest.overall[k].mrr.toFixed(2)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="text-xs text-gray-500 mt-1">
+            {latest.questions} questions, median search {latest.latency?.median?.toFixed?.(1)} s.
+          </p>
+        </div>
+      )}
+      {feedback.length > 0 && (
+        <>
+          <h3 className="text-sm font-semibold text-gray-700 mb-2">Rated answers</h3>
+          <ul className="space-y-2">
+            {feedback.map((f) => (
+              <li key={f.id} className="text-sm border rounded p-2">
+                <span className={f.rating > 0 ? 'text-green-700' : 'text-red-700'}>{f.rating > 0 ? '▲' : '▼'}</span>{' '}
+                <span className="font-medium">{f.question}</span>{' '}
+                <span className="text-xs text-gray-500">({f.username})</span>
+                <p className="text-xs text-gray-600 mt-1 line-clamp-2">{f.answer}</p>
+                <button
+                  onClick={() => run(() => addFeedbackToEval(f.id), 'Added to the question set, to review.')}
+                  className="text-xs text-blue-700 hover:underline mt-1"
+                >
+                  Add to the question set
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      {notice && <p className="text-sm text-green-700 mt-3">{notice}</p>}
+      {error && <p className="text-sm text-red-600 mt-3">{error}</p>}
+    </section>
   );
 }
 
@@ -190,6 +320,8 @@ export default function Admin() {
       {authMode === 'local' && users && (
         <AddPerson onAdded={(u) => setUsers((prev) => [...prev, u])} />
       )}
+
+      <AskQuality />
 
       <h2 className="text-lg font-semibold text-gray-800 mb-3">Maintenance</h2>
       <div className="flex flex-wrap gap-3">

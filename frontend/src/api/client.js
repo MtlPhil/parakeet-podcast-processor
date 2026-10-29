@@ -205,6 +205,13 @@ export const rateAskAnswer = (messageId, rating) =>
     body: JSON.stringify({ rating }),
   });
 export const indexLibrary = () => request('/ask/index', { method: 'POST' });
+export const getAskEval = () => request('/ask/eval');
+export const generateAskQuestions = (count = 60) =>
+  request(`/ask/eval/generate?count=${count}`, { method: 'POST' });
+export const runAskEval = () => request('/ask/eval/run', { method: 'POST' });
+export const getAskFeedback = () => request('/ask/feedback');
+export const addFeedbackToEval = (messageId) =>
+  request(`/ask/feedback/${messageId}/to-eval`, { method: 'POST' });
 
 // Daily run
 export const getDailyRun = () => request('/daily-run');
