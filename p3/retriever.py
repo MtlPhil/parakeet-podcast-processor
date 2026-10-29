@@ -28,6 +28,9 @@ RERANK_CANDIDATES = 40
 # a single long episode can't crowd out the rest of the library.
 TOP_K = 12
 MAX_PER_EPISODE = 4
+# Translations of the question are reranked only when the question's own
+# best score is below this.
+ALTERNATE_BELOW = 0.5
 
 
 def reciprocal_rank_fusion(
@@ -131,15 +134,19 @@ class Retriever:
         top_k: int = TOP_K,
         use_models: bool = True,
         per_episode: int = MAX_PER_EPISODE,
+        alternates: Optional[List[str]] = None,
     ) -> Retrieval:
         """Passages for ``question``. ``keywords`` (extra search terms, e.g.
         translations and names from the question step) widen the keyword
-        search. ``use_models=False`` runs keyword search only, loading
-        nothing (used while a transcription runs)."""
+        search. ``alternates`` (the question in other languages) are
+        reranked too, each passage keeping its best score: the reranker
+        scores a French question against English passages poorly.
+        ``use_models=False`` runs keyword search only, loading nothing (used
+        while a transcription runs)."""
         result = Retrieval()
         started = time.monotonic()
 
-        terms = tokenize(" ".join([question, *(keywords or [])]))
+        terms = tokenize(" ".join([question, *(alternates or []), *(keywords or [])]))
         bm25 = self.db.bm25_search(terms, username, filters, CANDIDATES)
         result.stages["bm25"] = bm25
         result.timings["bm25"] = time.monotonic() - started
@@ -183,14 +190,24 @@ class Retriever:
             t = time.monotonic()
             ids = [i for i, _ in candidates if i in chunks]
             try:
+                texts = [
+                    f"{passage_label(chunks[i])}\n{chunks[i]['text']}" for i in ids
+                ]
                 with model_use():
-                    scores = self.reranker.score(
-                        question,
-                        [
-                            f"{passage_label(chunks[i])}\n{chunks[i]['text']}"
-                            for i in ids
-                        ],
-                    )
+                    scores = self.reranker.score(question, texts)
+                    # A translation only helps when the question itself
+                    # found nothing convincing; skip the extra scoring then.
+                    for alternate in (
+                        alternates or []
+                        if max(scores, default=0) < ALTERNATE_BELOW
+                        else []
+                    ):
+                        scores = [
+                            max(a, b)
+                            for a, b in zip(
+                                scores, self.reranker.score(alternate, texts)
+                            )
+                        ]
                 rerank_scores = dict(zip(ids, scores))
                 ranked = sorted(rerank_scores.items(), key=lambda kv: -kv[1])
                 result.stages["reranked"] = ranked
