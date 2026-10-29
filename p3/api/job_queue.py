@@ -68,6 +68,13 @@ class JobRunner:
         with self._cond:
             return len(self._priority) + len(self._normal)
 
+    @property
+    def priority_waiting(self) -> bool:
+        """True when daily-run work is waiting for the current task to end;
+        a long task can check it to stop early and requeue the rest."""
+        with self._cond:
+            return bool(self._priority)
+
     def _next(self) -> _Item:
         with self._cond:
             while not self._priority and not self._normal:
