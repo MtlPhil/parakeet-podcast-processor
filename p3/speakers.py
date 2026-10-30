@@ -3,8 +3,9 @@
     audio -> diarize (pyannote: anonymous turns, SPEAKER_00, SPEAKER_01, ...)
           -> align (each transcript word gets the turn covering it; segments
              are split where the speaker changes)
-          -> name (one LLM call per episode, from show notes and each
-             speaker's first lines; a name must appear in that text)
+          -> name (one LLM call per episode, from the show notes, the
+             opening minutes and a few lines of each speaker; a name must
+             appear in that text)
 
 Diarization runs inside the transcription step, once the transcription
 models are unloaded and while the audio is still on disk (the digest deletes
@@ -31,9 +32,11 @@ DEFAULT_DIARIZATION_MODEL = "pyannote/speaker-diarization-community-1"
 # A turn this short that mostly overlaps another speaker's turn is
 # crosstalk or a blip, not a turn of its own (about 100-250 an episode).
 BLIP_SECONDS = 1.0
-# A run of fewer words than this inside a segment joins its neighbour
-# rather than becoming a segment of its own.
+# A run of fewer words than this, or shorter than this, inside a segment
+# joins its neighbour rather than becoming a segment of its own: word times
+# and turn edges are each off by a few tenths of a second.
 MIN_RUN_WORDS = 2
+MIN_RUN_SECONDS = 0.5
 
 ROLES = ("host", "guest", "ad", "intro", "other")
 # Labels shown for voices without a person's name.
@@ -154,10 +157,15 @@ def _majority(run: List[int], labels: List[Optional[str]]) -> Optional[str]:
     return max(counts, key=lambda s: counts[s])
 
 
-def _runs(labels: List[Optional[str]]) -> List[List[int]]:
-    """Indexes of consecutive equal labels; runs under ``MIN_RUN_WORDS``
-    join the run before them (or after, at the start), and neighbours left
-    with the same speaker become one."""
+def _runs(labels: List[Optional[str]], words: List[Dict[str, Any]]) -> List[List[int]]:
+    """Indexes of consecutive equal labels; short runs (``MIN_RUN_WORDS``,
+    ``MIN_RUN_SECONDS``) join the run before them (or after, at the start),
+    and neighbours left with the same speaker become one."""
+
+    def short(run: List[int]) -> bool:
+        span = words[run[-1]]["end"] - words[run[0]]["start"]
+        return len(run) < MIN_RUN_WORDS or span < MIN_RUN_SECONDS
+
     runs: List[List[int]] = []
     for i, label in enumerate(labels):
         if runs and labels[runs[-1][0]] == label:
@@ -166,9 +174,7 @@ def _runs(labels: List[Optional[str]]) -> List[List[int]]:
             runs.append([i])
     merged: List[List[int]] = []
     for run in runs:
-        if merged and len(run) < MIN_RUN_WORDS:
-            merged[-1].extend(run)
-        elif merged and len(merged[-1]) < MIN_RUN_WORDS:
+        if merged and (short(run) or short(merged[-1])):
             merged[-1].extend(run)
         else:
             merged.append(run)
@@ -206,7 +212,7 @@ def assign_speakers(
             )
             continue
         labels = [_speaker_at(w["start"], w["end"], turns) for w in words]
-        for run in _runs(labels):
+        for run in _runs(labels, words):
             text = "".join(words[i]["text"] for i in run).strip()
             if not text:
                 continue
@@ -225,9 +231,11 @@ def assign_speakers(
 # -- naming ------------------------------------------------------------
 
 _NAME_SYSTEM = """You identify the speakers of a podcast episode. Its \
-transcript was split by voice into anonymous speakers; you get the show \
-notes and each speaker's first lines. Reply with one JSON object and nothing \
-else, with one entry per speaker label:
+transcript was split by voice into anonymous speakers. You get the show \
+notes, the episode's opening minutes as a conversation (where people are \
+introduced; it may start with a teaser of clips from later in the \
+episode), and a few later lines of each speaker. Reply with one JSON object \
+and nothing else, with one entry per speaker label:
 {"SPEAKER_00": {"name": the person's full name, or null, "role": "host", \
 "guest", "ad" (a sponsor read or advertisement), "intro" (the show's \
 jingle or announcer) or "other", "evidence": the words in the text that \
@@ -242,34 +250,61 @@ naming the host or guest when the lines make clear which speaker that is.
 - Never guess a name from the topic or the show's reputation. Unsure: null.
 - The same name can't go to two speakers."""
 
-_LINES_PER_SPEAKER = 8
-_CHARS_PER_SPEAKER = 900
+# Introductions happen in the first minutes, after any teaser.
+OPENING_SECONDS = 360
+_OPENING_CHARS = 6000
+_LINES_PER_SPEAKER = 3
+_LINE_CHARS = 200
+
+
+def _clock(seconds: Optional[float]) -> str:
+    s = int(seconds or 0)
+    return f"{s // 60}:{s % 60:02d}"
 
 
 def speaker_stats(segments: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    """Talk time and first lines of each speaker label, in order of first
-    appearance."""
+    """Talk time of each speaker label, in order of first appearance, with
+    a few of their longer lines from after the opening."""
     stats: Dict[str, Dict[str, Any]] = {}
     for s in segments:
         label = s.get("speaker")
         if not label:
             continue
-        entry = stats.setdefault(label, {"seconds": 0.0, "lines": [], "chars": 0})
+        entry = stats.setdefault(label, {"seconds": 0.0, "lines": []})
         entry["seconds"] += (s.get("timestamp_end") or 0) - (
             s.get("timestamp_start") or 0
         )
         text = " ".join(str(s.get("text") or "").split())
         if (
-            text
+            len(text) > 40
+            and (s.get("timestamp_start") or 0) >= OPENING_SECONDS
             and len(entry["lines"]) < _LINES_PER_SPEAKER
-            and entry["chars"] < _CHARS_PER_SPEAKER
         ):
             entry["lines"].append(
-                f"[{int(s.get('timestamp_start') or 0) // 60}:"
-                f"{int(s.get('timestamp_start') or 0) % 60:02d}] {text[:300]}"
+                f"[{_clock(s.get('timestamp_start'))}] {text[:_LINE_CHARS]}"
             )
-            entry["chars"] += len(text)
     return stats
+
+
+def opening(segments: List[Dict[str, Any]]) -> str:
+    """The first ``OPENING_SECONDS`` as a conversation, one line a turn."""
+    lines: List[str] = []
+    previous = None
+    used = 0
+    for s in segments:
+        if (s.get("timestamp_start") or 0) >= OPENING_SECONDS or used > _OPENING_CHARS:
+            break
+        text = " ".join(str(s.get("text") or "").split())
+        if not text:
+            continue
+        label = s.get("speaker") or "?"
+        if label == previous and lines:
+            lines[-1] += f" {text}"
+        else:
+            lines.append(f"[{_clock(s.get('timestamp_start'))}] {label}: {text}")
+            previous = label
+        used += len(text)
+    return "\n".join(lines)
 
 
 def _fold(text: str) -> str:
@@ -277,7 +312,15 @@ def _fold(text: str) -> str:
     return " ".join("".join(c for c in text if not unicodedata.combining(c)).split())
 
 
-def name_prompt(episode: Dict[str, Any], stats: Dict[str, Dict[str, Any]]) -> str:
+def _fence(text: str) -> str:
+    return f"<<<\n{text.replace('<<<', '').replace('>>>', '')}\n>>>"
+
+
+def name_prompt(
+    episode: Dict[str, Any],
+    segments: List[Dict[str, Any]],
+    stats: Dict[str, Dict[str, Any]],
+) -> str:
     from .chunker import notes_text
     from .retriever import clean_title
 
@@ -285,13 +328,14 @@ def name_prompt(episode: Dict[str, Any], stats: Dict[str, Dict[str, Any]]) -> st
     parts = [
         f"Podcast: {clean_title(episode.get('podcast_title') or '')}",
         f"Episode: {clean_title(episode.get('title') or '')}",
-        f"Show notes:\n<<<\n{notes or '(none)'}\n>>>",
+        f"Show notes:\n{_fence(notes or '(none)')}",
+        f"The opening:\n{_fence(opening(segments))}",
     ]
     for label, entry in stats.items():
-        lines = "\n".join(entry["lines"]).replace("<<<", "").replace(">>>", "")
+        later = "\n".join(entry["lines"]) or "(nothing after the opening)"
         parts.append(
-            f"{label} ({entry['seconds'] / 60:.0f} min of speech), first lines:"
-            f"\n<<<\n{lines}\n>>>"
+            f"{label}: {entry['seconds'] / 60:.0f} min of speech in all. "
+            f"Later lines:\n{_fence(later)}"
         )
     return "\n\n".join(parts)
 
@@ -338,7 +382,7 @@ def name_speakers(db, episode_id: int, llm) -> Dict[str, Dict[str, Any]]:
     names: Dict[str, Dict[str, Optional[str]]] = {}
     if llm is not None and getattr(llm, "is_configured", False):
         episode = db.get_episode_by_id(episode_id) or {}
-        prompt = name_prompt(episode, stats)
+        prompt = name_prompt(episode, segments, stats)
         try:
             reply = llm.chat(_NAME_SYSTEM, prompt, max_tokens=800)
             names = parse_names(reply, list(stats), prompt)

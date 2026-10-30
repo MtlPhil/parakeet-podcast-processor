@@ -115,6 +115,17 @@ class TestAlignment:
             ("A", "so what um do you think")
         ]
 
+    def test_a_fragment_under_half_a_second_joins_its_neighbour(self):
+        # "C'" "est" fall 0.3 s before the turn edge: two words, but too short.
+        words = _words(1.7, "C'", "est", step=0.15) + _words(
+            2.0, "pas", "une", "course"
+        )
+        segment = {"start": 1.7, "end": 3.5, "text": "", "words": words}
+        out = assign_speakers([segment], [_turn(0, 2.0, "A"), _turn(2.0, 9, "B")])
+        assert [(s["speaker"], s["text"]) for s in out] == [
+            ("B", "C' est pas une course")
+        ]
+
     def test_without_words_the_segment_takes_the_main_speaker(self):
         segments = [{"start": 0, "end": 10, "text": "Hello."}]
         turns = [_turn(0, 3, "A"), _turn(3, 10, "B")]
@@ -206,6 +217,35 @@ class TestNaming:
             "SPEAKER_03": "Ad",
             "SPEAKER_00": "Étienne Crevier",
         }
+
+    def test_the_prompt_shows_the_opening_where_introductions_are(self, db):
+        episode = _episode(db)
+        _stored(
+            episode,
+            db,
+            [
+                (0, 5, "B", "Teaser: est-ce trop tard?"),
+                (60, 70, "A", "Étienne Crevier à l'animation."),
+                (70, 75, "A", "Mon invitée, Joëlle Pineau."),
+                (75, 80, "B", "Merci Étienne."),
+                (
+                    400,
+                    460,
+                    "B",
+                    "J'ai passé huit ans chez Meta à diriger la recherche.",
+                ),
+                (900, 905, "A", "Merci."),
+            ],
+        )
+        llm = FakeLLM({})
+        name_speakers(db, episode, llm)
+        prompt = llm.prompts[0]
+        assert (
+            "[1:00] A: Étienne Crevier à l'animation. Mon invitée, Joëlle Pineau.\n"
+            "[1:15] B: Merci Étienne." in prompt
+        )
+        assert "[6:40] J'ai passé huit ans chez Meta" in prompt
+        assert "(nothing after the opening)" in prompt  # A's "Merci." is too short
 
     def test_without_an_llm_speakers_are_numbered_by_talk_time(self, db):
         episode = _episode(db)
