@@ -128,6 +128,24 @@ Two separate problems: **diarization** (when each voice speaks, as anonymous lab
 
 **First step:** run pyannote by hand on those episodes, outside the server and with nothing else loaded, to measure time per hour of audio, peak memory and quality. That decides whether it fits on the 16 GB Mac, or whether sherpa-onnx is needed, before anything is built.
 
+**Measured (2026-10-29, pyannote 4.0.7 `speaker-diarization-community-1`, torch 2.15, separate venv, nothing else loaded):**
+
+| Episode | Length | Device | Time | Speakers with real talk time | Peak memory |
+|---|---|---|---|---|---|
+| RAG Explained (solo) | 12 min | GPU (MPS) | 63 s | 1 (712 s; 3 blips under 0.5 s) | 5.5 GB, free fell to 36% |
+| same | 12 min | CPU | 461 s | same result | 2.3 GB, free unchanged |
+| Joëlle Pineau, Les Dérangeants (fr) | 44 min | GPU | 211 s | 3 (two hosts, guest) + ad, jingle, teaser voices | 5.6 GB, 35% |
+| Zach Hanif, Control on AI (en) | 52 min | GPU | 248 s | 2 (host, guest) | |
+| Gaëtan Namouric, Les Dérangeants (fr) | 89 min | GPU | 428 s | 3 + four small intro voices | 7.3 GB for the 52 + 89 min run, 25% |
+
+- **Speed:** 0.08× real time on the GPU (about 5 minutes per hour of audio), 0.64× on the CPU (about 38). Model load 1–7 s.
+- **Memory:** 5.5 GB on the GPU up to 44 min, 7.3 GB in the process that did 52 then 89 min (not measured separately). It fits only with the transcription models and Ollama unloaded: a queued job of its own, like transcription. The CPU takes 2.3 GB and could run beside other work, at 7× the time.
+- **Quality**, checked by transcribing 2–4 minute windows with Whisper and labelling each sentence with the speaker covering most of it: in both interviews every question and answer in the windows went to the right voice, including the cold open (the host's questions as a montage) and the sponsor read (its own voice). Misses were only at handovers inside one long Whisper sentence (e.g. "Salut, Étienne." given to the host), so align by word timestamps (Parakeet has them), not by segment. About 100–250 turns under 1 s per episode are overlap blips: drop them before aligning.
+- **Naming:** the evidence is in the text: "Étienne Crevier à l'animation", "Dominique Gagnon, bonjour", "Thank you for having me, Ash", the guest named in the intro. Show-level voices (sponsor read, jingle) recur every episode: label them "ad" or "intro" rather than a person.
+- **Setup:** the model is gated on Hugging Face (accept its terms, a read token on the server). The project venv has torch 2.14 (from the reranker); pyannote 4.0.7 was tested with 2.15, so the versions need reconciling, or a separate environment run as a subprocess.
+
+**Decision to make:** GPU in the serial queue between transcription and digest (about 5 min per hour, models unloaded around it) is the recommended route; sherpa-onnx isn't needed.
+
 ## Later, only if the evaluation shows the need
 
 - An LLM-written context line per chunk instead of the episode summary prefix (expensive locally: one call per chunk).
