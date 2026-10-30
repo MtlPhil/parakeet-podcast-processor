@@ -146,6 +146,20 @@ Two separate problems: **diarization** (when each voice speaks, as anonymous lab
 
 **Decision to make:** GPU in the serial queue between transcription and digest (about 5 min per hour, models unloaded around it) is the recommended route; sherpa-onnx isn't needed.
 
+**Built (2026-10-30, night, `speakers` branch from `ask`; not merged):** `p3/speakers.py`.
+- **Where it runs:** inside the transcription step rather than as its own job: after transcribing, the transcription models are unloaded, then pyannote runs on the same audio while Ask is still paused and Ollama still released. No new status, job type or retry path; the audio is certainly still there; word timings needn't be stored. If the `speakers` extra isn't installed, the model can't load, or diarization fails, the transcript is stored without speakers as before. Shared settings `diarization_enabled` (default true when installed) and `diarization_model`.
+- **Align:** both engines now hand over word timings (Whisper's words, Parakeet's tokens, which join back to exactly the sentence text). Each word gets the turn covering most of it; segments are split at speaker changes; pieces under 2 words or 0.5 s join their neighbour; crosstalk blips under 1 s inside another turn are dropped first.
+- **Name:** at the digest step (`TranscriptCleaner._transcript_text`), once per episode, with the digest's LLM: show notes, the first 6 minutes as a labelled conversation (the teaser, then the introductions) and a few later lines of each speaker, ~2,500 tokens. A name is kept only if every word of it appears in that text, and only once. Roles: host, guest, ad, intro, other. Stored in `episode_speakers`; a new transcript clears them.
+- **Use:** the digest and synopsis read the transcript with "Name: " where the speaker changes; Ask passages too, with `chunks.speakers`; citations read "Podcast · Episode · date · Name, 14:32"; the answer prompt (answer-v5) attributes named lines directly, treats "Speaker 1" and unnamed passages as before, and ignores "Ad:" and "Intro:"; Episode Detail shows names over the transcript.
+- **Tested end to end** on a copy of the database with copied audio (the live server untouched): both test episodes transcribed with Whisper and diarized in the transcription step (44 min in 204 s, 52 min in 245 s; free memory no lower than 27%), 8 and 15 segments of 668 and 2,020 left without a speaker. Parakeet's token path was checked on a 60 s clip ("Thank you for having me, Ash." given to the guest); a full Parakeet chunk wasn't run: free memory fell from 76% to 11% within its first chunk and the watchdog stopped it (the live server's own nightly transcriptions do the same; not caused by this change).
+- **Not yet tried with the real model:** naming. gemma4:12b took free memory to 12-13% as soon as it generated (swap was 4.8 of 5.1 GB used, with the usual apps open), so the watchdog stopped both attempts; nothing was written. The naming prompt was checked by hand instead and holds the introductions on both episodes. Covered by tests with a stand-in model.
+
+**Still to do for speakers:**
+- Try naming with the real model, e.g. with fewer apps open, or with Gemini if sending the first minutes of a transcript there is acceptable.
+- Merge after `ask` is merged, then `pip install -e ".[speakers]"` on the server (torch is already 2.15) and the Hugging Face login it already has.
+- Episodes processed before have no audio left: no speakers unless their audio is downloaded again (not built).
+- "What did X say" as a search filter; editing a name on Episode Detail; host voice fingerprints kept per podcast.
+
 ## Later, only if the evaluation shows the need
 
 - An LLM-written context line per chunk instead of the episode summary prefix (expensive locally: one call per chunk).
