@@ -45,8 +45,8 @@ from .writer import _detect_language
 
 logger = logging.getLogger(__name__)
 
-UNDERSTAND_PROMPT_VERSION = "understand-v3"
-ANSWER_PROMPT_VERSION = "answer-v3"
+UNDERSTAND_PROMPT_VERSION = "understand-v4"
+ANSWER_PROMPT_VERSION = "answer-v4"
 
 # Below this reranker score (0 to 1) the best passage is taken as unrelated
 # and the question as not covered by the library. To be calibrated on the
@@ -76,6 +76,9 @@ overview, a comparison between shows or guests, a trend over time, or a \
 count ("how often", "which episodes"),
   "keywords": 3 to 10 search terms: the key names and concepts, each in both \
 English and French when they differ, plus common spellings of names,
+  "mentions": for a "how often", "how many" or "which episodes" question, \
+the name or term whose mentions to count, as its spellings and translations \
+(e.g. ["Nvidia", "NVDA"]), else [],
   "podcasts": names of podcasts the question limits itself to, or [],
   "after": "YYYY-MM-DD" when the question limits itself to after a date, else null,
   "before": "YYYY-MM-DD" when it limits itself to before a date, else null
@@ -132,6 +135,16 @@ episode's summary, then its most relevant passages). Organize the answer by \
 theme or by show rather than episode by episode, give each episode's date \
 when it matters, and for "how often" or "which episodes" questions list the \
 episodes found and say the list covers only what the search found."""
+
+_COUNT_RULES = """
+- An episode count comes before the passages: every episode whose \
+transcript mentions the words searched for. Take numbers and lists of \
+episodes from it, not from the passages, and say it counts episodes that \
+mention those words. Cite passages only for what was said."""
+
+# Episodes listed in the answer prompt's count; the page shows more.
+COUNT_PROMPT_EPISODES = 30
+COUNT_PAGE_EPISODES = 100
 
 _NOT_COVERED = {
     "en": "Your library doesn't seem to cover this.",
@@ -205,6 +218,26 @@ def format_passages(passages: List[Dict[str, Any]]) -> str:
         text = _FENCE_RE.sub("", p.get("prompt_text") or p["text"])
         blocks.append(f"[{n}] {where}\n<<<\n{text}\n>>>")
     return "\n\n".join(blocks)
+
+
+def format_mentions(mentions: Dict[str, Any]) -> str:
+    """The episode count block of the answer prompt, fenced like a passage:
+    episode titles come from the feeds."""
+    episodes = mentions["list"]
+    lines = [
+        f"- {e['date'] or 'undated'}, {clean_title(e['podcast_title'], 80)}: "
+        f"{clean_title(e['episode_title'], 120)} ({e['passages']} passages)"
+        for e in episodes[:COUNT_PROMPT_EPISODES]
+    ]
+    if mentions["episodes"] > len(lines):
+        lines.append(f"- and {mentions['episodes'] - len(lines)} more")
+    terms = ", ".join(clean_title(t, 60) for t in mentions["terms"])
+    body = _FENCE_RE.sub("", "\n".join(lines))
+    return (
+        f"Episode count: {mentions['episodes']} episodes of the library mention "
+        f"{terms} ({mentions['passages']} transcript passages), newest first\n"
+        f"<<<\n{body}\n>>>"
+    )
 
 
 def estimate_tokens(text: str) -> int:
@@ -339,6 +372,8 @@ class Understanding:
     language: str
     scope: str = "lookup"
     keywords: List[str] = field(default_factory=list)
+    # For a counting question: the spellings of what to count mentions of.
+    mentions: List[str] = field(default_factory=list)
     # The question in the other language: the library mixes English and
     # French, and the reranker scores across languages poorly.
     translation: Optional[str] = None
@@ -470,6 +505,9 @@ class Asker:
             return fallback
         if not isinstance(data, dict):
             return fallback
+        mentions = data.get("mentions")
+        if not isinstance(mentions, list):
+            mentions = []  # a lone string would be counted letter by letter
         result = Understanding(
             question=str(data.get("question") or question).strip() or question,
             language=(
@@ -482,6 +520,7 @@ class Asker:
             keywords=[str(k) for k in data.get("keywords") or [] if str(k).strip()][
                 :12
             ],
+            mentions=[str(m).strip() for m in mentions if str(m).strip()][:8],
             raw=data,
         )
         result.filters = self._filters(data)
@@ -609,6 +648,40 @@ class Asker:
         finally:
             logger.debug("Support check took %.1fs", time.monotonic() - t)
 
+    def count_mentions(self, understanding: Understanding) -> Optional[Dict[str, Any]]:
+        """The episodes whose transcript mentions what a counting question
+        counts, within its filters; None when it counts nothing. Never fails
+        the answer."""
+        terms = [t for t in understanding.mentions if tokenize(t)]
+        if not terms:
+            return None
+        try:
+            rows = self.db.mention_counts(
+                [tokenize(t) for t in terms], self.username, understanding.filters
+            )
+        except Exception:
+            logger.exception("Counting mentions of %s failed", terms)
+            return None
+        return {
+            "terms": terms,
+            "episodes": len(rows),
+            "passages": sum(r["passages"] for r in rows),
+            "list": [
+                {
+                    "episode_id": r["episode_id"],
+                    "podcast_title": r["podcast_title"],
+                    "episode_title": r["episode_title"],
+                    "date": (
+                        r["episode_date"].strftime("%Y-%m-%d")
+                        if hasattr(r["episode_date"], "strftime")
+                        else None
+                    ),
+                    "passages": r["passages"],
+                }
+                for r in rows[:COUNT_PAGE_EPISODES]
+            ],
+        }
+
     def covered(self, retrieval: Retrieval) -> bool:
         if not retrieval.passages:
             return False
@@ -651,17 +724,26 @@ class Asker:
         use_models = use_models and models_allowed()
 
         yield {"event": "status", "stage": "searching"}
-        broad = understanding.scope == "broad"
+        broad = understanding.scope == "broad" or bool(understanding.mentions)
         # A broad question needs more episodes than a lookup, fewer per episode.
         top_k, per_episode = (30, 3) if broad else (TOP_K, MAX_PER_EPISODE)
         retrieval = self._retrieve(
             understanding, use_models, top_k=top_k, per_episode=per_episode
         )
         timings.update({f"retrieve_{k}": v for k, v in retrieval.timings.items()})
-        covered = self.covered(retrieval)
+        # Counted with the filters the search kept (see _retrieve).
+        mentions = self.count_mentions(understanding)
+        count_block = format_mentions(mentions) if mentions else ""
+        # Episodes that mention it answer a count even when no passage
+        # convinces the reranker.
+        covered = self.covered(retrieval) or bool(mentions and mentions["episodes"])
         if broad and use_models and covered:
             retrieval = broaden(self.db, retrieval, min_rerank=self.abstain_threshold)
-        passages = fit_passages(retrieval.passages)
+        passages = fit_passages(
+            retrieval.passages,
+            PASSAGES_BUDGET_TOKENS
+            - (estimate_tokens(count_block) if count_block else 0),
+        )
         # The stored record lists exactly the passages the model is given.
         retrieval.passages = passages
 
@@ -697,11 +779,15 @@ class Asker:
             t = time.monotonic()
             system = _ANSWER_SYSTEM.replace(
                 "{language}", _LANGUAGE_NAMES[language]
-            ).replace("{broad}", _BROAD_RULES if broad else "")
+            ).replace(
+                "{broad}",
+                (_BROAD_RULES if broad else "") + (_COUNT_RULES if count_block else ""),
+            )
             user = (
                 f"Today is {date.today().isoformat()}.\n"
                 f"Question: {understanding.question}\n\n"
-                f"Passages:\n\n{format_passages(passages)}"
+                + (f"{count_block}\n\n" if count_block else "")
+                + f"Passages:\n\n{format_passages(passages)}"
             )
             parts: List[str] = []
             try:
@@ -746,12 +832,13 @@ class Asker:
             "cited": cited,
             "invalid_citations": invalid,
             "weak_citations": weak,
-            "uncited_answer": mode == "answer" and not cited,
-            "scope": self._scope_of(understanding),
+            "uncited_answer": mode == "answer" and not cited and bool(passages),
+            "scope": {**self._scope_of(understanding), "mentions": mentions},
             "understanding": {
                 "question": understanding.question,
                 "scope": understanding.scope,
                 "keywords": understanding.keywords,
+                "mentions": understanding.mentions,
                 "filters": understanding.filters,
             },
             "retrieval": retrieval.summary(),

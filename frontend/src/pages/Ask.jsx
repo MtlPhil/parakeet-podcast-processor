@@ -231,6 +231,33 @@ function ScopeLine({ scope }) {
   );
 }
 
+// Every episode whose transcript mentions what a counting question counts,
+// not just the ones the answer's passages come from.
+function MentionList({ mentions }) {
+  if (!mentions) return null;
+  const terms = mentions.terms.join(', ');
+  const shown = mentions.list.length;
+  return (
+    <details className="text-xs text-gray-600 mt-3">
+      <summary className="cursor-pointer">
+        {mentions.episodes === 1 ? '1 episode mentions' : `${mentions.episodes} episodes mention`} {terms} (
+        {mentions.passages} transcript {mentions.passages === 1 ? 'passage' : 'passages'})
+      </summary>
+      <ul className="mt-2 space-y-1">
+        {mentions.list.map((e) => (
+          <li key={e.episode_id}>
+            <Link to={`/episodes/${e.episode_id}`} className="hover:underline">
+              {e.date || 'undated'} · {e.podcast_title}: {e.episode_title}
+            </Link>{' '}
+            <span className="text-gray-400">({e.passages})</span>
+          </li>
+        ))}
+      </ul>
+      {mentions.episodes > shown && <p className="mt-1 text-gray-400">and {mentions.episodes - shown} more</p>}
+    </details>
+  );
+}
+
 const NOTICES = {
   paused: 'An episode is being transcribed: these are keyword matches only.',
   low_memory: 'Not enough free memory for the answer model: these are the passages found.',
@@ -279,6 +306,7 @@ function AssistantMessage({ message, question }) {
       )}
       <Sources sources={message.sources} mode={message.mode} />
       <ScopeLine scope={message.scope} />
+      <MentionList mentions={message.scope?.mentions} />
       {message.id && (
         <div className="flex items-center gap-3 mt-3 text-xs text-gray-500">
           <button onClick={() => rate(1)} className={rating === 1 ? 'text-green-700 font-semibold' : 'hover:text-gray-800'} aria-label="Helpful">

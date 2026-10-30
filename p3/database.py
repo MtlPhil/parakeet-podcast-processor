@@ -1875,6 +1875,55 @@ class P3Database:
         ).fetchall()
         return [(r[0], float(r[1])) for r in rows]
 
+    def mention_counts(
+        self,
+        variants: List[List[str]],
+        username: Optional[str],
+        filters: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Every episode of the user's library whose transcript mentions any
+        of ``variants`` (each a list of tokenized words, all of which must be
+        in the same passage), with how many of its transcript passages do,
+        newest first. For "how often" and "which episodes" questions, which
+        the top passages can't answer."""
+        pairs = [(i, t) for i, words in enumerate(variants) for t in set(words)]
+        if not pairs:
+            return []
+        scope, params = self._chunk_scope(
+            username, {**(filters or {}), "kinds": ["transcript"]}
+        )
+        cursor = self.conn.execute(
+            f"""
+            WITH v AS (
+                SELECT unnest(?::INTEGER[]) AS vid, unnest(?::VARCHAR[]) AS term
+            ),
+            need AS (SELECT vid, COUNT(*) AS n FROM v GROUP BY vid),
+            lib AS (SELECT c.id, c.episode_id FROM chunks c {scope}),
+            hits AS (
+                SELECT t.chunk_id, v.vid, COUNT(DISTINCT v.term) AS got
+                FROM chunk_terms t
+                JOIN v ON v.term = t.term
+                JOIN lib l ON l.id = t.chunk_id
+                GROUP BY 1, 2
+            ),
+            matched AS (
+                SELECT DISTINCT h.chunk_id FROM hits h
+                JOIN need ON need.vid = h.vid WHERE h.got = need.n
+            )
+            SELECT l.episode_id, COUNT(*) AS passages,
+                   e.title AS episode_title, e.date AS episode_date,
+                   e.podcast_id, p.title AS podcast_title
+            FROM matched m
+            JOIN lib l ON l.id = m.chunk_id
+            JOIN episodes e ON e.id = l.episode_id
+            JOIN podcasts p ON p.id = e.podcast_id
+            GROUP BY l.episode_id, e.title, e.date, e.podcast_id, p.title
+            ORDER BY e.date DESC NULLS LAST, l.episode_id DESC
+        """,
+            [[i for i, _ in pairs], [t for _, t in pairs], *params],
+        )
+        return self._fetchall_as_dicts(cursor)
+
     def vector_search(
         self,
         vector: List[float],

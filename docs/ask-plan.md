@@ -148,6 +148,8 @@ Change one thing at a time against the evaluation: chunk length (45/60/90 s), nu
 
 - 00:55: a final guarded verification run (3 questions, reranker released before each answer) was killed by its watchdog when free memory fell to **1%** as gemma4:12b loaded beside the Ask models (it started at 80% free). No harm done; the P3 server kept running. The new prompt rules are therefore **not yet verified on a real broad answer**. Ask now refuses to load a local answer model unless free memory exceeds its size plus 5.5 GB (`room_for_ollama_model`; floor `ask_min_free_memory`, default 25%), and returns the passages instead.
 
+- 2026-10-29, evening: **counting questions.** The question step names what a "how often", "how many" or "which episodes" question counts (`mentions`, with spellings and translations); `P3Database.mention_counts` finds every episode of the user's library, within the filters, whose transcript has a passage with all the words of one of them. The answer model gets that count and list (30 episodes, fenced) before the passages and takes numbers from it; the page shows the full list (up to 100) under the answer. A count with matches is answered even when no passage passes the abstain threshold. Not yet tried on the live library. Also fixed the scheduler test that failed between 23:45 and 04:00 (it read the real clock).
+
 ## Trying it (morning of 2026-10-29)
 
 1. Stop the server. `git switch ask`, then `pip install -e ".[web,ask]"` (sentence-transformers is already in the venv) and `cd frontend && npm run build`.
@@ -161,9 +163,8 @@ Change one thing at a time against the evaluation: chunk length (45/60/90 s), nu
 
 - **Decide local vs Gemini for answers**, from the measurements above, or try a smaller local answer model. Then check the new attribution rules on a broad question (the run meant to verify them was stopped by the memory watchdog).
 - **Speakers** (professional addition 1): diarization and speaker names, so citations say who said it. The biggest remaining trust gap: the review found host lines credited to guests.
-- **Counting and "which episodes" questions** from the database instead of the top passages (broad answers stop at 8 episodes).
-- **A support check** that marks citations the passage doesn't back (the review found about 6 in 20 overstated before the prompt changes; measure again with `python -m p3.eval_ask answers`).
+- **Counting by concept** rather than by word: the episode count matches the words the question step names (and their spellings and translations), so an episode that discusses the idea in other words isn't counted. Check the count on real questions once answers run.
+- **The support check** flags only clear mismatches (1 citation in 80 on the night's answers); measure subtler overstatement with `python -m p3.eval_ask answers`.
 - **Tools** for the model (addition 3, beyond the broad-question routing done).
 - Lower rank for cold opens and ad reads; touch-friendly citation popovers; flagging a single citation.
 - Answers run on daemon threads: a server restart mid-answer leaves the question without a reply (rare; the next question works).
-- `tests/test_scheduler.py::TestRetries::test_run_that_read_no_feed_is_retried_later_without_email` fails on `main` too, between about 23:45 and 04:00: it depends on the time of day.
