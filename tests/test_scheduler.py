@@ -377,11 +377,20 @@ class TestRetries:
     ):
         from p3 import mailer
 
+        # Noon, so the run time (04:00) has passed and the retry is today.
+        noon = datetime.now().replace(hour=12, minute=0, second=0, microsecond=0)
+
+        class _Noon(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return noon
+
+        monkeypatch.setattr(tasks, "datetime", _Noon)
         db, enqueued = env
         sent = []
         monkeypatch.setattr(mailer, "send_email", lambda *a: sent.append(a))
         ann = _user(db, "ann", daily_run_email=True, email="a@b.c")
-        today = datetime.now().date().isoformat()
+        today = noon.date().isoformat()
         db.set_state(run_key("last_date", ann), today)
         db.set_state(run_key("attempts", ann), f"{today}:1")
         self._failed_fetch_run(db, ann, "run-1")
@@ -390,11 +399,11 @@ class TestRetries:
 
         assert sent == []
         retry_at = datetime.fromisoformat(db.get_state(run_key("retry_at", ann)))
-        assert 14 <= (retry_at - datetime.now()).total_seconds() / 60 <= 15
+        assert (retry_at - noon).total_seconds() / 60 == 15
 
         # Not yet due: nothing starts. Due: a new run starts, attempt 2.
         enqueued.clear()
-        assert run_if_due(datetime.now()) == []
+        assert run_if_due(noon) == []
         assert run_if_due(retry_at) == ["ann"]
         assert db.get_state(run_key("attempts", ann)) == f"{today}:2"
         assert db.get_state(run_key("retry_at", ann)) == ""
