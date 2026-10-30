@@ -489,6 +489,20 @@ class TranscriptCleaner:
 
         return text
 
+    def _transcript_text(self, episode_id: int, name_speakers: bool = False) -> str:
+        """The transcript, a segment a line, with "Name: " where the speaker
+        changes when it was diarized. ``name_speakers`` names the speakers
+        first (one LLM call) if they haven't been yet."""
+        from .speakers import display_names
+        from .speakers import name_speakers as name
+        from .speakers import speaker_text
+
+        segments = self.db.get_transcripts_for_episode(episode_id)
+        speakers = self.db.get_episode_speakers(episode_id)
+        if name_speakers and not speakers and any(s.get("speaker") for s in segments):
+            speakers = name(self.db, episode_id, self.llm)
+        return speaker_text(segments, display_names(speakers))
+
     def generate_summary(self, episode_id: int) -> Optional[Dict[str, Any]]:
         """Generate and store the digest for one episode.
 
@@ -496,8 +510,7 @@ class TranscriptCleaner:
         and companies. The long-form synopsis is generated separately on
         demand (see generate_synopsis) to keep the pipeline step fast.
         """
-        segments = self.db.get_transcripts_for_episode(episode_id)
-        full_text = "\n".join(segment["text"] for segment in segments)
+        full_text = self._transcript_text(episode_id, name_speakers=True)
 
         if not full_text.strip():
             return None
@@ -548,8 +561,7 @@ class TranscriptCleaner:
 
         All or nothing: if a section or the translation fails, nothing is
         stored and RuntimeError says what failed."""
-        segments = self.db.get_transcripts_for_episode(episode_id)
-        full_text = "\n".join(segment["text"] for segment in segments)
+        full_text = self._transcript_text(episode_id)
 
         if not full_text.strip():
             return None

@@ -7,6 +7,7 @@ from typing import Callable, Dict, List, Optional
 from .chunker import build_chunks
 from .database import P3Database
 from .embedder import Embedder
+from .speakers import display_names
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,8 @@ def index_episode(db: P3Database, episode_id: int, embedder: Optional[Embedder])
         raise ValueError(f"Episode {episode_id} not found")
     segments = db.get_transcripts_for_episode(episode_id)
     summary = db.get_summary_by_episode(episode_id)
-    chunks = build_chunks(episode, segments, summary)
+    names = display_names(db.get_episode_speakers(episode_id))
+    chunks = build_chunks(episode, segments, summary, names)
     embeddings: Optional[List[List[float]]] = None
     if embedder is not None and chunks:
         embeddings = embedder.embed([embedding_text(c) for c in chunks])

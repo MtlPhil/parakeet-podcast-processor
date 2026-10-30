@@ -28,6 +28,7 @@ from .llm import (
     release_ollama_models,
     resolve_provider_and_model,
 )
+from .speakers import DEFAULT_DIARIZATION_MODEL, DIARIZATION_AVAILABLE, Diarizer
 from .transcriber import (
     DEFAULT_PARAKEET_MODEL,
     DEFAULT_WHISPER_MODEL,
@@ -232,10 +233,15 @@ def transcribe(ctx, model, episode_id):
         parakeet_model=settings.get("parakeet_model", DEFAULT_PARAKEET_MODEL),
         parakeet_languages=settings.get("parakeet_languages"),
     )
+    diarizer = (
+        Diarizer(settings.get("diarization_model") or DEFAULT_DIARIZATION_MODEL)
+        if DIARIZATION_AVAILABLE and settings.get("diarization_enabled", True)
+        else None
+    )
 
     if episode_id:
         console.print(f"[blue]Transcribing episode {episode_id}...[/blue]")
-        success = transcriber.transcribe_episode(episode_id)
+        success = transcriber.transcribe_episode(episode_id, diarizer)
         if success:
             console.print(f"[green]Episode {episode_id} transcribed[/green]")
         else:
@@ -250,7 +256,7 @@ def transcribe(ctx, model, episode_id):
 
         transcribed = 0
         for episode in track(episodes, description="Transcribing..."):
-            if transcriber.transcribe_episode(episode["id"]):
+            if transcriber.transcribe_episode(episode["id"], diarizer):
                 transcribed += 1
 
         console.print(f"[green]Transcribed {transcribed} episodes[/green]")

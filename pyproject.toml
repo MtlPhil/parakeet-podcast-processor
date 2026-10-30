@@ -35,6 +35,11 @@ web = [
 ask = [
     "sentence-transformers>=3.0",
 ]
+# Speaker identification (diarization); pulls in PyTorch. The model is
+# gated: accept its terms on Hugging Face and log in (hf auth login).
+speakers = [
+    "pyannote.audio>=4.0",
+]
 dev = [
     "pytest>=7.0.0",
     "black>=23.0.0",
@@ -63,5 +68,5 @@ plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
 # Third-party packages without type information.
-module = ["feedparser", "mlx_whisper", "mlx_whisper.*", "parakeet_mlx", "mlx.*", "yt_dlp", "yt_dlp.*"]
+module = ["feedparser", "mlx_whisper", "mlx_whisper.*", "parakeet_mlx", "mlx.*", "yt_dlp", "yt_dlp.*", "torchaudio", "pyannote.*"]
 ignore_missing_imports = true

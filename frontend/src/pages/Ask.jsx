@@ -42,12 +42,23 @@ const sourceLink = (s) => {
   return AI_WRITTEN.has(s.kind) ? `/episodes/${s.episode_id}?tab=summary` : `/episodes/${s.episode_id}`;
 };
 
+// Who speaks in a transcript passage, most talk first, without ads and
+// the show's intro.
+const passageSpeakers = (s) =>
+  (s.speakers || '')
+    .split(', ')
+    .filter((name) => name && name !== 'Ad' && name !== 'Intro')
+    .slice(0, 2)
+    .join(' and ');
+
 const sourceLine = (s) =>
   [
     s.podcast_title,
     s.episode_title,
     s.date ? s.date.slice(0, 10) : null,
-    s.start_s != null ? formatTime(s.start_s) : KIND_LABELS[s.kind],
+    s.start_s != null
+      ? [passageSpeakers(s), formatTime(s.start_s)].filter(Boolean).join(', ')
+      : KIND_LABELS[s.kind],
   ]
     .filter(Boolean)
     .join(' · ');

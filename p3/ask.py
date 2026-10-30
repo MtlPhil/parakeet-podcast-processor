@@ -46,7 +46,7 @@ from .writer import _detect_language
 logger = logging.getLogger(__name__)
 
 UNDERSTAND_PROMPT_VERSION = "understand-v4"
-ANSWER_PROMPT_VERSION = "answer-v4"
+ANSWER_PROMPT_VERSION = "answer-v5"
 
 # Below this reranker score (0 to 1) the best passage is taken as unrelated
 # and the question as not covered by the library. To be calibrated on the
@@ -103,9 +103,14 @@ passage or the episode title names them, otherwise the show, with the \
 episode's date, e.g. "Cathie Wood, on The AI Daily Brief (2026-10-19), \
 says...". Never write "one podcast", "one analyst", "a participant" or \
 "experts".
-- Transcripts don't mark who is speaking. When a passage is a conversation, \
-write "in the conversation with X" rather than putting a line in X's mouth, \
-and keep a host's objection apart from the guest's view.
+- In a transcript passage, "Name:" starts what that person says, until the \
+next name. The speakers were told apart by voice and named from the \
+episode's introductions, so attribute a line to that person. "Speaker 1", \
+"Speaker 2" are voices nobody named: write "in the conversation with X" \
+rather than putting the line in X's mouth. "Ad:" and "Intro:" are \
+advertising and the show's opening: never use them as anyone's view. A \
+passage without names doesn't say who is speaking: then too write "in the \
+conversation with X". Keep a host's objection apart from the guest's view.
 - Keep the passage's certainty: "could", "might" and questions stay hedged. \
 Keep exact figures and who or what they apply to. Cite a passage only for \
 what it actually says.
@@ -359,6 +364,7 @@ def source_of(n: int, passage: Dict[str, Any], cited: bool) -> Dict[str, Any]:
         "kind": passage["kind"],
         "start_s": passage.get("start_s"),
         "end_s": passage.get("end_s"),
+        "speakers": passage.get("speakers"),
         "text": passage["text"],
         "score": passage.get("score"),
         "rerank_score": passage.get("rerank_score"),

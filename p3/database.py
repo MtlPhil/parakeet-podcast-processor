@@ -346,6 +346,23 @@ class P3Database:
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_chunk_terms_term ON chunk_terms(term)"
         )
+        # The names of the people speaking in a transcript passage, most
+        # talk first (see p3/speakers.py).
+        self.conn.execute(
+            "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS speakers VARCHAR"
+        )
+        # Who each anonymous speaker label of a transcript is (see
+        # p3/speakers.py). Written with the episode's speakers, deleted with it.
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS episode_speakers (
+                episode_id INTEGER NOT NULL,
+                label VARCHAR NOT NULL,
+                name VARCHAR,
+                role VARCHAR,
+                seconds DOUBLE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         # Ask conversations. Messages keep what produced them (passages and
         # scores, timings, model and prompt versions) so any answer can be
         # explained and reproduced.
@@ -622,6 +639,10 @@ class P3Database:
         updated) is idempotent rather than duplicating every segment.
         """
         self.conn.execute("DELETE FROM transcripts WHERE episode_id = ?", (episode_id,))
+        # A new transcript's speaker labels needn't mean the same people.
+        self.conn.execute(
+            "DELETE FROM episode_speakers WHERE episode_id = ?", (episode_id,)
+        )
         for segment in segments:
             self.conn.execute(
                 """
@@ -637,6 +658,36 @@ class P3Database:
                     segment.get("confidence"),
                 ),
             )
+
+    def replace_episode_speakers(
+        self, episode_id: int, speakers: Dict[str, Dict[str, Any]]
+    ):
+        """Replace who an episode's speaker labels are: {label: {name, role,
+        seconds}} (see p3/speakers.py)."""
+        self.conn.execute(
+            "DELETE FROM episode_speakers WHERE episode_id = ?", (episode_id,)
+        )
+        if speakers:
+            self.conn.executemany(
+                "INSERT INTO episode_speakers (episode_id, label, name, role, "
+                "seconds) VALUES (?, ?, ?, ?, ?)",
+                [
+                    (episode_id, label, s.get("name"), s.get("role"), s.get("seconds"))
+                    for label, s in speakers.items()
+                ],
+            )
+
+    def get_episode_speakers(self, episode_id: int) -> Dict[str, Dict[str, Any]]:
+        """{label: {name, role, seconds}} for an episode; {} if not named."""
+        cursor = self.conn.execute(
+            "SELECT label, name, role, seconds FROM episode_speakers "
+            "WHERE episode_id = ? ORDER BY seconds DESC, label",
+            (episode_id,),
+        )
+        return {
+            row["label"]: {k: row[k] for k in ("name", "role", "seconds")}
+            for row in self._fetchall_as_dicts(cursor)
+        }
 
     def get_transcripts_for_episode(self, episode_id: int) -> List[Dict[str, Any]]:
         """Get all transcript segments for an episode."""
@@ -1450,7 +1501,14 @@ class P3Database:
         same transaction, so the episode row couldn't go.)"""
         self.remove_audio(episode_id)
         with self._chunk_lock:
-            for table in ("transcripts", "summaries", "jobs", "chunk_terms", "chunks"):
+            for table in (
+                "transcripts",
+                "summaries",
+                "jobs",
+                "chunk_terms",
+                "chunks",
+                "episode_speakers",
+            ):
                 self.conn.execute(
                     f"DELETE FROM {table} WHERE episode_id = ?", (episode_id,)
                 )
@@ -1725,12 +1783,13 @@ class P3Database:
                     sum(counts.values()),
                     embeddings[i] if embeddings else None,
                     embed_model if embeddings else None,
+                    chunk.get("speakers"),
                 )
             )
         self.conn.executemany(
             "INSERT INTO chunks (id, episode_id, seq, kind, start_s, end_s, "
-            "text, prefix, language, n_terms, embedding, embed_model) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "text, prefix, language, n_terms, embedding, embed_model, speakers) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             rows,
         )
         if term_rows[0]:
@@ -1953,7 +2012,8 @@ class P3Database:
         cursor = self.conn.execute(
             """
             SELECT c.id, c.episode_id, c.seq, c.kind, c.start_s, c.end_s, c.text,
-                   c.language, e.title AS episode_title, e.date AS episode_date,
+                   c.language, c.speakers, e.title AS episode_title,
+                   e.date AS episode_date,
                    e.podcast_id, p.title AS podcast_title
             FROM chunks c
             JOIN episodes e ON e.id = c.episode_id

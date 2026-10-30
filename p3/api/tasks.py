@@ -50,6 +50,16 @@ def _make_transcriber(db, settings: dict):
     )
 
 
+def _make_diarizer(settings: dict):
+    """A speakers.Diarizer, or None when the ``speakers`` extra isn't
+    installed or an admin turned diarization off."""
+    from p3.speakers import DEFAULT_DIARIZATION_MODEL, DIARIZATION_AVAILABLE, Diarizer
+
+    if not DIARIZATION_AVAILABLE or not settings.get("diarization_enabled", True):
+        return None
+    return Diarizer(settings.get("diarization_model") or DEFAULT_DIARIZATION_MODEL)
+
+
 def _release_ollama(settings: dict) -> None:
     """Free Ollama's memory before transcription models load, unless an admin
     turned it off."""
@@ -447,7 +457,9 @@ def task_transcribe(job_id: str, episode_id: int):
             db.update_job(job_id, progress=0.2, message=f"Transcribing: {title}")
             stop_heartbeat = _start_heartbeat(db, job_id, f"Transcribing: {title}")
             try:
-                success = transcriber.transcribe_episode(episode_id)
+                success = transcriber.transcribe_episode(
+                    episode_id, _make_diarizer(settings)
+                )
             finally:
                 stop_heartbeat()
         finally:
@@ -1234,7 +1246,9 @@ def task_full_pipeline(job_id: str, episode_id: int):
             try:
                 _begin_transcription(settings)
                 transcriber = _make_transcriber(db, settings)
-                success = transcriber.transcribe_episode(episode_id)
+                success = transcriber.transcribe_episode(
+                    episode_id, _make_diarizer(settings)
+                )
             finally:
                 if transcriber is not None:
                     transcriber.unload_models()

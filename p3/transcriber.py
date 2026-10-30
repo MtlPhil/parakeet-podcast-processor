@@ -173,6 +173,11 @@ class AudioTranscriber:
                         "text": segment.get("text", "").strip(),
                         "speaker": None,
                         "confidence": confidence,
+                        # For speaker alignment (p3/speakers.py); not stored.
+                        "words": [
+                            {"start": w["start"], "end": w["end"], "text": w["word"]}
+                            for w in segment.get("words") or []
+                        ],
                     }
                 )
 
@@ -244,8 +249,18 @@ class AudioTranscriber:
                                 "start": offset + sentence.start,
                                 "end": offset + sentence.end,
                                 "text": sentence.text.strip(),
-                                "speaker": None,  # no speaker diarization
+                                "speaker": None,  # see p3/speakers.py
                                 "confidence": 1.0,  # Parakeet reports no confidence scores
+                                # Tokens, with their leading space, for
+                                # speaker alignment; not stored.
+                                "words": [
+                                    {
+                                        "start": offset + t.start,
+                                        "end": offset + t.end,
+                                        "text": t.text,
+                                    }
+                                    for t in sentence.tokens
+                                ],
                             }
                         )
                     text_parts.append(result.text)
@@ -267,8 +282,11 @@ class AudioTranscriber:
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
-    def transcribe_episode(self, episode_id: int) -> bool:
-        """Transcribe a single episode and store results."""
+    def transcribe_episode(self, episode_id: int, diarizer: Any = None) -> bool:
+        """Transcribe a single episode and store results. With a
+        ``speakers.Diarizer``, the transcription models are then unloaded
+        and each segment gets its speaker; if diarization fails the
+        transcript is stored without speakers."""
         episode = self.db.get_episode_by_id(episode_id)
 
         if not episode:
@@ -303,8 +321,12 @@ class AudioTranscriber:
         if not result:
             return False
 
+        segments = result["segments"]
+        if diarizer is not None:
+            segments = self._with_speakers(episode["file_path"], segments, diarizer)
+
         # Store transcript segments in database
-        self.db.add_transcript_segments(episode_id, result["segments"])
+        self.db.add_transcript_segments(episode_id, segments)
         self.db.set_episode_language(episode_id, result.get("language"))
 
         # Update episode status
@@ -312,6 +334,21 @@ class AudioTranscriber:
 
         logger.info("Transcribed: %s", episode["title"])
         return True
+
+    def _with_speakers(self, audio_path: str, segments, diarizer):
+        """``segments`` split by speaker; unchanged if diarization fails.
+        Only one model is in memory at a time: the transcription models go
+        first, the diarization model after."""
+        from .speakers import assign_speakers
+
+        self.unload_models()
+        try:
+            return assign_speakers(segments, diarizer.diarize(audio_path))
+        except Exception as e:
+            logger.warning("Diarization failed, storing without speakers: %s", e)
+            return segments
+        finally:
+            diarizer.release()
 
     def transcribe_all_pending(self) -> int:
         """Transcribe all episodes with 'downloaded' status."""

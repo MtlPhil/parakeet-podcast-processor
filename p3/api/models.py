@@ -104,6 +104,8 @@ class TranscriptSegment(BaseModel):
     id: int
     episode_id: int
     speaker: Optional[str] = None
+    # Who the speaker label is ("Speaker 1" if nobody named them).
+    speaker_name: Optional[str] = None
     timestamp_start: Optional[float] = None
     timestamp_end: Optional[float] = None
     text: str
