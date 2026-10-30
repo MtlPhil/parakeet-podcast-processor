@@ -115,6 +115,19 @@ Each phase ends with a check that has to pass before the next one starts.
 
 Change one thing at a time against the evaluation: chunk length (45/60/90 s), number of passages, the prefix, the abstain threshold, the reranker on or off. Keep what improves the numbers.
 
+### Phase 7: speakers
+
+Two separate problems: **diarization** (when each voice speaks, as anonymous labels) works on the audio; **naming** (who each label is) works on the text.
+
+1. **Diarize.** A diarization model (pyannote, or sherpa-onnx if pyannote is too heavy) runs on the 16 kHz mono WAV transcription already uses: it finds speech, embeds short windows as voice fingerprints and clusters them into speakers. Output: turns (`start`, `end`, label). Language-independent. A hint of the expected number of speakers helps solo shows that would otherwise split on a change of microphone or tone.
+2. **Align.** Each transcript segment gets the speaker who covers most of its time (the segments' `speaker` field, empty today). A segment where the turn changes midway, or with overlapping speech, is marked uncertain rather than given to one person. Parakeet's word timestamps allow splitting at the turn later.
+3. **Name.** One LLM call per episode: show notes, episode and podcast title, and each label's first lines (introductions, "thanks for having me, Lenny"). It returns a name or "unknown" per label, never a guess. Later: keep each named host's voice fingerprint per podcast and recognize them in later episodes without an LLM call, leaving only guests to name from the text.
+4. **Store and use.** Speakers on segments; a per-episode table of label, name, source (show notes, introduction, voice match) and confidence; names editable on Episode Detail. Passages are reindexed with their speaker, citations read "*Name, 14:32*", "what did X say" becomes a speaker filter, and the answer prompt's "in the conversation with X" rule gives way to direct attribution for named, confident segments only.
+5. **Where it runs.** A queued job between transcription and digest, since the digest deletes the audio; same memory rules as transcription (Ollama models released, Ask paused). Processed episodes have no audio left: diarizing them means downloading it again, either as a slow background backfill or not at all (new episodes only).
+6. **Check.** Hand-mark turns on 3 or 4 varied episodes (a two-person interview, a panel, a solo news brief, a French show); measure diarization error rate and naming accuracy. The test that matters: host lines no longer credited to guests. Known hard cases: ads read by the host, intros over music, callers, crosstalk.
+
+**First step:** run pyannote by hand on those episodes, outside the server and with nothing else loaded, to measure time per hour of audio, peak memory and quality. That decides whether it fits on the 16 GB Mac, or whether sherpa-onnx is needed, before anything is built.
+
 ## Later, only if the evaluation shows the need
 
 - An LLM-written context line per chunk instead of the episode summary prefix (expensive locally: one call per chunk).
