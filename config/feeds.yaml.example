@@ -26,6 +26,11 @@ settings:
   # Unload Ollama's models (and wait until they're gone) before transcribing,
   # so the LLM and the transcription models never share memory
   release_ollama_before_transcription: true
+  # Tell speakers apart after transcription (needs the "speakers" extra and
+  # a Hugging Face login with the model's terms accepted; about 5 minutes
+  # per hour of audio on the GPU, 5.5-7.3 GB while it runs)
+  diarization_enabled: true
+  diarization_model: "pyannote/speaker-diarization-community-1"
 
   # LLM used for cleaning, summaries and writing: ollama, openai or gemini
   llm_provider: ollama
