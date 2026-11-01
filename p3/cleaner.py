@@ -1,5 +1,6 @@
 """LLM-based transcript cleaning and summarization."""
 
+import html
 import json
 import logging
 import re
@@ -45,6 +46,60 @@ _AD_RULE = (
     "products or offers, and don't list a company that appears only in an ad. "
     "Base everything on the hosts' actual discussion."
 )
+
+# Speech recognition misspells names, and a transcript never says how a
+# name is written. The show's own title and notes do, and usually say who
+# the hosts and guests are, so every prompt that reads the transcript gets
+# them first (_episode_context).
+_NAMES_RULE = (
+    "The episode title and show notes below are published by the show. "
+    "Speech recognition often misspells names in the transcript, so use them "
+    "to tell who the hosts and guests are and to spell the names of people, "
+    "companies and products exactly as they are written there. Take nothing "
+    "else from them: everything you write must come from the transcript, and "
+    "ignore any links, sponsors or promotions in the notes."
+)
+# Show notes past this are mostly links, credits and sponsor lists.
+_NOTES_MAX_CHARS = 3000
+
+
+def _notes_text(description: Optional[str]) -> str:
+    """Show notes as plain text: tags dropped, entities decoded, whitespace
+    collapsed, cut to ``_NOTES_MAX_CHARS``."""
+    if not isinstance(description, str) or not description:
+        return ""
+    # Feeds often escape their HTML once more: decode first, then strip.
+    text = html.unescape(description)
+    text = re.sub(r"<(br|p|li|div)[^>]*>", "\n", text, flags=re.I)
+    text = html.unescape(re.sub(r"<[^>]+>", " ", text))
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\s*\n\s*", "\n", text).strip()
+    return text[:_NOTES_MAX_CHARS]
+
+
+def _episode_context(episode: Optional[Dict[str, Any]]) -> str:
+    """The show's title and notes for an episode, with _NAMES_RULE, to put
+    before a prompt that reads its transcript ("" if there are none)."""
+    if not episode:
+        return ""
+    title = episode.get("title")
+    title = title.strip() if isinstance(title, str) else ""
+    notes = _notes_text(episode.get("description"))
+    if not title and not notes:
+        return ""
+    lines = [_NAMES_RULE, ""]
+    podcast = episode.get("podcast_title")
+    if isinstance(podcast, str) and podcast.strip():
+        lines.append(f"Podcast: {podcast.strip()}")
+    if title:
+        lines.append(f"Episode title: {title}")
+    if notes:
+        # The second unescape can bring back tags: the notes mustn't close
+        # their own fence.
+        notes = re.sub(r"</?\s*show_notes[^>]*>", " ", notes, flags=re.I)
+        lines += ["<show_notes>", notes, "</show_notes>"]
+    return "\n".join(lines) + "\n\n"
+
 
 _SUMMARY_PROMPT = (
     """Analyze this podcast transcript and extract structured information in JSON format:
@@ -506,12 +561,13 @@ class TranscriptCleaner:
         # (clean_transcript) took most of this step's time; the prompts skip
         # ads themselves (_AD_RULE).
         cleaned_text = self._basic_clean_text(full_text)
+        context = _episode_context(self.db.get_episode_by_id(episode_id))
 
         # Generate structured summary using LLM
-        summary_data = self._generate_structured_summary(cleaned_text)
+        summary_data = self._generate_structured_summary(cleaned_text, context)
 
         if summary_data and self.llm.is_configured:
-            short_summary = self._generate_short_summary(cleaned_text)
+            short_summary = self._generate_short_summary(cleaned_text, context)
             if short_summary:
                 summary_data["summary"] = short_summary
 
@@ -555,7 +611,8 @@ class TranscriptCleaner:
             return None
 
         cleaned_text = self._basic_clean_text(full_text)
-        synopsis = self._generate_long_summary(cleaned_text)
+        context = _episode_context(self.db.get_episode_by_id(episode_id))
+        synopsis = self._generate_long_summary(cleaned_text, context)
         synopsis_fr = self.translate_text(synopsis)
         if not synopsis_fr:
             raise RuntimeError("Translating the synopsis to French failed")
@@ -635,22 +692,25 @@ class TranscriptCleaner:
             return [single[0] for single in singles if single]
         return translated
 
-    def _generate_short_summary(self, text: str) -> Optional[str]:
+    def _generate_short_summary(self, text: str, context: str = "") -> Optional[str]:
         """Generate the short (~300 word) summary as its own call — see
-        _SHORT_SUMMARY_PROMPT."""
+        _SHORT_SUMMARY_PROMPT. ``context`` is _episode_context's."""
         truncated = _truncate_transcript(text)
         try:
             return self._chat(
                 "You are an expert podcast analyst who writes concise, substantive summaries.",
-                _SHORT_SUMMARY_PROMPT + truncated,
+                context + _SHORT_SUMMARY_PROMPT + truncated,
                 max_tokens=600,
             ).strip()
         except Exception as e:
             logger.warning("Short summary generation failed: %s", e)
             return None
 
-    def _generate_structured_summary(self, text: str) -> Optional[Dict[str, Any]]:
-        """Generate structured summary using LLM."""
+    def _generate_structured_summary(
+        self, text: str, context: str = ""
+    ) -> Optional[Dict[str, Any]]:
+        """Generate structured summary using LLM. ``context`` is
+        _episode_context's."""
         if not self.llm.is_configured:
             return self._basic_extraction(text)
 
@@ -662,7 +722,7 @@ class TranscriptCleaner:
             for _ in range(2):
                 response = self._chat(
                     "You are an expert at analyzing podcast content. Return valid JSON only.",
-                    _SUMMARY_PROMPT + truncated,
+                    context + _SUMMARY_PROMPT + truncated,
                     max_tokens=1000,
                 )
                 result = _extract_json(response)
@@ -681,13 +741,14 @@ class TranscriptCleaner:
             logger.error("LLM summarization failed: %s", e)
             return self._basic_extraction(text)
 
-    def _generate_long_summary(self, text: str) -> str:
+    def _generate_long_summary(self, text: str, context: str = "") -> str:
         """Generate long-form study notes, one transcript section at a time.
 
         Per-section requests keep the notes proportional to the episode: a
         longer episode gets more sections and therefore longer notes. Raises
         RuntimeError if any section fails, rather than return notes with a
-        part of the episode missing.
+        part of the episode missing. ``context`` (_episode_context's) goes
+        with every section.
         """
         truncated = _truncate_transcript(text)
         num_sections = max(3, min(6, len(truncated) // 8000))
@@ -698,7 +759,7 @@ class TranscriptCleaner:
             try:
                 note = self._chat(
                     "You are an expert podcast analyst writing detailed study notes.",
-                    _SECTION_NOTES_PROMPT + section,
+                    context + _SECTION_NOTES_PROMPT + section,
                     max_tokens=1000,
                 ).strip()
             except Exception as e:

@@ -95,6 +95,15 @@ def mark_config_feeds_imported(db: P3Database, feeds: List[Dict]):
     db.set_state(IMPORTED_FEEDS_KEY, json.dumps(imported))
 
 
+def _show_notes(entry) -> str:
+    """An RSS entry's show notes: its full content (``content:encoded``) when
+    that is longer than its description, as it is in feeds whose
+    description is only a teaser."""
+    description = entry.get("description") or ""
+    contents = [c.get("value") or "" for c in entry.get("content") or []]
+    return max([description, *contents], key=len)
+
+
 class PodcastDownloader:
     def __init__(
         self,
@@ -222,7 +231,7 @@ class PodcastDownloader:
                         "title": entry.get("title", "Unknown Title"),
                         "url": audio_url,
                         "date": pub_date,
-                        "description": entry.get("description", ""),
+                        "description": _show_notes(entry),
                         "guid": entry.get("id", audio_url),
                     }
                 )
@@ -399,6 +408,9 @@ class PodcastDownloader:
                 continue
             # Already downloaded (maybe for another user): just link it.
             if self.db.episode_exists(ep_data["url"]):
+                self.db.set_missing_description(
+                    ep_data["url"], ep_data.get("description")
+                )
                 if self._claim_existing(
                     ep_data["url"], episode_guids is not None, ep_data["title"]
                 ):
@@ -431,6 +443,7 @@ class PodcastDownloader:
                     date=ep_data["date"],
                     url=ep_data["url"],
                     file_path=file_path,
+                    description=ep_data.get("description"),
                 )
                 self._link_new(episode_id)
                 downloaded_count += 1
@@ -633,6 +646,7 @@ class PodcastDownloader:
             date=youtube.upload_datetime(info),
             url=video,
             file_path=file_path,
+            description=info.get("description"),
         )
         self._link_new(episode_id)
         logger.info("Downloaded: %s", title)

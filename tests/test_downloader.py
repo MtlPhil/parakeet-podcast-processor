@@ -392,3 +392,57 @@ class TestProblemsAreRecorded:
         assert dl.process_feed("http://example.com/rss") == 0
         assert dl.skipped == ["A"]
         assert dl.problems == []
+
+
+class TestShowNotes:
+    """The feed's show notes are kept with each episode."""
+
+    def test_full_content_wins_over_a_teaser_description(self):
+        from p3.downloader import _show_notes
+
+        entry = {
+            "description": "Teaser",
+            "content": [{"value": "<p>With guest Aishwarya Srinivasan</p>"}],
+        }
+        assert _show_notes(entry) == "<p>With guest Aishwarya Srinivasan</p>"
+        assert _show_notes({"description": "Only this"}) == "Only this"
+        assert _show_notes({"description": "Long description", "content": [{}]}) == (
+            "Long description"
+        )
+        assert _show_notes({}) == ""
+
+    def _downloader(self, tmp_path, monkeypatch, exists):
+        from p3.downloader import PodcastDownloader
+
+        db = MagicMock()
+        db.get_podcast_by_url.return_value = {"id": 1, "title": "Pod"}
+        db.episode_exists.return_value = exists
+        db.was_deleted.return_value = False
+        dl = PodcastDownloader(db=db, data_dir=str(tmp_path), max_episodes=5)
+        ep = {
+            "title": "Ep",
+            "url": "http://example.com/ep.mp3",
+            "date": None,
+            "description": "Notes",
+            "guid": "g",
+        }
+        monkeypatch.setattr(dl, "fetch_episodes", lambda url: [ep])
+        monkeypatch.setattr(dl, "_was_deleted", lambda *a: False)
+        monkeypatch.setattr(dl, "_claim_existing", lambda *a: False)
+        monkeypatch.setattr(
+            dl, "download_episode", lambda url, filename: f"data/audio/{filename}.wav"
+        )
+        return dl, db
+
+    def test_new_episode_is_stored_with_its_notes(self, tmp_path, monkeypatch):
+        dl, db = self._downloader(tmp_path, monkeypatch, exists=False)
+        dl.process_feed("http://example.com/feed.xml")
+        assert db.add_episode.call_args.kwargs["description"] == "Notes"
+
+    def test_known_episode_gets_missing_notes(self, tmp_path, monkeypatch):
+        dl, db = self._downloader(tmp_path, monkeypatch, exists=True)
+        dl.process_feed("http://example.com/feed.xml")
+        db.set_missing_description.assert_called_once_with(
+            "http://example.com/ep.mp3", "Notes"
+        )
+        db.add_episode.assert_not_called()

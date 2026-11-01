@@ -688,3 +688,31 @@ class TestEpisodeLanguage:
         columns = [row[1] for row in info]
         assert "language" in columns
         database.close()
+
+
+class TestShowNotes:
+    def test_description_is_stored_with_the_episode(self, db):
+        pid = db.add_podcast("Pod", "http://example.com/rss")
+        eid = db.add_episode(
+            pid, "Ep", None, "http://example.com/ep.mp3", description="<p>Notes</p>"
+        )
+        assert db.get_episode_by_id(eid)["description"] == "<p>Notes</p>"
+
+    def test_missing_description_is_filled_in_once(self, db):
+        pid = db.add_podcast("Pod", "http://example.com/rss")
+        eid = db.add_episode(pid, "Ep", None, "http://example.com/ep.mp3")
+        assert db.get_episode_by_id(eid)["description"] is None
+        assert not db.set_missing_description("http://example.com/ep.mp3", "  ")
+        assert db.set_missing_description("http://example.com/ep.mp3", "First")
+        assert not db.set_missing_description("http://example.com/ep.mp3", "Second")
+        assert not db.set_missing_description("http://example.com/other.mp3", "X")
+        assert db.get_episode_by_id(eid)["description"] == "First"
+
+    def test_filling_in_works_on_a_transcribed_episode(self, db):
+        # The UPDATE must not trip the foreign keys from transcripts.
+        pid = db.add_podcast("Pod", "http://example.com/rss")
+        eid = db.add_episode(pid, "Ep", None, "http://example.com/ep.mp3")
+        db.add_transcript_segments(
+            eid, [{"start": 0, "end": 1, "text": "hi", "speaker": "", "confidence": 1}]
+        )
+        assert db.set_missing_description("http://example.com/ep.mp3", "Notes")
