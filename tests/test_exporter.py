@@ -146,3 +146,25 @@ class TestLocalized:
         assert fr["key_topics"] == ["growth"]  # not translated yet
         assert fr["quotes"] == ["Verbatim"]
         assert localized(summary, "en") is summary
+
+
+class TestShownLanguage:
+    def test_original_follows_the_episode(self):
+        from p3.exporter import shown_language
+
+        assert shown_language("original", "fr") == "fr"
+        assert shown_language("original", "en") == "en"
+        # Digests exist in English and French only.
+        assert shown_language("original", "es") == "en"
+        assert shown_language("original", None) == "en"
+        assert shown_language("fr", "en") == "fr"
+        assert shown_language("en", "fr") == "en"
+        assert shown_language(None, "fr") == "en"
+
+    def test_localized_with_original(self):
+        from p3.exporter import localized
+
+        row = {"full_summary": "EN", "full_summary_fr": "FR", "episode_language": "fr"}
+        assert localized(row, "original")["full_summary"] == "FR"
+        row["episode_language"] = "en"
+        assert localized(row, "original")["full_summary"] == "EN"

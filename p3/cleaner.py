@@ -597,6 +597,55 @@ class TranscriptCleaner:
 
         return summary_data
 
+    def refresh_digest(self, episode_id: int) -> bool:
+        """Redo an episode's digest, with the show's title and notes
+        (_episode_context), keeping its date, and its synopsis too if it has
+        one. Returns whether there was a synopsis.
+
+        All or nothing: an LLM step that fails (where generate_summary would
+        fall back to word counts) raises RuntimeError and leaves the stored
+        digest as it was."""
+        segments = self.db.get_transcripts_for_episode(episode_id)
+        full_text = "\n".join(segment["text"] for segment in segments)
+        existing = self.db.get_summary_by_episode(episode_id)
+        if not full_text.strip() or not existing:
+            raise RuntimeError("No transcript or no digest to refresh")
+        if not self.llm.is_configured:
+            raise RuntimeError("No LLM is configured")
+
+        cleaned_text = self._basic_clean_text(full_text)
+        context = _episode_context(self.db.get_episode_by_id(episode_id))
+        data = self._generate_structured_summary(cleaned_text, context, strict=True)
+        assert data is not None
+        summary = self._generate_short_summary(cleaned_text, context)
+        if not summary:
+            raise RuntimeError("The summary failed")
+        french: Dict[str, Any] = {
+            "full_summary_fr": self.translate_text(summary),
+            "key_topics_fr": self.translate_list(data.get("key_topics") or []),
+            "themes_fr": self.translate_list(data.get("themes") or []),
+        }
+        synopsis = existing.get("long_summary")
+        if synopsis:
+            synopsis = self._generate_long_summary(cleaned_text, context)
+            french["long_summary_fr"] = self.translate_text(synopsis)
+        failed = [field for field, value in french.items() if value is None]
+        if failed:
+            raise RuntimeError(f"Translating {', '.join(failed)} failed")
+
+        self.db.add_summary(
+            episode_id=episode_id,
+            key_topics=data.get("key_topics", []),
+            themes=data.get("themes", []),
+            quotes=data.get("quotes", []),
+            startups=data.get("startups", []),
+            full_summary=summary,
+            long_summary=synopsis,
+            digest_date=existing.get("digest_date"),
+        )
+        self.db.update_summary_fields(episode_id, **french)
+        return bool(synopsis)
+
     def generate_synopsis(self, episode_id: int) -> Optional[str]:
         """Generate and store the long-form study-notes synopsis for one
         episode, in English and Quebec French. Requested on demand; not part
@@ -707,10 +756,11 @@ class TranscriptCleaner:
             return None
 
     def _generate_structured_summary(
-        self, text: str, context: str = ""
+        self, text: str, context: str = "", strict: bool = False
     ) -> Optional[Dict[str, Any]]:
         """Generate structured summary using LLM. ``context`` is
-        _episode_context's."""
+        _episode_context's. Falls back to _basic_extraction when the LLM
+        fails, unless ``strict``: then it raises RuntimeError."""
         if not self.llm.is_configured:
             return self._basic_extraction(text)
 
@@ -729,6 +779,8 @@ class TranscriptCleaner:
                 if result is not None:
                     break
             if result is None:
+                if strict:
+                    raise RuntimeError("The topics and themes reply wasn't JSON")
                 logger.warning(
                     "Could not parse JSON from LLM response, falling back to basic extraction"
                 )
@@ -738,6 +790,8 @@ class TranscriptCleaner:
                     result[field] = _coerce_str_list(result[field])
             return result
         except Exception as e:
+            if strict:
+                raise RuntimeError(f"Topics and themes failed: {e}") from e
             logger.error("LLM summarization failed: %s", e)
             return self._basic_extraction(text)
 

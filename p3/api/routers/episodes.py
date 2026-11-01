@@ -18,9 +18,11 @@ from p3.api.tasks import (
     task_digest,
     task_full_pipeline,
     task_generate_synopsis,
+    task_refresh_digests,
     task_transcribe,
     task_translate,
 )
+from p3.exporter import shown_language
 from p3.mailer import build_synopsis_email, send_email
 
 router = APIRouter(prefix="/api/episodes", tags=["episodes"])
@@ -90,6 +92,23 @@ def translate_all(_admin: dict = Depends(require_admin)):
         job_runner.enqueue(task_translate, job_id, summary["episode_id"])
         job_ids.append(job_id)
     return {"queued": len(job_ids), "job_ids": job_ids}
+
+
+@router.post("/refresh-all", response_model=dict)
+def refresh_all(
+    stop_at: Optional[str] = Query(
+        None,
+        pattern=r"^([01]\d|2[0-3]):[0-5]\d$",
+        description="HH:MM, local: start no episode that could still run then",
+    ),
+    _admin: dict = Depends(require_admin),
+):
+    """Queue one job that redoes every digest (and synopsis) with the show
+    notes, keeping their dates; see tasks.task_refresh_digests."""
+    db = get_db()
+    job_id = db.create_job("refresh")
+    job_runner.enqueue(task_refresh_digests, job_id, stop_at)
+    return {"job_id": job_id}
 
 
 @router.get("/{episode_id}", response_model=EpisodeOut)
@@ -201,7 +220,9 @@ def email_synopsis(
     episode = user_episode(db, episode_id, username)
     summary = db.get_summary_by_episode(episode_id) or {}
     settings = user_settings(username)
-    language = body.language or settings.get("language") or "en"
+    language = shown_language(
+        body.language or settings.get("language"), episode.get("language")
+    )
     synopsis = (language == "fr" and summary.get("long_summary_fr")) or summary.get(
         "long_summary"
     )

@@ -239,7 +239,9 @@ class SynopsisCreate(BaseModel):
 class SynopsisEmail(BaseModel):
     to: str = Field(..., description="Email addresses, separated by commas")
     language: Optional[str] = Field(
-        None, description="en or fr. Defaults to the user's language."
+        None,
+        description="en, fr or original (the episode's own). Defaults to the "
+        "user's language.",
     )
 
 
@@ -291,7 +293,7 @@ class UserSettings(BaseModel):
     """A user's own settings (see deps.USER_SETTING_DEFAULTS). Omitted or
     null fields fall back to the shared settings."""
 
-    language: Optional[str] = Field(None, pattern="^(en|fr)$")
+    language: Optional[str] = Field(None, pattern="^(en|fr|original)$")
     tone: Optional[str] = None
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None

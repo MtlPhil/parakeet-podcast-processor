@@ -183,3 +183,103 @@ class TestReleaseOllama:
     def test_admin_can_turn_it_off(self, monkeypatch):
         settings = {"release_ollama_before_transcription": False}
         assert self._released(monkeypatch, settings) == []
+
+
+class TestRefreshDigests:
+    def _env(self, monkeypatch, tmp_path, minutes_per_episode=0):
+        import json
+        from datetime import datetime, timedelta
+
+        import p3.api.tasks as tasks
+        from p3.database import P3Database
+        from p3.downloader import PodcastDownloader
+
+        db = P3Database(str(tmp_path / "test.duckdb"))
+        pid = db.add_podcast("Pod", "http://example.com/rss")
+        ids = []
+        for i in range(3):
+            eid = db.add_episode(pid, f"E{i}", None, f"http://x/{i}.mp3")
+            db.add_transcript_segments(
+                eid,
+                [
+                    {
+                        "start": 0,
+                        "end": 1,
+                        "text": "le podcast est dans la ville et nous",
+                        "speaker": "",
+                        "confidence": 1,
+                    }
+                ],
+            )
+            db.add_summary(eid, [], [], [], [], "s")
+            db.update_episode_status(eid, "processed")
+            ids.append(eid)
+        db.set_state(tasks.REFRESHED_KEY, json.dumps([ids[0]]))
+        monkeypatch.setattr(tasks, "get_db", lambda: db)
+        monkeypatch.setattr(tasks, "_get_settings", lambda: {})
+        monkeypatch.setattr(PodcastDownloader, "fill_missing_show_notes", lambda s: 2)
+
+        clock = {"now": datetime(2026, 11, 1, 1, 0)}
+
+        class FakeDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return clock["now"]
+
+        monkeypatch.setattr(tasks, "datetime", FakeDatetime)
+        refreshed = []
+
+        class FakeCleaner:
+            def refresh_digest(self, episode_id):
+                refreshed.append(episode_id)
+                clock["now"] += timedelta(minutes=minutes_per_episode)
+
+        monkeypatch.setattr(tasks, "_make_cleaner", lambda db, s: FakeCleaner())
+        return tasks, db, ids, refreshed
+
+    def test_refreshes_what_is_left_and_detects_language(self, monkeypatch, tmp_path):
+        tasks, db, ids, refreshed = self._env(monkeypatch, tmp_path)
+        try:
+            job = db.create_job("refresh")
+            tasks.task_refresh_digests(job)
+            assert sorted(refreshed) == ids[1:]
+            assert db.get_job(job)["status"] == "completed"
+            assert (
+                "2 digest(s) refreshed, 0 failed, 0 left" in db.get_job(job)["message"]
+            )
+            assert db.get_episode_by_id(ids[1])["language"] == "fr"
+            tasks.task_refresh_digests(db.create_job("refresh"))
+            assert len(refreshed) == 2  # nothing left to do
+        finally:
+            db.close()
+
+    def test_stops_before_the_deadline(self, monkeypatch, tmp_path):
+        # 01:00 now; 20 minutes an episode; stop at 01:30. The first starts
+        # (15-minute default estimate), the second would end after 01:30.
+        tasks, db, ids, refreshed = self._env(
+            monkeypatch, tmp_path, minutes_per_episode=20
+        )
+        try:
+            job = db.create_job("refresh")
+            tasks.task_refresh_digests(job, "01:30")
+            assert len(refreshed) == 1
+            assert (
+                "1 digest(s) refreshed, 0 failed, 1 left" in db.get_job(job)["message"]
+            )
+        finally:
+            db.close()
+
+    def test_deadline_is_the_next_such_time(self, monkeypatch):
+        from datetime import datetime
+
+        import p3.api.tasks as tasks
+
+        class FakeDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 10, 31, 23, 0)
+
+        monkeypatch.setattr(tasks, "datetime", FakeDatetime)
+        assert tasks._refresh_deadline("03:40") == datetime(2026, 11, 1, 3, 40)
+        assert tasks._refresh_deadline("23:30") == datetime(2026, 10, 31, 23, 30)
+        assert tasks._refresh_deadline(None) is None

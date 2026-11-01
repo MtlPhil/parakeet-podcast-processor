@@ -1501,3 +1501,43 @@ def test_web_app_logs_info_messages(capsys, monkeypatch):
     err = capsys.readouterr().err
     assert err.count("daily report emailed (test)") == 1
     assert "INFO p3.api.tasks:" in err
+
+
+class TestOriginalLanguage:
+    def test_original_is_a_language_setting(self):
+        client.get("/api/me")
+        resp = client.put("/api/me/settings", json={"language": "original"})
+        assert resp.status_code == 200
+        assert resp.json()["settings"]["language"] == "original"
+
+    def test_summaries_carry_their_episode_language(self):
+        db = deps.get_db()
+        pid = db.add_podcast("Pod", "http://example.com/rss")
+        eid = db.add_episode(pid, "Ep", None, "http://example.com/ep.mp3")
+        db.set_episode_language(eid, "fr")
+        db.add_summary(eid, [], [], [], [], "Summary")
+        assert db.get_summary_by_episode(eid)["episode_language"] == "fr"
+        assert db.get_all_summaries()[0]["episode_language"] == "fr"
+
+
+class TestRefreshAll:
+    def test_admin_queues_one_refresh_job(self):
+        client.get("/api/me")
+        with patch("p3.api.routers.episodes.job_runner") as runner:
+            resp = client.post("/api/episodes/refresh-all?stop_at=03:40")
+        assert resp.status_code == 200
+        args = runner.enqueue.call_args.args
+        assert args[1] == resp.json()["job_id"] and args[2] == "03:40"
+        job = deps.get_db().get_job(resp.json()["job_id"])
+        assert job["job_type"] == "refresh"
+
+    def test_only_admins_and_a_valid_time(self):
+        client.get("/api/me")
+        with patch("p3.api.routers.episodes.job_runner") as runner:
+            assert (
+                client.post("/api/episodes/refresh-all", headers=BOB).status_code == 403
+            )
+            assert (
+                client.post("/api/episodes/refresh-all?stop_at=4am").status_code == 422
+            )
+        runner.enqueue.assert_not_called()

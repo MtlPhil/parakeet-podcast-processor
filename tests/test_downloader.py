@@ -446,3 +446,40 @@ class TestShowNotes:
             "http://example.com/ep.mp3", "Notes"
         )
         db.add_episode.assert_not_called()
+
+
+class TestFillMissingShowNotes:
+    def test_rss_by_url_then_title_and_youtube(self, tmp_path, monkeypatch):
+        from datetime import datetime
+
+        from p3 import youtube
+        from p3.database import P3Database
+        from p3.downloader import PodcastDownloader
+
+        db = P3Database(str(tmp_path / "test.duckdb"))
+        try:
+            rss = db.add_podcast("Pod", "http://example.com/rss")
+            yt = db.add_podcast(
+                "Chan", "https://www.youtube.com/@chan", source_type="youtube_channel"
+            )
+            a = db.add_episode(rss, "A", datetime.now(), "http://x/a.mp3")
+            b = db.add_episode(rss, "B", datetime.now(), "http://x/b-old.mp3")
+            c = db.add_episode(rss, "C", datetime.now(), "http://x/c.mp3")
+            v = db.add_episode(
+                yt, "V", datetime.now(), "https://www.youtube.com/watch?v=abc"
+            )
+            dl = PodcastDownloader(db=db, data_dir=str(tmp_path))
+            listing = [
+                {"url": "http://x/a.mp3", "title": "A", "description": "Notes A"},
+                # The feed changed B's URL; it's found by title.
+                {"url": "http://x/b-new.mp3", "title": "B ", "description": "Notes B"},
+            ]
+            monkeypatch.setattr(dl, "_rss_episodes", lambda url: listing)
+            monkeypatch.setattr(
+                youtube, "get_video_info", lambda url: {"description": "Notes V"}
+            )
+            assert dl.fill_missing_show_notes() == 3
+            notes = {i: db.get_episode_by_id(i)["description"] for i in (a, b, c, v)}
+            assert notes == {a: "Notes A", b: "Notes B", c: None, v: "Notes V"}
+        finally:
+            db.close()

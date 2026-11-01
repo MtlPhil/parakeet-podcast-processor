@@ -277,6 +277,43 @@ class PodcastDownloader:
             for e in entries
         ]
 
+    def fill_missing_show_notes(self) -> int:
+        """Find the show notes of episodes stored without them: from each
+        podcast's feed (matched by audio URL, else by title, since feeds
+        change their tracking URLs), or each YouTube video's description.
+        Metadata only, no audio. Failures are logged and skipped. Returns how
+        many episodes got notes."""
+        by_podcast: Dict[int, List[Dict]] = {}
+        for episode in self.db.get_episodes_missing_description():
+            by_podcast.setdefault(episode["podcast_id"], []).append(episode)
+        filled = 0
+        for episodes in by_podcast.values():
+            feed = episodes[0]["rss_url"]
+            if youtube.is_youtube_url(feed):
+                for episode in episodes:
+                    try:
+                        notes = youtube.get_video_info(episode["url"]).get(
+                            "description"
+                        )
+                    except Exception as e:
+                        logger.warning("No notes for %s: %s", episode["url"], e)
+                        continue
+                    if notes and notes.strip():
+                        self.db.set_episode_description(episode["id"], notes)
+                        filled += 1
+                continue
+            listed = self._rss_episodes(feed)
+            by_url = {e["url"]: e["description"] for e in listed}
+            by_title = {e["title"].strip(): e["description"] for e in listed}
+            for episode in episodes:
+                notes = by_url.get(episode["url"]) or by_title.get(
+                    (episode["title"] or "").strip()
+                )
+                if notes and notes.strip():
+                    self.db.set_episode_description(episode["id"], notes)
+                    filled += 1
+        return filled
+
     def download_episode(self, episode_url: str, filename: str) -> Optional[str]:
         """Download and normalize audio episode."""
         tmp_path = None

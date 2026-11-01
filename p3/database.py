@@ -424,6 +424,26 @@ class P3Database:
         )
         return True
 
+    def get_episodes_missing_description(self) -> List[Dict[str, Any]]:
+        """Episodes without show notes, with their podcast's feed URL and
+        source type."""
+        cursor = self.conn.execute("""
+            SELECT e.id, e.podcast_id, e.title, e.url,
+                p.rss_url, p.source_type
+            FROM episodes e
+            JOIN podcasts p ON e.podcast_id = p.id
+            WHERE e.description IS NULL OR e.description = ''
+            ORDER BY e.podcast_id, e.id
+        """)
+        return self._fetchall_as_dicts(cursor)
+
+    def set_episode_description(self, episode_id: int, description: str):
+        """Store an episode's show notes."""
+        self.conn.execute(
+            "UPDATE episodes SET description = ? WHERE id = ?",
+            (description, episode_id),
+        )
+
     def episode_exists(self, url: str) -> bool:
         """Check if episode already exists."""
         result = self.conn.execute(
@@ -678,7 +698,8 @@ class P3Database:
         join, params = self._user_episode_join(username)
         cursor = self.conn.execute(
             f"""
-            SELECT s.*, e.title as episode_title, p.title as podcast_title
+            SELECT s.*, e.title as episode_title, p.title as podcast_title,
+                e.language as episode_language
             FROM summaries s
             JOIN episodes e ON s.episode_id = e.id
             JOIN podcasts p ON e.podcast_id = p.id
@@ -843,7 +864,8 @@ class P3Database:
         """Get summary for a specific episode."""
         cursor = self.conn.execute(
             """
-            SELECT s.*, e.title as episode_title, p.title as podcast_title
+            SELECT s.*, e.title as episode_title, p.title as podcast_title,
+                e.language as episode_language
             FROM summaries s
             JOIN episodes e ON s.episode_id = e.id
             JOIN podcasts p ON e.podcast_id = p.id
@@ -863,7 +885,8 @@ class P3Database:
         join, params = self._user_episode_join(username)
         cursor = self.conn.execute(
             f"""
-            SELECT s.*, e.title as episode_title, p.title as podcast_title
+            SELECT s.*, e.title as episode_title, p.title as podcast_title,
+                e.language as episode_language
             FROM summaries s
             JOIN episodes e ON s.episode_id = e.id
             JOIN podcasts p ON e.podcast_id = p.id

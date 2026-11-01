@@ -579,7 +579,14 @@ def task_write_linkedin(
             )
             return
 
-        writer = _make_writer(db, user_settings(username), provider, model)
+        from p3.exporter import shown_language
+
+        settings = user_settings(username)
+        # One episode, so "original" can be its own language.
+        settings["language"] = shown_language(
+            settings.get("language"), summary.get("episode_language")
+        )
+        writer = _make_writer(db, settings, provider, model)
 
         db.update_job(job_id, progress=0.3, message="Generating LinkedIn post...")
         result = writer.generate_linkedin_post(summary)
@@ -646,6 +653,108 @@ def task_translate(job_id: str, episode_id: int):
             db.update_job(job_id, status="failed", error="Translation failed")
     except Exception as e:
         logger.exception("Translate task failed")
+        db.update_job(job_id, status="failed", error=str(e))
+
+
+# Episodes whose digest task_refresh_digests has redone (JSON list of ids),
+# so a refresh stopped by its deadline continues where it left off.
+REFRESHED_KEY = "digests_refreshed_with_notes"
+
+
+def _refresh_deadline(stop_at: Optional[str]) -> Optional[datetime]:
+    """The next local wall-clock time ``stop_at`` ("HH:MM"), as a naive local
+    datetime: compared with datetime.now(), it follows the system clock
+    through a daylight-saving change."""
+    if not stop_at:
+        return None
+    hour, minute = (int(part) for part in stop_at.split(":"))
+    now = datetime.now()
+    deadline = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return deadline if deadline > now else deadline + timedelta(days=1)
+
+
+def task_refresh_digests(job_id: str, stop_at: Optional[str] = None):
+    """Redo every digest with its show notes (see cleaner._episode_context),
+    and its synopsis where there is one, keeping each digest's date. First
+    finds missing show notes in the feeds and, from the transcript, the
+    language of episodes transcribed before it was detected.
+
+    Newest digests first; ones already refreshed are skipped. With
+    ``stop_at`` ("HH:MM", local), no episode starts that could still be
+    running then, judging by the longest one so far; queue it again to
+    continue. Runs as a "refresh" job, which no daily report lists."""
+    import json
+
+    from p3.downloader import PodcastDownloader
+    from p3.writer import _detect_language
+
+    db = get_db()
+    deadline = _refresh_deadline(stop_at)
+    try:
+        db.update_job(job_id, status="running", message="Finding show notes...")
+        settings = _get_settings()
+        downloader = PodcastDownloader(
+            db=db, audio_format=settings.get("audio_format", "wav")
+        )
+        notes = downloader.fill_missing_show_notes()
+        logger.info("Found show notes for %d episode(s)", notes)
+
+        for row in db.get_episodes_by_status("processed"):
+            if row.get("language"):
+                continue
+            text = " ".join(
+                seg["text"] for seg in db.get_transcripts_for_episode(row["id"])
+            )
+            language = _detect_language(text[:20000])
+            if language:
+                db.set_episode_language(row["id"], language)
+
+        done = set(json.loads(db.get_state(REFRESHED_KEY) or "[]"))
+        todo = [
+            s["episode_id"]
+            for s in sorted(
+                db.get_all_summaries(),
+                key=lambda s: str(s.get("digest_date") or ""),
+                reverse=True,
+            )
+            if s["episode_id"] not in done
+        ]
+        cleaner = _make_cleaner(db, settings)
+        refreshed, failed, longest = 0, [], timedelta(minutes=15)
+        for i, episode_id in enumerate(todo):
+            if deadline and datetime.now() + longest > deadline:
+                break
+            db.update_job(
+                job_id,
+                progress=i / len(todo),
+                message=f"Refreshing digest {i + 1} of {len(todo)}...",
+            )
+            started = datetime.now()
+            try:
+                cleaner.refresh_digest(episode_id)
+            except Exception as e:
+                logger.warning("Refreshing episode %d failed: %s", episode_id, e)
+                failed.append(f"episode {episode_id}: {e}")
+                continue
+            longest = max(longest, datetime.now() - started)
+            done.add(episode_id)
+            db.set_state(REFRESHED_KEY, json.dumps(sorted(done)))
+            refreshed += 1
+
+        left = len(todo) - refreshed - len(failed)
+        message = (
+            f"Show notes found for {notes} episode(s); "
+            f"{refreshed} digest(s) refreshed, {len(failed)} failed, {left} left"
+        )
+        db.update_job(
+            job_id,
+            status="completed",
+            progress=1.0,
+            message=message,
+            error="; ".join(failed) or None,
+        )
+    except Exception as e:
+        logger.exception("Refresh task failed")
         db.update_job(job_id, status="failed", error=str(e))
 
 

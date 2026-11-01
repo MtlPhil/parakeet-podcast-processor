@@ -641,3 +641,102 @@ class TestShowNotesInPrompts:
         sections = [c for c in calls if "Quebec French" not in c]
         assert len(sections) >= 3
         assert all("Episode title: Agentic RAG" in c for c in sections)
+
+
+class TestRefreshDigest:
+    """Redoing a digest with the show notes: same date, both languages, the
+    synopsis too, and nothing stored if a step fails."""
+
+    def _setup(self, tmp_path, monkeypatch, reply, synopsis=None):
+        from datetime import date
+
+        from p3.cleaner import TranscriptCleaner
+
+        db = P3Database(str(tmp_path / "test.duckdb"))
+        pid = db.add_podcast("Pod", "http://example.com/rss")
+        eid = db.add_episode(
+            pid,
+            "Ep with Jane Doe",
+            None,
+            "http://example.com/ep.mp3",
+            description="Our guest Jane Doe",
+        )
+        db.add_transcript_segments(eid, [_seg("we talk about soil " * 50, 0, 5)])
+        db.add_summary(
+            eid,
+            ["old"],
+            ["old"],
+            [],
+            [],
+            "old summary",
+            digest_date=date(2026, 9, 1),
+            long_summary=synopsis,
+        )
+        cleaner = TranscriptCleaner(db=db, llm_provider="ollama")
+        monkeypatch.setattr(type(cleaner.llm), "is_configured", True)
+        prompts = []
+
+        def fake_chat(system, user, max_tokens=2000):
+            prompts.append(user)
+            return reply(user)
+
+        monkeypatch.setattr(cleaner, "_chat", fake_chat)
+        return db, eid, cleaner, prompts
+
+    @staticmethod
+    def _reply(user):
+        if "Quebec French" in user:
+            return "FR"
+        if "JSON" in user:
+            return '{"key_topics": ["soil"], "themes": ["farming"], "quotes": []}'
+        return "new text"
+
+    def test_digest_and_synopsis_are_redone_keeping_the_date(
+        self, tmp_path, monkeypatch
+    ):
+        db, eid, cleaner, prompts = self._setup(
+            tmp_path, monkeypatch, self._reply, synopsis="old synopsis"
+        )
+        try:
+            assert cleaner.refresh_digest(eid) is True
+            summary = db.get_summary_by_episode(eid)
+            assert str(summary["digest_date"]) == "2026-09-01"
+            assert summary["full_summary"] == "new text"
+            assert summary["key_topics"] == ["soil"]
+            assert summary["long_summary"].startswith("new text")
+            assert summary["full_summary_fr"] == "FR"
+            assert summary["long_summary_fr"] == "FR"
+            assert summary["themes_fr"] == ["FR"]
+            reading = [p for p in prompts if "Quebec French" not in p]
+            assert all("Our guest Jane Doe" in p for p in reading)
+        finally:
+            db.close()
+
+    def test_no_synopsis_stays_no_synopsis(self, tmp_path, monkeypatch):
+        db, eid, cleaner, _ = self._setup(tmp_path, monkeypatch, self._reply)
+        try:
+            assert cleaner.refresh_digest(eid) is False
+            assert db.get_summary_by_episode(eid)["long_summary"] is None
+        finally:
+            db.close()
+
+    @pytest.mark.parametrize("broken", ["json", "translation", "error"])
+    def test_a_failed_step_keeps_the_old_digest(self, tmp_path, monkeypatch, broken):
+        def reply(user):
+            if broken == "json" and "JSON" in user:
+                return "not json"
+            if broken == "translation" and "Quebec French" in user:
+                return ""
+            if broken == "error" and "300 words" in user:
+                raise RuntimeError("Ollama is down")
+            return self._reply(user)
+
+        db, eid, cleaner, _ = self._setup(tmp_path, monkeypatch, reply)
+        try:
+            with pytest.raises(RuntimeError):
+                cleaner.refresh_digest(eid)
+            summary = db.get_summary_by_episode(eid)
+            assert summary["full_summary"] == "old summary"
+            assert summary["key_topics"] == ["old"]
+        finally:
+            db.close()

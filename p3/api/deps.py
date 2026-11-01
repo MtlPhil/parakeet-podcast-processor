@@ -52,7 +52,9 @@ def save_config(config: dict):
 # defaults. The rest are personal only: a value in the shared config is
 # ignored, so e.g. no daily run starts for a user who never asked for one.
 USER_SETTING_DEFAULTS: dict[str, Any] = {
-    "language": "en",  # "en" or "fr" (Quebec French): what pages show first
+    # "en", "fr" (Quebec French) or "original" (each episode's own language,
+    # see exporter.shown_language): what pages show first
+    "language": "en",
     "tone": "",  # instructions describing the user's voice, sent to the writer
     "llm_provider": "ollama",  # LLM for the user's writing: posts, synopses
     "llm_model": None,

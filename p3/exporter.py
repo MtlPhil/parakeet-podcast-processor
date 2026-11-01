@@ -13,11 +13,23 @@ logger = logging.getLogger(__name__)
 DEFAULT_EXPORT_DIR = Path("exports")
 
 
+def shown_language(language: Optional[str], episode_language: Optional[str]) -> str:
+    """The language, "en" or "fr", an episode's digest is shown in to a user
+    whose language setting is ``language``. "original" is the episode's own
+    language: French for a French episode, English for any other, since
+    digests are made in those two only."""
+    if language == "original":
+        return "fr" if episode_language == "fr" else "en"
+    return "fr" if language == "fr" else "en"
+
+
 def localized(summary: Dict[str, Any], language: str) -> Dict[str, Any]:
-    """A copy of a summary row with its text fields in ``language``: "fr"
-    swaps in the Quebec French versions where they exist, falling back to
-    English for any not translated yet. Quotes always stay verbatim."""
-    if language != "fr":
+    """A copy of a summary row with its text fields in ``language`` (a user's
+    setting, see shown_language; the row's ``episode_language`` decides for
+    "original"): French swaps in the Quebec French versions where they
+    exist, falling back to English for any not translated yet. Quotes always
+    stay verbatim."""
+    if shown_language(language, summary.get("episode_language")) != "fr":
         return summary
     result = dict(summary)
     for field in ("full_summary", "long_summary", "key_topics", "themes"):
