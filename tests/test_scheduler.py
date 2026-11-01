@@ -416,6 +416,28 @@ class TestRetries:
         assert not db.get_state(run_key("retry_at", ann))
         assert len(sent) == 1
 
+    def test_single_video_sources_do_not_hide_an_outage(self, env, monkeypatch):
+        """A single-video source's fetch reads nothing once its video is in
+        the library, so it succeeds offline; it must not count as a feed
+        that was read."""
+        from p3 import mailer
+
+        db, _ = env
+        sent = []
+        monkeypatch.setattr(mailer, "send_email", lambda *a: sent.append(a))
+        ann = _user(db, "ann", daily_run_email=True, email="a@b.c")
+        self._failed_fetch_run(db, ann, "run-1")
+        vid = db.add_podcast(
+            "Video", "https://www.youtube.com/watch?v=abc", source_type="youtube_video"
+        )
+        ok = db.create_job("fetch", podcast_id=vid, run_id="run-1", username=ann)
+        db.update_job(ok, status="completed")
+
+        tasks.daily_finish("run-1", ann)
+
+        assert db.get_state(run_key("retry_at", ann))
+        assert sent == []
+
     def test_last_attempt_reports_instead_of_retrying(self, env, monkeypatch):
         from p3 import mailer
 

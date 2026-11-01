@@ -992,8 +992,20 @@ def attempts_today(db, key: str, today: str) -> int:
 
 def _all_fetches_failed(db, run_id: str) -> bool:
     """True if the run fetched feeds and every one reported a problem: the
-    sign of a network outage rather than one broken feed."""
-    fetches = [j for j in db.get_jobs_by_run(run_id) if j["job_type"] == "fetch"]
+    sign of a network outage rather than one broken feed.
+
+    Single-video YouTube sources don't count: once their video is in the
+    library their fetch reads nothing, so it succeeds offline too."""
+
+    def reads_network(job) -> bool:
+        podcast = db.get_podcast_by_id(job["podcast_id"]) if job["podcast_id"] else None
+        return not podcast or podcast.get("source_type") != "youtube_video"
+
+    fetches = [
+        j
+        for j in db.get_jobs_by_run(run_id)
+        if j["job_type"] == "fetch" and reads_network(j)
+    ]
     return bool(fetches) and all(j["error"] for j in fetches)
 
 
