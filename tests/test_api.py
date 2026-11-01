@@ -1530,6 +1530,7 @@ class TestRefreshAll:
         assert args[1] == resp.json()["job_id"] and args[2] == "03:40"
         job = deps.get_db().get_job(resp.json()["job_id"])
         assert job["job_type"] == "refresh"
+        assert client.get(f"/api/jobs/{job['id']}").status_code == 200
 
     def test_only_admins_and_a_valid_time(self):
         client.get("/api/me")

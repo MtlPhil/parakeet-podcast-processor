@@ -101,12 +101,13 @@ def refresh_all(
         pattern=r"^([01]\d|2[0-3]):[0-5]\d$",
         description="HH:MM, local: start no episode that could still run then",
     ),
-    _admin: dict = Depends(require_admin),
+    admin: dict = Depends(require_admin),
 ):
     """Queue one job that redoes every digest (and synopsis) with the show
-    notes, keeping their dates; see tasks.task_refresh_digests."""
+    notes, keeping their dates; see tasks.task_refresh_digests. The job is
+    the admin's, so it shows in their job list."""
     db = get_db()
-    job_id = db.create_job("refresh")
+    job_id = db.create_job("refresh", username=admin["username"])
     job_runner.enqueue(task_refresh_digests, job_id, stop_at)
     return {"job_id": job_id}
 
