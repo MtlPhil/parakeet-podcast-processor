@@ -213,3 +213,71 @@ class TestDeletedEpisodesList:
         assert db.allow_deleted_episode("ann", url) is True
         assert db.allow_deleted_episode("ann", url) is False
         assert not db.is_url_deleted("ann", url)
+
+
+class TestDeleteUser:
+    def test_erases_only_what_nobody_else_has(self, db, tmp_path):
+        db.ensure_user("ann")
+        db.ensure_user("bob")
+        shared_pid, (shared_ep, bob_ep) = _podcast_with_episodes(
+            db, url="http://example.com/shared"
+        )
+        own_pid, (own_ep, _) = _podcast_with_episodes(db, url="http://example.com/own")
+        db.subscribe("ann", shared_pid)
+        db.subscribe("bob", shared_pid)
+        db.subscribe("bob", own_pid)
+        db.link_episode("ann", shared_ep)
+        for episode_id in (shared_ep, bob_ep, own_ep):
+            db.link_episode("bob", episode_id)
+        db.add_transcript_segments(
+            own_ep,
+            [{"start": 0, "end": 1, "text": "Hi", "speaker": "", "confidence": 1}],
+        )
+        db.add_summary(own_ep, [], [], [], [], "Summary")
+        audio = tmp_path / "own.wav"
+        audio.write_bytes(b"x")
+        db.conn.execute(
+            "UPDATE episodes SET file_path = ? WHERE id = ?", (str(audio), own_ep)
+        )
+
+        db.delete_user("bob")
+
+        assert db.get_user("bob") is None
+        assert db.get_podcast_by_id(own_pid) is None
+        assert db.get_episode_by_id(own_ep) is None
+        assert db.get_transcripts_for_episode(own_ep) == []
+        assert not audio.exists()
+        assert db.get_episode_by_id(bob_ep) is None
+        assert [p["id"] for p in db.get_all_podcasts("ann")] == [shared_pid]
+        assert [e["id"] for e in db.get_all_episodes("ann")] == [shared_ep]
+
+    def test_erases_their_records_and_no_one_elses(self, db):
+        db.ensure_user("ann")
+        # "_" in a username must not act as a wildcard and catch "aXb".
+        for username in ("a_b", "aXb"):
+            db.ensure_user(username)
+            db.create_session(f"hash-{username}", username, datetime(2099, 1, 1))
+            db.set_state(f"daily_run_id:{username}", "run")
+            db.set_state(f"setup_done:{username}", "1")
+        db.set_state("setup_done", "1")
+        pid, (eid, _) = _podcast_with_episodes(db)
+        db.subscribe("a_b", pid)
+        db.subscribe("aXb", pid)
+        db.link_episode("a_b", eid)
+        db.link_episode("aXb", eid)
+        db.hide_episode("a_b", eid)
+        their_job = db.create_job("fetch", podcast_id=pid, username="a_b")
+        other_job = db.create_job("fetch", podcast_id=pid, username="aXb")
+
+        db.delete_user("a_b")
+
+        assert db.get_session_username("hash-a_b", datetime.now()) is None
+        assert db.get_session_username("hash-aXb", datetime.now()) == "aXb"
+        assert db.get_state("daily_run_id:a_b") is None
+        assert db.get_state("setup_done:a_b") is None
+        assert db.get_state("daily_run_id:aXb") == "run"
+        assert db.get_state("setup_done:aXb") == "1"
+        assert db.get_state("setup_done") == "1"
+        assert db.get_deleted_episodes("a_b") == []
+        assert db.get_job(their_job) is None
+        assert db.get_job(other_job) is not None

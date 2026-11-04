@@ -1291,6 +1291,48 @@ class P3Database:
         ).fetchone()
         return row[0] if row else None
 
+    def delete_user(self, username: str):
+        """Erase a user and everything only they had: podcasts nobody else
+        follows and episodes nobody else has, with their transcripts,
+        summaries, jobs and audio. Shared ones stay.
+
+        Not one transaction: DuckDB rejects deleting a row and what references
+        it in the same transaction. The user's row goes last, so a failure
+        partway can simply be retried."""
+        episode_ids = [
+            row[0]
+            for row in self.conn.execute(
+                "SELECT episode_id FROM user_episodes WHERE username = ?", (username,)
+            ).fetchall()
+        ]
+        podcast_ids = [
+            row[0]
+            for row in self.conn.execute(
+                "SELECT podcast_id FROM user_podcasts WHERE username = ?", (username,)
+            ).fetchall()
+        ]
+        for table in ("jobs", "sessions", "user_deleted_episodes", "user_episodes"):
+            self.conn.execute(f"DELETE FROM {table} WHERE username = ?", (username,))
+        # Per-user keys end in ":<username>"; usernames can't contain ":".
+        self.conn.execute(
+            "DELETE FROM app_state WHERE ends_with(key, ?)", (f":{username}",)
+        )
+        for podcast_id in podcast_ids:
+            if self.unsubscribe(username, podcast_id) == 0:
+                for episode in self.get_episodes_by_podcast(podcast_id):
+                    self.remove_audio(episode["id"])
+                self.delete_podcast(podcast_id)
+        for episode_id in episode_ids:
+            nobody_has_it = (
+                self.conn.execute(
+                    "SELECT 1 FROM user_episodes WHERE episode_id = ?", (episode_id,)
+                ).fetchone()
+                is None
+            )
+            if nobody_has_it and self.get_episode_by_id(episode_id):
+                self.purge_episode(episode_id)
+        self.conn.execute("DELETE FROM users WHERE username = ?", (username,))
+
     def set_user_role(self, username: str, role: str):
         """Make a user an 'admin' or a 'user'."""
         if role not in ("admin", "user"):

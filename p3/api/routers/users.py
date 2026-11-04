@@ -1,9 +1,10 @@
 """The signed-in user's profile and settings, and user administration."""
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
-from p3.api.auth import current_user, require_admin
-from p3.api.deps import get_db, user_settings
+from p3.api import tasks
+from p3.api.auth import current_user, end_session, require_admin
+from p3.api.deps import delete_content, get_db, user_settings
 from p3.api.models import (
     DeletedEpisodeAllow,
     DeletedEpisodeOut,
@@ -17,6 +18,26 @@ from p3.api.scheduler import parse_run_time
 router = APIRouter(prefix="/api", tags=["users"])
 
 
+def _delete_user(user: dict):
+    """Delete a user, unless they are the only admin (someone must be able to
+    manage the shared settings, and the next sign-in would otherwise take over
+    the whole library as the first user) or work of theirs is under way."""
+    db = get_db()
+    username = user["username"]
+    admins = [u for u in db.get_all_users() if u["role"] == "admin"]
+    if admins == [user]:
+        raise HTTPException(
+            400, "The only admin can't be deleted. Make someone else an admin first."
+        )
+    run_active = db.get_state(tasks.run_key("id", username)) in tasks.active_run_ids
+    if run_active or db.get_active_jobs(username):
+        raise HTTPException(
+            409, f"{username} has jobs in progress. Try again when they finish."
+        )
+    db.delete_user(username)
+    delete_content(username)
+
+
 def _me(user: dict) -> dict:
     return {
         **user,
@@ -28,6 +49,16 @@ def _me(user: dict) -> dict:
 @router.get("/me", response_model=MeOut)
 def get_me(user: dict = Depends(current_user)):
     return _me(user)
+
+
+@router.delete("/me", response_model=dict)
+def delete_my_account(
+    request: Request, response: Response, user: dict = Depends(current_user)
+):
+    """Delete the signed-in user's account and sign them out."""
+    _delete_user(user)
+    end_session(request, response)
+    return {"deleted": True}
 
 
 @router.put("/me/settings", response_model=MeOut)
@@ -85,3 +116,13 @@ def set_role(username: str, body: RoleUpdate, _admin: dict = Depends(require_adm
     updated = db.get_user(username)
     assert updated is not None
     return updated
+
+
+@router.delete("/admin/users/{username}", response_model=dict)
+def delete_user(username: str, _admin: dict = Depends(require_admin)):
+    """Delete someone's account."""
+    target = get_db().get_user(username)
+    if not target:
+        raise HTTPException(404, "User not found")
+    _delete_user(target)
+    return {"deleted": True}

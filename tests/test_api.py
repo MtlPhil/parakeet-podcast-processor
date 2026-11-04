@@ -1432,6 +1432,64 @@ class TestMultiUser:
             == 404
         )
 
+    def test_delete_my_account_removes_my_data_only(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)  # content folders are relative to the cwd
+        pid, eid = self._shared_podcast()
+        for folder in ("linkedin_posts/bob", "exports/bob", "exports/tester"):
+            (tmp_path / folder).mkdir(parents=True)
+            (tmp_path / folder / "post.md").write_text("x")
+
+        assert client.delete("/api/me", headers=BOB).json() == {"deleted": True}
+
+        users = client.get("/api/admin/users").json()
+        assert [u["username"] for u in users] == ["tester"]
+        assert not (tmp_path / "linkedin_posts/bob").exists()
+        assert not (tmp_path / "exports/bob").exists()
+        assert (tmp_path / "exports/tester/post.md").exists()
+        assert client.get(f"/api/episodes/{eid}").status_code == 200
+
+    def test_only_admin_cannot_be_deleted(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        client.get("/api/me")
+        client.get("/api/me", headers=BOB)
+        assert client.delete("/api/me").status_code == 400
+        assert client.delete("/api/admin/users/tester").status_code == 400
+        assert deps.get_db().get_user("tester") is not None
+
+        client.patch("/api/admin/users/bob", json={"role": "admin"})
+        assert client.delete("/api/me").status_code == 200
+        assert deps.get_db().get_user("tester") is None
+        assert deps.get_db().get_user("bob")["role"] == "admin"
+
+    def test_admin_deletes_users(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        client.get("/api/me")
+        client.get("/api/me", headers=BOB)
+        assert client.delete("/api/admin/users/tester", headers=BOB).status_code == 403
+        assert client.delete("/api/admin/users/nobody").status_code == 404
+        assert client.delete("/api/admin/users/bob").json() == {"deleted": True}
+        assert deps.get_db().get_user("bob") is None
+
+    def test_user_with_work_in_progress_cannot_be_deleted(self, tmp_path, monkeypatch):
+        from p3.api import tasks
+
+        monkeypatch.chdir(tmp_path)
+        db = deps.get_db()
+        client.get("/api/me")
+        client.get("/api/me", headers=BOB)
+        job = db.create_job("fetch", username="bob")
+        assert client.delete("/api/me", headers=BOB).status_code == 409
+        assert client.delete("/api/admin/users/bob").status_code == 409
+        db.update_job(job, status="completed")
+
+        db.set_state(tasks.run_key("id", "bob"), "run-1")
+        monkeypatch.setattr(tasks, "active_run_ids", {"run-1"})
+        assert client.delete("/api/me", headers=BOB).status_code == 409
+        assert db.get_user("bob") is not None
+
+        monkeypatch.setattr(tasks, "active_run_ids", set())
+        assert client.delete("/api/me", headers=BOB).status_code == 200
+
     def test_search_is_scoped(self):
         db = deps.get_db()
         pid = db.add_podcast("Pod", "http://example.com/rss")

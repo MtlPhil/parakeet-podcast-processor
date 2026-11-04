@@ -156,6 +156,38 @@ class TestSignIn:
         )
 
 
+class TestDeleteAccount:
+    def _with_bob(self, env, monkeypatch):
+        monkeypatch.chdir(env)  # content folders are relative to the cwd
+        admin = _client()
+        _setup_admin(admin)
+        admin.post(
+            "/api/admin/users",
+            json={"username": "bob", "password": PASSWORD, "role": "user"},
+        )
+        bob = _client()
+        bob.post("/api/auth/login", json={"username": "bob", "password": PASSWORD})
+        assert bob.get("/api/me").status_code == 200
+        return admin, bob
+
+    def test_deleting_my_account_signs_me_out_for_good(self, env, monkeypatch):
+        _, bob = self._with_bob(env, monkeypatch)
+        assert bob.delete("/api/me").status_code == 200
+        assert "p3_session" not in bob.cookies
+        assert bob.get("/api/me").status_code == 401
+        assert (
+            bob.post(
+                "/api/auth/login", json={"username": "bob", "password": PASSWORD}
+            ).status_code
+            == 401
+        )
+
+    def test_admin_deleting_a_user_ends_their_sessions(self, env, monkeypatch):
+        admin, bob = self._with_bob(env, monkeypatch)
+        assert admin.delete("/api/admin/users/bob").status_code == 200
+        assert bob.get("/api/me").status_code == 401
+
+
 class TestAdminAccounts:
     def test_admin_creates_users_with_roles(self, env):
         admin = _client()

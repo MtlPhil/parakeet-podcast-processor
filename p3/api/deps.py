@@ -1,11 +1,18 @@
 """Shared dependencies for the API."""
 
+import logging
+import shutil
 from pathlib import Path
 from typing import Any, Optional
 
 import yaml
 
 from p3.database import P3Database
+
+logger = logging.getLogger(__name__)
+
+# Folders that hold one subfolder of generated files per user.
+CONTENT_BASES = ("exports", "blog_posts", "linkedin_posts")
 
 _DB_PATH = "data/p3.duckdb"
 _CONFIG_PATH = "config/feeds.yaml"
@@ -105,3 +112,16 @@ def content_dir(base: str, username: Optional[str]) -> Path:
     """Folder for a user's generated files (posts, exports): ``base/<user>``.
     Without a username, ``base`` itself (CLI output)."""
     return Path(base) / username if username else Path(base)
+
+
+def delete_content(username: str):
+    """Delete a user's generated files (posts, exports)."""
+    for base in CONTENT_BASES:
+        folder = content_dir(base, username)
+        # A safeguard for a recursive delete: only ever a direct subfolder.
+        if folder.parent != Path(base) or not folder.is_dir():
+            continue
+        try:
+            shutil.rmtree(folder)
+        except OSError:
+            logger.exception("Could not delete %s", folder)

@@ -23,6 +23,7 @@ async function request(path, options = {}) {
 
 // The signed-in user (from the reverse proxy's Remote-User header)
 export const getMe = () => request('/me');
+export const deleteMyAccount = () => request('/me', { method: 'DELETE' });
 export const updateMySettings = (settings) =>
   request('/me/settings', { method: 'PUT', body: JSON.stringify(settings) });
 
@@ -37,6 +38,8 @@ export const setUserRole = (username, role) =>
     method: 'PATCH',
     body: JSON.stringify({ role }),
   });
+export const deleteUser = (username) =>
+  request(`/admin/users/${encodeURIComponent(username)}`, { method: 'DELETE' });
 export const translateAll = () => request('/episodes/translate-all', { method: 'POST' });
 
 // Stats

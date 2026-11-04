@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
-import { cleanupAudio, createUser, getUsers, resetPassword, setUserRole, translateAll } from '../api/client';
+import { Fragment, useEffect, useState } from 'react';
+import { cleanupAudio, createUser, deleteUser, getUsers, resetPassword, setUserRole, translateAll } from '../api/client';
+import DeleteConfirm from '../components/DeleteConfirm';
 import { Field, inputClass, primaryButton } from '../components/Form';
 import { useMe } from '../hooks/useMe';
 
@@ -66,10 +67,19 @@ export default function Admin() {
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [deleting, setDeleting] = useState(null);
 
   useEffect(() => {
     getUsers().then(setUsers).catch((e) => setError(e.message));
   }, []);
+
+  const confirmDelete = async (username) => {
+    await deleteUser(username);
+    setUsers((prev) => prev.filter((u) => u.username !== username));
+    setDeleting(null);
+    setError(null);
+    setNotice(`Deleted ${username}.`);
+  };
 
   const run = async (fn) => {
     setBusy(true);
@@ -145,12 +155,13 @@ export default function Admin() {
                 <th className="text-left px-4 py-2">User</th>
                 <th className="text-left px-4 py-2">Since</th>
                 <th className="text-left px-4 py-2">Role</th>
-                {authMode === 'local' && <th className="px-4 py-2" />}
+                <th className="px-4 py-2" />
               </tr>
             </thead>
             <tbody className="divide-y">
               {users.map((u) => (
-                <tr key={u.username}>
+                <Fragment key={u.username}>
+                <tr>
                   <td className="px-4 py-2">
                     <span className="font-medium text-gray-800">{u.display_name || u.username}</span>
                     <span className="block text-xs text-gray-500">
@@ -172,15 +183,40 @@ export default function Admin() {
                       <option value="admin">Admin</option>
                     </select>
                   </td>
-                  {authMode === 'local' && (
-                    <td className="px-4 py-2 text-right">
+                  <td className="px-4 py-2 text-right space-x-3 whitespace-nowrap">
+                    {authMode === 'local' && (
                       <button onClick={() => setPassword(u.username)} disabled={busy}
                         className="text-xs text-blue-600 underline disabled:opacity-50">
                         Set password
                       </button>
-                    </td>
-                  )}
+                    )}
+                    {u.username !== me.username && (
+                      <button onClick={() => setDeleting(u.username)} disabled={busy}
+                        className="text-xs text-red-600 underline disabled:opacity-50">
+                        Delete user
+                      </button>
+                    )}
+                  </td>
                 </tr>
+                {deleting === u.username && (
+                  <tr>
+                    <td colSpan={4} className="px-4 py-3 bg-red-50 space-y-3">
+                      <p className="text-sm text-gray-700">
+                        Delete {u.username}? This removes their settings, posts and exports, and
+                        any podcasts and episodes nobody else has, with their transcripts and
+                        summaries. It can&apos;t be undone.
+                        {authMode !== 'local' && ' If they sign in again, they start with a new, empty account.'}
+                      </p>
+                      <DeleteConfirm
+                        id={`delete-${u.username}`}
+                        label="Delete user"
+                        onConfirm={() => confirmDelete(u.username)}
+                        onCancel={() => setDeleting(null)}
+                      />
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               ))}
             </tbody>
           </table>

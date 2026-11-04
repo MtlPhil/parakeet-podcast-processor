@@ -20,6 +20,7 @@ export default function App() {
   const [me, setMe] = useState(null);
   const [error, setError] = useState(null);
   const [attempt, setAttempt] = useState(0);
+  const [accountDeleted, setAccountDeleted] = useState(false);
   const navigate = useNavigate();
 
   const reload = useCallback(
@@ -60,6 +61,20 @@ export default function App() {
     return () => { cancelled = true; };
   }, [attempt, navigate]);
 
+  // Nothing here may call the API: behind a proxy, the next request would
+  // create the account again.
+  if (accountDeleted) {
+    return (
+      <div className="p-6 text-gray-700">
+        <p className="font-medium">Your account was deleted.</p>
+        {status.mode === 'local' ? (
+          <a href="/" className="text-sm text-blue-600 underline">Back to sign-in</a>
+        ) : (
+          <p className="text-sm text-gray-500">You can close this tab.</p>
+        )}
+      </div>
+    );
+  }
   if (error && !me) {
     return (
       <p className="p-6 text-red-600">
@@ -75,7 +90,7 @@ export default function App() {
   if (!me) return <p className="p-6 text-gray-500">Loading...</p>;
 
   return (
-    <MeContext.Provider value={{ me, reload, authMode: status.mode }}>
+    <MeContext.Provider value={{ me, reload, authMode: status.mode, onAccountDeleted: () => setAccountDeleted(true) }}>
       <Routes>
         <Route path="/setup" element={<Setup />} />
         <Route element={<Layout />}>

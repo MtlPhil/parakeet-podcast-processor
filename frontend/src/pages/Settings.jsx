@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { allowDeletedEpisode, changeMyPassword, getDeletedEpisodes, getSettings, updateMySettings, updateSettings } from '../api/client';
+import { allowDeletedEpisode, changeMyPassword, deleteMyAccount, getDeletedEpisodes, getSettings, getUsers, updateMySettings, updateSettings } from '../api/client';
+import DeleteConfirm from '../components/DeleteConfirm';
 import { useMe } from '../hooks/useMe';
 
 const inputClass =
@@ -335,6 +336,44 @@ function MyPassword() {
   );
 }
 
+// Deleting the signed-in user's own account.
+function DangerZone() {
+  const { me, authMode, onAccountDeleted } = useMe();
+  const [onlyAdmin, setOnlyAdmin] = useState(false);
+
+  useEffect(() => {
+    if (me.role !== 'admin') return;
+    getUsers()
+      .then((users) => setOnlyAdmin(users.filter((u) => u.role === 'admin').length === 1))
+      .catch(() => {}); // The server refuses it anyway, and says why.
+  }, [me.role]);
+
+  const confirm = async () => {
+    await deleteMyAccount();
+    onAccountDeleted();
+  };
+
+  return (
+    <section className="border border-red-300 rounded-lg p-4 space-y-3">
+      <h2 className="text-lg font-semibold text-red-700">Danger Zone</h2>
+      <p className="text-sm font-medium text-gray-800">Delete your account</p>
+      <p className="text-sm text-gray-600">
+        This removes your settings, your posts and exports, and any podcasts and episodes
+        nobody else has, with their transcripts and summaries. It can&apos;t be undone.
+        {authMode !== 'local' && ' Signing in again would start a new, empty account.'}
+      </p>
+      {onlyAdmin ? (
+        <p className="text-sm text-gray-600">
+          You&apos;re the only admin, so this account can&apos;t be deleted. Make someone else
+          an admin first.
+        </p>
+      ) : (
+        <DeleteConfirm id="delete-my-account" label="Delete my account" onConfirm={confirm} />
+      )}
+    </section>
+  );
+}
+
 export default function Settings() {
   const { me, authMode } = useMe();
   return (
@@ -347,6 +386,7 @@ export default function Settings() {
       {authMode === 'local' && <MyPassword />}
       <DeletedEpisodes />
       {me.role === 'admin' && <SharedSettings />}
+      <DangerZone />
     </div>
   );
 }
