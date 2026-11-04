@@ -373,6 +373,22 @@ class TestProblemsAreRecorded:
         assert dl.process_feed("http://example.com/rss") == 0
         assert dl.problems == ["Download failed for A: connection refused"]
 
+    def test_audio_is_requested_as_a_browser(self, tmp_path, monkeypatch):
+        from p3 import downloader
+
+        seen = {}
+
+        def respond(method, url, **kwargs):
+            seen.update(kwargs)
+            return MagicMock(iter_content=lambda chunk_size: [b"audio"])
+
+        monkeypatch.setattr(downloader, "_retry_request", respond)
+        dl = downloader.PodcastDownloader(db=MagicMock(), data_dir=str(tmp_path))
+        monkeypatch.setattr(dl, "_normalize", lambda path, name: f"{name}.wav")
+
+        assert dl.download_episode("http://x/a.mp3", "a") == "a.wav"
+        assert seen["headers"]["User-Agent"].startswith("Mozilla/5.0")
+
     def test_deleted_episodes_are_skipped_not_problems(self, tmp_path, monkeypatch):
         import feedparser
 

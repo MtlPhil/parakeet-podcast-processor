@@ -23,6 +23,12 @@ logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 3
 RETRY_BACKOFF_BASE = 2  # seconds
+# Audio is requested as a browser: some hosts (Buzzsprout's CDN) answer 403 to
+# the default python-requests identity.
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
 
 
 def _retry_request(method: str, url: str, **kwargs) -> requests.Response:
@@ -318,7 +324,13 @@ class PodcastDownloader:
         """Download and normalize audio episode."""
         tmp_path = None
         try:
-            response = _retry_request("GET", episode_url, stream=True, timeout=300)
+            response = _retry_request(
+                "GET",
+                episode_url,
+                stream=True,
+                timeout=300,
+                headers={"User-Agent": BROWSER_USER_AGENT},
+            )
 
             # Save to temporary file first
             with tempfile.NamedTemporaryFile(delete=False, suffix=".tmp") as tmp_file:
