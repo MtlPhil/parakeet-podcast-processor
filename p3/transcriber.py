@@ -4,13 +4,12 @@ Each episode's language is detected first. Parakeet transcribes the languages
 it handles reliably (English by default); everything else goes to Whisper,
 which is told the language. Parakeet has no language input: on spontaneous
 non-English speech it drifts into English that reads like a translation.
+
+An episode is transcribed completely or not at all: a failure raises
+TranscriptionError and leaves the episode as it was, so it can be retried.
 """
 
-import json
 import logging
-import shutil
-import subprocess
-import tempfile
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
@@ -59,13 +58,20 @@ WHISPER_MODELS = {
 }
 DEFAULT_WHISPER_MODEL = "turbo"
 
-# Long episodes are transcribed in fixed-length chunks to bound memory use.
+# Parakeet works through a long episode in chunks of this length, to bound
+# memory use. Consecutive chunks overlap, and parakeet-mlx merges them on the
+# words they share, so a sentence that straddles a boundary is not cut.
 _CHUNK_SECONDS = 600
+_CHUNK_OVERLAP_SECONDS = 15
 
 # Language detection listens to this many seconds of audio, starting a minute
 # in so that intro music doesn't decide the result.
 _LANGUAGE_PROBE_SECONDS = 30
 _LANGUAGE_PROBE_START = 60
+
+
+class TranscriptionError(RuntimeError):
+    """An episode could not be transcribed; the message says why."""
 
 
 class AudioTranscriber:
@@ -100,12 +106,6 @@ class AudioTranscriber:
         if WHISPER_AVAILABLE:
             ModelHolder.model = None
             ModelHolder.model_path = None
-
-    def _load_parakeet(self):
-        """Lazy load Parakeet MLX model."""
-        if self._parakeet is None and PARAKEET_AVAILABLE:
-            logger.info("Loading Parakeet model: %s", self.parakeet_model)
-            self._parakeet = parakeet_from_pretrained(self.parakeet_model)
 
     def detect_language(self, audio_path: str) -> Optional[str]:
         """Detect the spoken language with Whisper's language identification.
@@ -144,13 +144,14 @@ class AudioTranscriber:
 
     def transcribe_with_whisper(
         self, audio_path: str, language: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         """Transcribe audio using Whisper (MLX), in ``language`` if given;
         otherwise Whisper detects it from the first 30 seconds."""
         if not WHISPER_AVAILABLE:
-            logger.error("Whisper is unavailable: mlx-whisper is not installed")
-            return None
-
+            raise TranscriptionError(
+                "No speech-to-text engine is installed: transcription needs "
+                "mlx-whisper, which runs only on a Mac with Apple Silicon"
+            )
         try:
             result = mlx_whisper.transcribe(
                 audio_path,
@@ -159,203 +160,97 @@ class AudioTranscriber:
                 word_timestamps=True,
                 verbose=None,
             )
-
-            segments = []
-            for segment in result.get("segments", []):
-                # no_speech_prob is probability of NO speech — invert for confidence
-                no_speech_prob = segment.get("no_speech_prob", 0.0)
-                confidence = 1.0 - no_speech_prob
-
-                segments.append(
-                    {
-                        "start": segment.get("start", 0),
-                        "end": segment.get("end", 0),
-                        "text": segment.get("text", "").strip(),
-                        "speaker": None,
-                        "confidence": confidence,
-                    }
-                )
-
-            return {
-                "segments": segments,
-                "language": result.get("language"),
-                "text": result.get("text", ""),
-                "provider": "whisper",
-            }
-
         except Exception as e:
-            logger.error("Whisper transcription failed: %s", e)
-            return None
+            raise TranscriptionError(f"Whisper failed: {e}") from e
+
+        return {
+            "segments": [
+                {
+                    "start": segment.get("start", 0),
+                    "end": segment.get("end", 0),
+                    "text": segment.get("text", "").strip(),
+                    "speaker": None,
+                    # Whisper reports the probability that a segment holds
+                    # no speech; its complement serves as confidence.
+                    "confidence": 1.0 - segment.get("no_speech_prob", 0.0),
+                }
+                for segment in result.get("segments", [])
+            ],
+            "language": result.get("language"),
+        }
 
     def transcribe_with_parakeet(
         self, audio_path: str, language: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         """Transcribe audio using Nvidia Parakeet MLX. ``language`` is the
         language detected beforehand; Parakeet can't be told it, it is only
-        reported back (and passed to Whisper if Parakeet fails)."""
+        reported back. If Parakeet is missing or fails, Whisper transcribes
+        the whole episode instead."""
         if not PARAKEET_AVAILABLE:
             logger.warning("Parakeet MLX not available, falling back to Whisper")
             return self.transcribe_with_whisper(audio_path, language)
 
-        self._load_parakeet()
-
-        temp_dir = tempfile.mkdtemp(prefix="p3_chunks_")
         try:
-            output_pattern = str(Path(temp_dir) / f"{Path(audio_path).stem}_%03d.wav")
-            try:
-                subprocess.run(
-                    [
-                        "ffmpeg",
-                        "-hide_banner",
-                        "-loglevel",
-                        "error",
-                        "-i",
-                        audio_path,
-                        "-f",
-                        "segment",
-                        "-segment_time",
-                        str(_CHUNK_SECONDS),
-                        "-c",
-                        "copy",
-                        output_pattern,
-                    ],
-                    check=True,
-                )
-            except subprocess.CalledProcessError as e:
-                logger.error("Audio splitting failed: %s", e)
-                return self.transcribe_with_whisper(audio_path, language)
-
-            chunks = sorted(Path(temp_dir).glob("*.wav"))
-            logger.info("Split audio into %d chunk(s)", len(chunks))
-            if not chunks:
-                logger.warning("No chunks created for %s", audio_path)
-                return None
-
-            segments = []
-            text_parts = []
-            for i, chunk in enumerate(chunks):
-                logger.info("Transcribing chunk %d/%d", i + 1, len(chunks))
-                offset = _CHUNK_SECONDS * i
-                try:
-                    result = self._parakeet.transcribe(str(chunk))
-                    for sentence in result.sentences:
-                        segments.append(
-                            {
-                                "start": offset + sentence.start,
-                                "end": offset + sentence.end,
-                                "text": sentence.text.strip(),
-                                "speaker": None,  # no speaker diarization
-                                "confidence": 1.0,  # Parakeet reports no confidence scores
-                            }
-                        )
-                    text_parts.append(result.text)
-                except Exception as e:
-                    logger.warning("Transcription failed for chunk %d: %s", i + 1, e)
-
-            return {
-                "segments": segments,
-                "language": language,
-                "text": " ".join(text_parts),
-                "provider": "parakeet-mlx",
-            }
-
+            if self._parakeet is None:
+                logger.info("Loading Parakeet model: %s", self.parakeet_model)
+                self._parakeet = parakeet_from_pretrained(self.parakeet_model)
+            result = self._parakeet.transcribe(
+                audio_path,
+                chunk_duration=_CHUNK_SECONDS,
+                overlap_duration=_CHUNK_OVERLAP_SECONDS,
+            )
         except Exception as e:
-            logger.error(
-                "Parakeet transcription failed, falling back to Whisper: %s", e
-            )
+            logger.error("Parakeet failed, falling back to Whisper: %s", e)
+            self._parakeet = None  # only one model in memory at a time
             return self.transcribe_with_whisper(audio_path, language)
-        finally:
-            shutil.rmtree(temp_dir, ignore_errors=True)
 
-    def transcribe_episode(self, episode_id: int) -> bool:
-        """Transcribe a single episode and store results."""
+        return {
+            "segments": [
+                {
+                    "start": sentence.start,
+                    "end": sentence.end,
+                    "text": sentence.text.strip(),
+                    "speaker": None,  # no speaker diarization
+                    "confidence": sentence.confidence,
+                }
+                for sentence in result.sentences
+            ],
+            "language": language,
+        }
+
+    def transcribe_episode(self, episode_id: int) -> None:
+        """Transcribe a single episode and store its transcript and language.
+
+        Raises TranscriptionError, leaving the episode untouched, if it
+        can't be transcribed.
+        """
         episode = self.db.get_episode_by_id(episode_id)
-
         if not episode:
-            logger.warning("Episode %d not found", episode_id)
-            return False
-
+            raise TranscriptionError(f"Episode {episode_id} not found")
         if episode["status"] != "downloaded":
-            logger.warning(
-                "Episode %d has status '%s', expected 'downloaded'",
-                episode_id,
-                episode["status"],
+            raise TranscriptionError(
+                f"Episode {episode_id} is already {episode['status']}"
             )
-            return False
-
-        if not episode["file_path"] or not Path(episode["file_path"]).exists():
-            logger.error("Audio file not found: %s", episode.get("file_path"))
-            return False
+        audio_path = episode["file_path"]
+        if not audio_path or not Path(audio_path).exists():
+            raise TranscriptionError(f"Audio file not found: {audio_path}")
 
         logger.info("Transcribing: %s", episode["title"])
 
         # Pick the engine by language: Parakeet only for the languages it
         # handles; Whisper for the rest, told the language. If detection
         # failed, Whisper detects it itself rather than risk Parakeet.
-        language = self.detect_language(episode["file_path"])
+        language = self.detect_language(audio_path)
         logger.info("Detected language: %s", language)
         if self.use_parakeet and language in self.parakeet_languages:
             self._release_whisper()  # only one model in memory at a time
-            result = self.transcribe_with_parakeet(episode["file_path"], language)
+            result = self.transcribe_with_parakeet(audio_path, language)
         else:
-            result = self.transcribe_with_whisper(episode["file_path"], language)
+            result = self.transcribe_with_whisper(audio_path, language)
 
-        if not result:
-            return False
+        segments = [s for s in result["segments"] if s["text"]]
+        if not segments:
+            raise TranscriptionError("No speech was found in the audio")
 
-        # Store transcript segments in database
-        self.db.add_transcript_segments(episode_id, result["segments"])
-        self.db.set_episode_language(episode_id, result.get("language"))
-
-        # Update episode status
-        self.db.update_episode_status(episode_id, "transcribed")
-
+        self.db.store_transcript(episode_id, segments, result.get("language"))
         logger.info("Transcribed: %s", episode["title"])
-        return True
-
-    def transcribe_all_pending(self) -> int:
-        """Transcribe all episodes with 'downloaded' status."""
-        episodes = self.db.get_episodes_by_status("downloaded")
-        transcribed_count = 0
-
-        for episode in episodes:
-            if self.transcribe_episode(episode["id"]):
-                transcribed_count += 1
-
-        return transcribed_count
-
-    def get_full_transcript(self, episode_id: int) -> str:
-        """Get the full transcript text for an episode."""
-        segments = self.db.get_transcripts_for_episode(episode_id)
-        return "\n".join(segment["text"] for segment in segments)
-
-    def export_transcript(self, episode_id: int, format: str = "txt") -> str:
-        """Export transcript in various formats."""
-        segments = self.db.get_transcripts_for_episode(episode_id)
-
-        if format == "txt":
-            return "\n".join(segment["text"] for segment in segments)
-
-        elif format == "srt":
-            srt_content = []
-            for i, segment in enumerate(segments, 1):
-                start_time = self._seconds_to_srt_time(segment["timestamp_start"] or 0)
-                end_time = self._seconds_to_srt_time(segment["timestamp_end"] or 0)
-                srt_content.append(
-                    f"{i}\n{start_time} --> {end_time}\n{segment['text']}\n"
-                )
-            return "\n".join(srt_content)
-
-        elif format == "json":
-            return json.dumps(segments, indent=2, default=str)
-
-        else:
-            raise ValueError(f"Unsupported format: {format}")
-
-    def _seconds_to_srt_time(self, seconds: float) -> str:
-        """Convert seconds to SRT timestamp format."""
-        hours = int(seconds // 3600)
-        minutes = int((seconds % 3600) // 60)
-        secs = int(seconds % 60)
-        millisecs = int((seconds % 1) * 1000)
-        return f"{hours:02d}:{minutes:02d}:{secs:02d},{millisecs:03d}"

@@ -4,6 +4,7 @@ import json
 import logging
 import threading
 import uuid
+from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -40,6 +41,31 @@ class P3Database:
             cursor = self._base_conn.cursor()
             self._local.cursor = cursor
         return cursor
+
+    @contextmanager
+    def transaction(self):
+        """Make the statements run inside the block all happen or none.
+
+        Per thread, like ``conn``. A block nested in another joins the outer
+        one. Not for deleting a row together with the rows that reference
+        it: DuckDB checks foreign keys against the state before the
+        transaction, so the parent's delete is refused (see delete_podcast).
+        """
+        depth = getattr(self._local, "transaction_depth", 0)
+        if depth == 0:
+            self.conn.execute("BEGIN")
+        self._local.transaction_depth = depth + 1
+        try:
+            yield
+        except BaseException:
+            if depth == 0:
+                self.conn.execute("ROLLBACK")
+            raise
+        else:
+            if depth == 0:
+                self.conn.execute("COMMIT")
+        finally:
+            self._local.transaction_depth = depth
 
     def __enter__(self):
         return self
@@ -557,28 +583,43 @@ class P3Database:
         return {"episodes": len(ids), "bytes_freed": freed}
 
     def add_transcript_segments(self, episode_id: int, segments: List[Dict[str, Any]]):
-        """Replace an episode's transcript segments with a fresh set.
-
-        Existing segments are deleted first so that re-transcribing an
-        episode (for example, after an interruption before its status was
-        updated) is idempotent rather than duplicating every segment.
-        """
-        self.conn.execute("DELETE FROM transcripts WHERE episode_id = ?", (episode_id,))
-        for segment in segments:
+        """Replace an episode's transcript segments with a fresh set, so
+        transcribing an episode again never duplicates them. All or nothing:
+        an interruption leaves the previous transcript in place."""
+        with self.transaction():
             self.conn.execute(
-                """
-                INSERT INTO transcripts (episode_id, speaker, timestamp_start, timestamp_end, text, confidence)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """,
-                (
-                    episode_id,
-                    segment.get("speaker"),
-                    segment.get("start"),
-                    segment.get("end"),
-                    segment.get("text"),
-                    segment.get("confidence"),
-                ),
+                "DELETE FROM transcripts WHERE episode_id = ?", (episode_id,)
             )
+            if segments:
+                self.conn.executemany(
+                    """
+                    INSERT INTO transcripts
+                        (episode_id, speaker, timestamp_start, timestamp_end,
+                         text, confidence)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                    [
+                        (
+                            episode_id,
+                            segment.get("speaker"),
+                            segment.get("start"),
+                            segment.get("end"),
+                            segment.get("text"),
+                            segment.get("confidence"),
+                        )
+                        for segment in segments
+                    ],
+                )
+
+    def store_transcript(
+        self, episode_id: int, segments: List[Dict[str, Any]], language: Optional[str]
+    ):
+        """Store a finished transcription: the segments, the language
+        detected, and the episode's new status, together."""
+        with self.transaction():
+            self.add_transcript_segments(episode_id, segments)
+            self.set_episode_language(episode_id, language)
+            self.update_episode_status(episode_id, "transcribed")
 
     def get_transcripts_for_episode(self, episode_id: int) -> List[Dict[str, Any]]:
         """Get all transcript segments for an episode."""
@@ -642,26 +683,29 @@ class P3Database:
         if digest_date is None:
             digest_date = datetime.now().date()
 
-        self.conn.execute("DELETE FROM summaries WHERE episode_id = ?", (episode_id,))
-        self.conn.execute(
-            """
-            INSERT INTO summaries
-                (episode_id, key_topics, themes, quotes, startups, full_summary,
-                 digest_date, long_summary, long_summary_fr)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-            (
-                episode_id,
-                json.dumps(key_topics),
-                json.dumps(themes),
-                json.dumps(quotes),
-                json.dumps(startups),
-                full_summary,
-                digest_date,
-                long_summary,
-                long_summary_fr,
-            ),
-        )
+        with self.transaction():
+            self.conn.execute(
+                "DELETE FROM summaries WHERE episode_id = ?", (episode_id,)
+            )
+            self.conn.execute(
+                """
+                INSERT INTO summaries
+                    (episode_id, key_topics, themes, quotes, startups,
+                     full_summary, digest_date, long_summary, long_summary_fr)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+                (
+                    episode_id,
+                    json.dumps(key_topics),
+                    json.dumps(themes),
+                    json.dumps(quotes),
+                    json.dumps(startups),
+                    full_summary,
+                    digest_date,
+                    long_summary,
+                    long_summary_fr,
+                ),
+            )
 
     def update_summary_long_summary(self, episode_id: int, long_summary: str):
         """Set the long-form synopsis on an episode's existing summary row,
