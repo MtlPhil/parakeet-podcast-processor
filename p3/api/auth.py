@@ -1,6 +1,6 @@
 """Who is making a request.
 
-Two modes, chosen by the ``P3_AUTH`` environment variable:
+Three modes, chosen by the ``P3_AUTH`` environment variable:
 
 ``proxy`` (default): P3 sits behind a reverse proxy (e.g. Traefik) that
 authenticates every request with Authelia's forward-auth and passes the
@@ -16,6 +16,10 @@ users sign in with a password and get a session cookie. The ``Remote-User``
 header and ``P3_DEV_USER`` are ignored, since any client on the network
 could send them. The first account, created by the setup wizard, is an
 admin; admins create the others (see routers/auth.py).
+
+``single``: one person, on this computer, with no sign-in (what a desktop
+app wants). Every request acts as the library's owner, created on first use.
+Because nothing is asked, only requests from this computer are answered.
 """
 
 import hashlib
@@ -47,9 +51,25 @@ _USERNAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]{0,63}")
 _SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 2**14, 8, 1
 
 
+# The owner's username when single mode has to create one.
+SINGLE_USER = "me"
+_LOOPBACK = {"127.0.0.1", "::1", "localhost"}
+
+
 def auth_mode() -> str:
-    """``local`` or ``proxy`` (anything else counts as proxy)."""
-    return "local" if os.environ.get(AUTH_MODE_ENV, "").lower() == "local" else "proxy"
+    """``local``, ``single`` or ``proxy`` (anything else counts as proxy)."""
+    mode = os.environ.get(AUTH_MODE_ENV, "").lower()
+    return mode if mode in ("local", "single") else "proxy"
+
+
+def _single_user(request: Request) -> Dict[str, Any]:
+    """The library's owner, for a request from this computer."""
+    if not request.client or request.client.host not in _LOOPBACK:
+        raise HTTPException(
+            403, "P3 is set up for one person on this computer (P3_AUTH=single)"
+        )
+    db = get_db()
+    return db.ensure_user(db.get_owner() or SINGLE_USER)
 
 
 def valid_username(username: str) -> bool:
@@ -128,6 +148,8 @@ def session_username(request: Request) -> Optional[str]:
 
 def current_user(request: Request) -> Dict[str, Any]:
     """The signed-in user's row (in proxy mode, created on first request)."""
+    if auth_mode() == "single":
+        return _single_user(request)
     if auth_mode() == "local":
         username = session_username(request)
         user = get_db().get_user(username) if username else None

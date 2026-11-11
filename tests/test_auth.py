@@ -333,3 +333,35 @@ class TestEmailProblems:
         )
         assert "smtp.example.com on port 587" in problem(ConnectionRefusedError(), s)
         assert problem(ValueError("odd"), s) == "Could not send: odd"
+
+
+class TestSingleUserMode:
+    """P3_AUTH=single: one person on this computer, nothing to sign in to."""
+
+    @pytest.fixture
+    def single(self, env, monkeypatch):
+        monkeypatch.setenv("P3_AUTH", "single")
+        return TestClient(app, client=("127.0.0.1", 50000))
+
+    def test_the_first_request_creates_the_owner(self, single):
+        assert single.get("/api/auth/status").json()["mode"] == "single"
+        me = single.get("/api/me").json()
+        assert (me["username"], me["role"]) == ("me", "admin")
+        assert single.get("/api/settings").status_code == 200  # admins only
+
+    def test_an_existing_library_keeps_its_owner(self, single):
+        deps.get_db().ensure_user("alex")
+        assert single.get("/api/me").json()["username"] == "alex"
+        assert deps.get_db().count_users() == 1
+
+    def test_another_computer_is_refused(self, single):
+        remote = TestClient(app, client=("192.168.1.20", 50000))
+        resp = remote.get("/api/me", headers={"Remote-User": "admin"})
+        assert resp.status_code == 403
+        assert remote.get("/api/podcasts").status_code == 403
+
+    def test_accounts_cannot_be_created(self, single):
+        resp = single.post(
+            "/api/admin/users", json={"username": "bob", "password": "long enough"}
+        )
+        assert resp.status_code == 400

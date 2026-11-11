@@ -47,8 +47,8 @@ export default function App() {
         const user = await getMe();
         if (cancelled) return;
         setMe(user);
-        // First visit to an install with its own accounts: the setup wizard.
-        if (s.mode === 'local') {
+        // First visit to an install without a reverse proxy: the setup wizard.
+        if (s.mode !== 'proxy') {
           const progress = await getSetupProgress();
           if (!cancelled && !progress.done && window.location.pathname !== '/setup') {
             navigate('/setup');

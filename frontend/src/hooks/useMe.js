@@ -2,7 +2,8 @@ import { createContext, useContext } from 'react';
 
 // The signed-in user ({ username, role, settings, ... }), a reload() to call
 // after changing their settings, and the install's sign-in mode: 'proxy'
-// (accounts come from the reverse proxy) or 'local' (P3's own accounts).
+// (accounts come from the reverse proxy), 'local' (P3's own accounts) or
+// 'single' (one person, no sign-in).
 // Provided by App.
 export const MeContext = createContext({ me: null, reload: () => {}, authMode: 'proxy' });
 

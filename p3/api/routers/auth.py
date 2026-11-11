@@ -101,6 +101,8 @@ def status(request: Request):
     if mode == "local":
         setup_needed = db.count_users() == 0
         signed_in = auth.session_username(request) is not None
+    elif mode == "single":
+        setup_needed, signed_in = False, True
     else:
         setup_needed = False
         signed_in = bool(request.headers.get(auth.USER_HEADER))
