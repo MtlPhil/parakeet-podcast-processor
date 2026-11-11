@@ -52,7 +52,7 @@ _LABELS = {
 def load_smtp_password() -> Optional[str]:
     password = os.getenv("SMTP_PASSWORD")
     if not password and SMTP_PASSWORD_FILE.exists():
-        password = SMTP_PASSWORD_FILE.read_text().strip()
+        password = SMTP_PASSWORD_FILE.read_text(encoding="utf-8").strip()
     return password or None
 
 

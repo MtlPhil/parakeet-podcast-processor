@@ -19,7 +19,7 @@ POSTS_DIR = "linkedin_posts"
 
 def _parse_linkedin_file(path: Path) -> dict:
     """Parse a LinkedIn post markdown file to extract frontmatter and content."""
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     meta = {}
 
     if text.startswith("---"):

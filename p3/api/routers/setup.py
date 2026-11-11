@@ -96,7 +96,7 @@ class SecretsIn(BaseModel):
 
 def _secrets_status() -> dict:
     return {
-        name: path.exists() and bool(path.read_text().strip())
+        name: path.exists() and bool(path.read_text(encoding="utf-8").strip())
         for name, path in _SECRET_FILES.items()
     }
 
@@ -118,7 +118,7 @@ def set_secrets(body: SecretsIn, _admin: dict = Depends(require_admin)):
             continue
         path.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(value + "\n")
         os.chmod(path, 0o600)
     return _secrets_status()
@@ -217,7 +217,7 @@ class NetworkIn(BaseModel):
 def read_server_env() -> dict:
     values = {}
     if SERVER_ENV.exists():
-        for line in SERVER_ENV.read_text().splitlines():
+        for line in SERVER_ENV.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 key, value = line.split("=", 1)
@@ -229,7 +229,7 @@ def write_server_env(values: dict):
     SERVER_ENV.parent.mkdir(parents=True, exist_ok=True)
     lines = ["# Read by bin/p3-serve. Changed from P3's Settings or setup wizard."]
     lines += [f"{key}={value}" for key, value in values.items()]
-    SERVER_ENV.write_text("\n".join(lines) + "\n")
+    SERVER_ENV.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _port(values: dict) -> int:

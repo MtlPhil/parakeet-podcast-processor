@@ -42,7 +42,7 @@ def load_config() -> dict:
     config_file = Path(_CONFIG_PATH)
     if not config_file.exists():
         return {"feeds": [], "settings": {}}
-    with open(config_file, "r") as f:
+    with open(config_file, encoding="utf-8") as f:
         return yaml.safe_load(f) or {"feeds": [], "settings": {}}
 
 
@@ -50,8 +50,10 @@ def save_config(config: dict):
     """Write configuration to feeds.yaml."""
     config_file = Path(_CONFIG_PATH)
     config_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(config_file, "w") as f:
-        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+    with open(config_file, "w", encoding="utf-8") as f:
+        yaml.dump(
+            config, f, default_flow_style=False, sort_keys=False, allow_unicode=True
+        )
 
 
 # Settings each user sets for themselves. A user without their own LLM or

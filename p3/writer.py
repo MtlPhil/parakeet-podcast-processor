@@ -478,7 +478,7 @@ model: {blog_result['metadata']['model_used']}
 
 """
 
-        with open(file_path, "w") as f:
+        with open(file_path, "w", encoding="utf-8") as f:
             f.write(content)
 
         return str(file_path)
@@ -570,7 +570,7 @@ model: {meta['model_used']}
 {result['french_quebec']}
 """
 
-        with open(file_path, "w") as f:
+        with open(file_path, "w", encoding="utf-8") as f:
             f.write(content)
 
         return str(file_path)

@@ -76,7 +76,7 @@ def load_config(config_path: str = "config/feeds.yaml"):
         sys.exit(1)
 
     try:
-        with open(config_file, "r") as f:
+        with open(config_file, encoding="utf-8") as f:
             return yaml.safe_load(f)
     except Exception as e:
         console.print(f"[red]Error loading config: {e}[/red]")
@@ -364,7 +364,7 @@ def export(ctx, date, format, output):
             console.print(f"[red]Unsupported format: {fmt}[/red]")
             continue
 
-        with open(filename, "w") as f:
+        with open(filename, "w", encoding="utf-8") as f:
             f.write(content)
 
         console.print(f"[green]Exported {fmt}: {filename}[/green]")
@@ -382,7 +382,7 @@ def _write_transcript_file(
         filename = f"transcript_{episode_id}.txt"
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     file_path = Path(output_dir) / filename
-    file_path.write_text(content)
+    file_path.write_text(content, encoding="utf-8")
     return file_path
 
 

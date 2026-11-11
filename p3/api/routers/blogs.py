@@ -20,7 +20,7 @@ POSTS_DIR = "blog_posts"
 
 def _parse_blog_file(path: Path) -> dict:
     """Parse a blog post markdown file to extract frontmatter and content."""
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     meta = {}
 
     # Parse YAML frontmatter

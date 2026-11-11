@@ -461,7 +461,7 @@ def task_export(
                 path = exporter.get_export_path(f"digest_{target_date}.json")
             else:
                 continue
-            with open(path, "w") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 f.write(content)
             files.append(str(path))
 
