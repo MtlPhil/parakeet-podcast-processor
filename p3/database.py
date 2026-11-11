@@ -1304,6 +1304,11 @@ class P3Database:
         )
 
     def create_session(self, token_hash: str, username: str, expires_at: datetime):
+        """Store a new session. Expired ones, everyone's, are cleared out on
+        the way, so the table doesn't grow for ever."""
+        self.conn.execute(
+            "DELETE FROM sessions WHERE expires_at <= ?", (datetime.now(),)
+        )
         self.conn.execute(
             "INSERT INTO sessions (token_hash, username, expires_at) VALUES (?, ?, ?)",
             (token_hash, username, expires_at),
@@ -1549,7 +1554,7 @@ class P3Database:
         self, query: str, limit: int = 50, username: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """Case-insensitive substring search over episode titles, summaries
-        and transcript segments.
+        (English and French) and transcript segments.
 
         Returns one dict per matching episode (episode fields plus
         ``podcast_title``), with ``title_match``, ``summary_match``,
@@ -1566,14 +1571,18 @@ class P3Database:
                 "SELECT id FROM episodes WHERE title ILIKE ? ESCAPE '\\'", (pattern,)
             ).fetchall()
         }
+        summary_columns = (
+            "full_summary",
+            "long_summary",
+            "full_summary_fr",
+            "long_summary_fr",
+        )
         summary_rows = self._fetchall_as_dicts(
             self.conn.execute(
-                """
-                SELECT episode_id, full_summary, long_summary FROM summaries
-                WHERE full_summary ILIKE ? ESCAPE '\\'
-                   OR long_summary ILIKE ? ESCAPE '\\'
-            """,
-                (pattern, pattern),
+                f"SELECT episode_id, {', '.join(summary_columns)} FROM summaries "
+                "WHERE "
+                + " OR ".join(f"{c} ILIKE ? ESCAPE '\\'" for c in summary_columns),
+                [pattern] * len(summary_columns),
             )
         )
         segment_rows = self._fetchall_as_dicts(
@@ -1618,9 +1627,7 @@ class P3Database:
             ep["title_match"] = ep["id"] in title_ids
             ep["summary_match"] = summary is not None
             ep["summary_text"] = (
-                (summary["full_summary"] or "")
-                + "\n\n"
-                + (summary["long_summary"] or "")
+                "\n\n".join(summary[c] for c in summary_columns if summary[c])
                 if summary
                 else None
             )

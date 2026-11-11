@@ -226,9 +226,13 @@ def send_email(settings: Dict[str, Any], to: str, subject: str, text: str, html:
             f"No SMTP password found: set SMTP_PASSWORD or create {SMTP_PASSWORD_FILE}"
         )
 
+    sender = settings.get("smtp_from") or user
+    if not sender:
+        raise RuntimeError("smtp_from is not set in config/feeds.yaml")
+
     message = EmailMessage()
     message["Subject"] = subject
-    message["From"] = settings.get("smtp_from") or user
+    message["From"] = sender
     message["To"] = to
     message.set_content(text)
     message.add_alternative(html, subtype="html")

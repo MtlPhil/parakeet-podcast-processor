@@ -8,12 +8,12 @@ from datetime import datetime
 from pathlib import Path
 
 import click
-import yaml
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.progress import track
 from rich.table import Table
 
+from .api.deps import read_config
 from .cleaner import DigestError, TranscriptCleaner
 from .database import P3Database
 from .downloader import (
@@ -76,8 +76,7 @@ def load_config(config_path: str = "config/feeds.yaml"):
         sys.exit(1)
 
     try:
-        with open(config_file, encoding="utf-8") as f:
-            return yaml.safe_load(f)
+        return read_config(config_file)
     except Exception as e:
         console.print(f"[red]Error loading config: {e}[/red]")
         sys.exit(1)

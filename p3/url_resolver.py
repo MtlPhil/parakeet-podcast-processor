@@ -80,13 +80,19 @@ def resolve_podcast_url(url: str) -> tuple[str, str | None]:
 
 
 def _resolve_apple(podcast_id: str) -> tuple[str, str]:
-    """Call the iTunes Lookup API to get the RSS feed for a podcast ID."""
-    resp = requests.get(
-        f"https://itunes.apple.com/lookup?id={podcast_id}&entity=podcast",
-        timeout=15,
-    )
-    resp.raise_for_status()
-    data = resp.json()
+    """Call the iTunes Lookup API to get the RSS feed for a podcast ID.
+    Raises ``ValueError`` if the lookup fails or finds no feed."""
+    try:
+        resp = requests.get(
+            f"https://itunes.apple.com/lookup?id={podcast_id}&entity=podcast",
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.RequestException as e:
+        # ValueError is what callers report for a source that can't be added;
+        # anything else would abort a bulk add part-way.
+        raise ValueError(f"Apple Podcasts lookup failed: {e}") from e
 
     for result in data.get("results", []):
         feed_url = result.get("feedUrl")

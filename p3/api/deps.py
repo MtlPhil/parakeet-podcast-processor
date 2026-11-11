@@ -2,8 +2,10 @@
 
 import logging
 import shutil
+import unicodedata
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import quote
 
 import yaml
 
@@ -37,13 +39,22 @@ def close_db():
         _db = None
 
 
+def read_config(path: Path) -> dict:
+    """The configuration file at ``path`` as ``{"feeds": [...], "settings":
+    {...}}``. A missing file, an empty one, or a section left empty (YAML
+    reads ``settings:`` with nothing under it as null) gives empty values."""
+    config: dict[str, Any] = {}
+    if path.exists():
+        with open(path, encoding="utf-8") as f:
+            config = yaml.safe_load(f) or {}
+    config["feeds"] = config.get("feeds") or []
+    config["settings"] = config.get("settings") or {}
+    return config
+
+
 def load_config() -> dict:
     """Load configuration from feeds.yaml."""
-    config_file = Path(_CONFIG_PATH)
-    if not config_file.exists():
-        return {"feeds": [], "settings": {}}
-    with open(config_file, encoding="utf-8") as f:
-        return yaml.safe_load(f) or {"feeds": [], "settings": {}}
+    return read_config(Path(_CONFIG_PATH))
 
 
 def save_config(config: dict):
@@ -108,6 +119,21 @@ def user_settings(username: Optional[str]) -> dict:
             }
         )
     return settings
+
+
+def attachment(filename: str) -> dict[str, str]:
+    """Response headers that make a download save as ``filename``.
+
+    A header holds Latin-1 only (a title with "œ", or in Japanese, made the
+    response fail), so the name goes twice, as RFC 6266 has it: plain ASCII
+    for old clients, then the real name percent-encoded.
+    """
+    plain = unicodedata.normalize("NFKD", filename).encode("ascii", "ignore").decode()
+    plain = plain.replace('"', "").strip() or "download"
+    return {
+        "Content-Disposition": f'attachment; filename="{plain}"; '
+        f"filename*=UTF-8''{quote(filename, safe='')}"
+    }
 
 
 def content_dir(base: str, username: Optional[str]) -> Path:

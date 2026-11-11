@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 
 from p3.api.auth import current_username
-from p3.api.deps import get_db
+from p3.api.deps import attachment, get_db
 from p3.api.job_queue import job_runner
 from p3.api.models import (
     BulkPodcastCreate,
@@ -64,7 +64,6 @@ def preview_source(url: str, username: str = Depends(current_username)):
     db = get_db()
 
     from p3 import youtube
-    from p3.downloader import PodcastDownloader
     from p3.url_resolver import is_youtube_playlist, resolve_source
 
     if is_youtube_playlist(url):
@@ -81,19 +80,11 @@ def preview_source(url: str, username: str = Depends(current_username)):
     if existing and db.is_subscribed(username, existing["id"]):
         raise HTTPException(409, "This podcast is already in your library")
 
-    downloader = PodcastDownloader(db=db)
-    try:
-        episodes = downloader.list_preview_episodes(source.url)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    except youtube.YouTubeError as e:
-        raise HTTPException(502, f"YouTube lookup failed: {e}")
-
     return {
         "url": source.url,
         "name": source.name,
         "source_type": source.source_type,
-        "episodes": _preview_episodes(db, episodes, username),
+        "episodes": _preview_episodes(db, source.url, username),
     }
 
 
@@ -111,40 +102,43 @@ def list_available_episodes(podcast_id: int, username: str = Depends(current_use
     Episodes already in the user's library are flagged ``in_library``."""
     db = get_db()
     podcast = _subscribed_podcast(db, podcast_id, username)
-
-    from p3 import youtube
-    from p3.downloader import PodcastDownloader
-
-    try:
-        episodes = PodcastDownloader(db=db).list_preview_episodes(podcast["rss_url"])
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    except youtube.YouTubeError as e:
-        raise HTTPException(502, f"YouTube lookup failed: {e}")
-
     return {
         "url": podcast["rss_url"],
         "name": podcast["title"],
         "source_type": podcast["source_type"],
-        "episodes": _preview_episodes(db, episodes, username),
+        "episodes": _preview_episodes(db, podcast["rss_url"], username),
     }
 
 
-def _preview_episodes(db, episodes: list[dict], username: str) -> list[dict]:
-    """Preview listing rows, newest first, flagged if already in the user's
-    library. An episode someone else has, or that the user deleted, is not
-    flagged: picking it links it without downloading it again."""
+def _preview_episodes(db, url: str, username: str) -> list[dict]:
+    """Every episode the source at ``url`` offers, newest first, flagged if
+    already in the user's library. An episode someone else has, or that the
+    user deleted, is not flagged: picking it links it without downloading it
+    again. A source that can't be read is an error, not an empty list."""
+    from p3 import youtube
+    from p3.downloader import PodcastDownloader
+
+    downloader = PodcastDownloader(db=db)
+    try:
+        episodes = downloader.list_preview_episodes(url)
+    except ValueError as error:
+        raise HTTPException(400, str(error))
+    except youtube.YouTubeError as error:
+        raise HTTPException(502, f"YouTube lookup failed: {error}")
+    if not episodes and downloader.problems:
+        raise HTTPException(502, downloader.problems[0])
+
     _epoch = datetime.min.replace(tzinfo=timezone.utc)
-    episodes.sort(key=lambda e: e["date"] or _epoch, reverse=True)
+    episodes.sort(key=lambda episode: episode["date"] or _epoch, reverse=True)
     rows = []
-    for e in episodes:
-        episode_id = db.get_episode_id_by_url(e["url"])
+    for episode in episodes:
+        episode_id = db.get_episode_id_by_url(episode["url"])
         rows.append(
             {
-                "guid": e["guid"],
-                "title": e["title"],
-                "date": e["date"],
-                "description": e["description"],
+                "guid": episode["guid"],
+                "title": episode["title"],
+                "date": episode["date"],
+                "description": episode["description"],
                 "in_library": episode_id is not None
                 and db.user_has_episode(username, episode_id),
             }
@@ -311,7 +305,7 @@ def export_podcast_transcripts(
     return Response(
         content=buffer.getvalue(),
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers=attachment(filename),
     )
 
 

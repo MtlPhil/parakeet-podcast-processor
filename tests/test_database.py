@@ -756,3 +756,16 @@ class TestTransactions:
             # A set can't be stored as JSON: the insert fails after the delete.
             db.add_summary(episode_id, {"a"}, [], [], [], "new")
         assert db.get_summary_by_episode(episode_id)["full_summary"] == "old"
+
+
+class TestSessions:
+    def test_signing_in_clears_out_expired_sessions(self, db):
+        from datetime import datetime, timedelta
+
+        db.ensure_user("alice")
+        now = datetime.now()
+        db.create_session("old", "alice", now - timedelta(days=1))
+        db.create_session("current", "alice", now + timedelta(days=1))
+        db.create_session("new", "alice", now + timedelta(days=30))
+        rows = db.conn.execute("SELECT token_hash FROM sessions ORDER BY 1").fetchall()
+        assert [r[0] for r in rows] == ["current", "new"]
