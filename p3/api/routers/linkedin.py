@@ -1,12 +1,9 @@
 """LinkedIn post routes."""
 
-import re
-from pathlib import Path
-
 from fastapi import APIRouter, Depends, HTTPException
 
 from p3.api.auth import current_username
-from p3.api.content import post_files, split_languages
+from p3.api.content import find_post, list_posts
 from p3.api.deps import get_db
 from p3.api.job_queue import job_runner
 from p3.api.models import LinkedInCreate, LinkedInOut
@@ -17,59 +14,30 @@ router = APIRouter(prefix="/api/linkedin", tags=["linkedin"])
 POSTS_DIR = "linkedin_posts"
 
 
-def _parse_linkedin_file(path: Path) -> dict:
-    """Parse a LinkedIn post markdown file to extract frontmatter and content."""
-    text = path.read_text(encoding="utf-8")
-    meta = {}
-
-    if text.startswith("---"):
-        parts = text.split("---", 2)
-        if len(parts) >= 3:
-            for line in parts[1].strip().splitlines():
-                if ":" in line:
-                    key, val = line.split(":", 1)
-                    meta[key.strip()] = val.strip().strip('"')
-            text = parts[2]
-
-    stem = path.stem
-    date_match = re.match(r"(\d{4}-\d{2}-\d{2})-(.*)", stem)
-    if date_match:
-        date_str = date_match.group(1)
-        slug = date_match.group(2)
-    else:
-        date_str = ""
-        slug = stem
-
+def _linkedin(post: dict) -> dict:
+    """A saved post with the episode its front matter records."""
+    meta = post["meta"]
     return {
-        "slug": slug,
-        "title": meta.get("title", slug.replace("-", " ").title()),
-        "date": date_str,
-        "filename": path.name,
+        **post,
         "episode_title": meta.get("source_episode"),
         "podcast_title": meta.get("source_podcast"),
-        **dict(zip(("content", "content_fr"), split_languages(text))),
     }
 
 
 @router.get("", response_model=list[LinkedInOut])
 def list_linkedin_posts(username: str = Depends(current_username)):
     """List the user's LinkedIn posts (without full content)."""
-    posts = []
-    for path in post_files(POSTS_DIR, username):
-        info = _parse_linkedin_file(path)
-        info["content"] = info["content_fr"] = None  # omitted in list view
-        posts.append(info)
-    return posts
+    return [_linkedin(post) for post in list_posts(POSTS_DIR, username)]
 
 
-@router.get("/{slug}", response_model=LinkedInOut)
-def get_linkedin_post(slug: str, username: str = Depends(current_username)):
-    """Get one of the user's LinkedIn posts by slug."""
-    for path in post_files(POSTS_DIR, username):
-        info = _parse_linkedin_file(path)
-        if info["slug"] == slug:
-            return info
-    raise HTTPException(404, f"LinkedIn post '{slug}' not found")
+@router.get("/{name}", response_model=LinkedInOut)
+def get_linkedin_post(name: str, username: str = Depends(current_username)):
+    """Get one of the user's LinkedIn posts, by file name without ``.md``
+    (or by slug, for the newest post with it)."""
+    post = find_post(POSTS_DIR, username, name)
+    if not post:
+        raise HTTPException(404, f"LinkedIn post '{name}' not found")
+    return _linkedin(post)
 
 
 @router.post("", response_model=dict)

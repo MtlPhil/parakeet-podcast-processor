@@ -1600,3 +1600,141 @@ class TestRefreshAll:
                 client.post("/api/episodes/refresh-all?stop_at=4am").status_code == 422
             )
         runner.enqueue.assert_not_called()
+
+
+# ------------------------------------------------------------------
+# Downloads, saved posts, unreadable sources
+# ------------------------------------------------------------------
+
+
+class TestDownloadNames:
+    def _episode(self, podcast_title, title):
+        db = deps.get_db()
+        client.get("/api/me")
+        pid = db.add_podcast(podcast_title, "http://example.com/rss")
+        db.subscribe(USER, pid)
+        eid = db.add_episode(pid, title, None, "http://example.com/1")
+        db.link_episode(USER, eid)
+        db.add_transcript_segments(eid, [{"start": 0, "end": 1, "text": "Bonjour"}])
+        return pid, eid
+
+    def test_a_title_outside_latin_1_downloads(self):
+        """A header can't hold "œ" (or Japanese): the response used to fail."""
+        pid, eid = self._episode("Le cœur", "日本語 épisode")
+        resp = client.get(f"/api/episodes/{eid}/transcript/export")
+        assert resp.status_code == 200
+        header = resp.headers["content-disposition"]
+        assert 'filename="Le cur- episode.md"' in header
+        assert (
+            "filename*=UTF-8''Le%20c%C5%93ur-"
+            "%E6%97%A5%E6%9C%AC%E8%AA%9E%20%C3%A9pisode.md" in header
+        )
+        resp = client.post(f"/api/podcasts/{pid}/transcripts/export")
+        assert resp.status_code == 200
+        assert (
+            "filename*=UTF-8''Le%20c%C5%93ur.zip" in resp.headers["content-disposition"]
+        )
+
+    def test_a_name_with_nothing_in_ascii_still_has_a_plain_form(self):
+        assert deps.attachment("日本語")["Content-Disposition"].startswith(
+            'attachment; filename="download"; '
+        )
+
+
+class TestSavedPosts:
+    @pytest.fixture
+    def posts(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        client.get("/api/me")
+        folder = tmp_path / "linkedin_posts" / USER
+        folder.mkdir(parents=True)
+        for day, text in (("2026-10-01", "First take"), ("2026-10-09", "Second take")):
+            (folder / f"{day}-pod-ep.md").write_text(
+                f'---\ntitle: "She said "no""\n---\n\n## English\n\n{text}\n\n'
+                "## Français (Québec)\n\nEn français\n",
+                encoding="utf-8",
+            )
+
+    def test_two_posts_on_one_episode_are_both_reachable(self, posts):
+        """They share their slug; by slug only the newest could be opened."""
+        listed = client.get("/api/linkedin").json()
+        assert [p["filename"] for p in listed] == [
+            "2026-10-09-pod-ep.md",
+            "2026-10-01-pod-ep.md",
+        ]
+        first = client.get("/api/linkedin/2026-10-01-pod-ep").json()
+        second = client.get("/api/linkedin/2026-10-09-pod-ep").json()
+        assert (first["content"], second["content"]) == ("First take", "Second take")
+        # A bare slug still works, for the newest.
+        assert client.get("/api/linkedin/pod-ep").json()["content"] == "Second take"
+
+    def test_quotes_inside_a_title_are_kept(self, posts):
+        assert client.get("/api/linkedin").json()[0]["title"] == 'She said "no"'
+
+
+class TestUnreadableSources:
+    def test_previewing_a_feed_that_cannot_be_read_is_an_error(self, monkeypatch):
+        """It used to come back as a source with no episodes."""
+        from p3 import downloader
+
+        def refuse(method, url, **kwargs):
+            raise OSError("timed out")
+
+        monkeypatch.setattr(downloader, "_retry_request", refuse)
+        resp = client.get(
+            "/api/podcasts/preview", params={"url": "http://example.com/feed.xml"}
+        )
+        assert resp.status_code == 502
+        assert "Could not read the feed" in resp.json()["detail"]
+
+    def test_a_failed_apple_lookup_is_reported_not_a_crash(self, monkeypatch):
+        import requests
+
+        from p3 import url_resolver
+
+        def offline(url, **kwargs):
+            raise requests.ConnectionError("no network")
+
+        monkeypatch.setattr(url_resolver.requests, "get", offline)
+        resp = client.get(
+            "/api/podcasts/preview",
+            params={"url": "https://podcasts.apple.com/us/podcast/x/id123"},
+        )
+        assert resp.status_code == 400
+        assert "Apple Podcasts lookup failed" in resp.json()["detail"]
+
+
+class TestSearchFrench:
+    def test_a_word_only_in_the_french_summary_is_found(self):
+        db = deps.get_db()
+        client.get("/api/me")
+        pid = db.add_podcast("Pod", "http://example.com/rss")
+        eid = db.add_episode(pid, "Ep", None, "http://example.com/1")
+        db.link_episode(USER, eid)
+        db.add_summary(eid, [], [], [], [], "A talk about growth.")
+        db.update_summary_fields(
+            eid, full_summary_fr="Une discussion sur la croissance."
+        )
+
+        results = client.get("/api/search", params={"q": "croissance"}).json()
+        assert [r["episode_id"] for r in results] == [eid]
+        assert "croissance" in results[0]["summary_snippet"]
+
+
+class TestConfigFile:
+    def test_sections_left_empty_read_as_empty(self, tmp_path):
+        """YAML reads `settings:` with nothing under it as null."""
+        path = tmp_path / "feeds.yaml"
+        path.write_text("feeds:\nsettings:\n", encoding="utf-8")
+        assert deps.read_config(path) == {"feeds": [], "settings": {}}
+        assert deps.read_config(tmp_path / "missing.yaml") == {
+            "feeds": [],
+            "settings": {},
+        }
+
+    def test_the_cli_reads_it_the_same_way(self, tmp_path):
+        from p3.cli import load_config
+
+        path = tmp_path / "feeds.yaml"
+        path.write_text("settings:\n", encoding="utf-8")
+        assert load_config(str(path)) == {"feeds": [], "settings": {}}

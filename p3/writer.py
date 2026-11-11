@@ -126,6 +126,11 @@ class BlogWriter:
                     improvement_prompt, self.language
                 )
 
+        # A revision can score lower than the draft it replaced, so the
+        # result is the best-scoring draft (the latest, among equals).
+        best = max(reversed(iterations), key=lambda it: it["score"])
+        current_post = best["post"]
+
         slug = self._generate_slug(topic)
 
         # Use first summary for metadata, but all summaries contributed to context
@@ -147,8 +152,8 @@ class BlogWriter:
             "final_post": post_en,
             "final_post_fr": post_fr,
             "topic_fr": topic_fr,
-            "final_grade": iterations[-1]["grade"],
-            "final_score": iterations[-1]["score"],
+            "final_grade": best["grade"],
+            "final_score": best["score"],
             "iterations": iterations,
             "topic": topic_en,
             "slug": slug,
@@ -425,7 +430,7 @@ Style Guidelines:
     ) -> str:
         """Save generated blog post to file."""
         output_path = Path(output_dir)
-        output_path.mkdir(exist_ok=True)
+        output_path.mkdir(parents=True, exist_ok=True)
 
         date_str = datetime.now().strftime("%Y-%m-%d")
         filename = f"{date_str}-{blog_result['slug']}.md"
@@ -546,7 +551,7 @@ model: {blog_result['metadata']['model_used']}
     ) -> str:
         """Save a generated LinkedIn post (both languages) to file."""
         output_path = Path(output_dir)
-        output_path.mkdir(exist_ok=True)
+        output_path.mkdir(parents=True, exist_ok=True)
 
         date_str = datetime.now().strftime("%Y-%m-%d")
         filename = f"{date_str}-{result['slug']}.md"
