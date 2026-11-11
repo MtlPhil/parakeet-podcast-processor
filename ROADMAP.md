@@ -41,10 +41,19 @@ and the installer, not the language.
      and Anthropic answer whole today.
    - Speaker names in transcripts and citations (built, unfinished, on the
      `speakers` branch), and the other open items in the plan.
-4. **A desktop app.** A shell around the existing React app with the Python
-   engine bundled, with signed installers for macOS, Windows and Linux; the
-   web app made installable on a phone. A native iPhone app
-   ([docs/ios-app-plan.md](docs/ios-app-plan.md)) is deferred until after.
+4. **A desktop app.** Done: `p3-app` opens P³ in a native window with the
+   server inside it, and the web app can be installed on a phone's home
+   screen. Still to do:
+   - Installers. Today the app needs Python and a checkout. A double-click
+     download per OS means bundling Python, the speech models' libraries and
+     ffmpeg (PyInstaller or Briefcase), then signing and notarizing, which
+     needs an Apple Developer ID and a Windows certificate.
+   - The daily run while the window is closed (a tray icon, or a login
+     item).
+   - Opening an existing `~/P3` library from the app without setting
+     `P3_HOME` by hand, and handing over from the background service.
+   - A native iPhone app ([docs/ios-app-plan.md](docs/ios-app-plan.md)),
+     deferred until after.
 
 ## Web app
 
