@@ -210,7 +210,7 @@ class TestFetchEpisodesDates:
         from p3 import downloader
 
         feed = feedparser.parse(self._FEED)
-        monkeypatch.setattr(downloader.feedparser, "parse", lambda url: feed)
+        monkeypatch.setattr(downloader, "_read_feed", lambda url: feed)
         dl = downloader.PodcastDownloader(db=MagicMock(), data_dir=str(tmp_path))
 
         episodes = dl.fetch_episodes("http://example.com/rss")
@@ -233,7 +233,7 @@ class TestListPreviewEpisodes:
 <item><title>C</title><enclosure url="http://x/c.mp3" type="audio/mpeg"/></item>
 </channel></rss>"""
         feed = feedparser.parse(feed_xml)
-        monkeypatch.setattr(downloader.feedparser, "parse", lambda url: feed)
+        monkeypatch.setattr(downloader, "_read_feed", lambda url: feed)
         dl = downloader.PodcastDownloader(
             db=MagicMock(), data_dir=str(tmp_path), max_episodes=1
         )
@@ -343,7 +343,7 @@ class TestProblemsAreRecorded:
         from p3 import downloader
 
         feed = feedparser.parse("not a feed")
-        monkeypatch.setattr(downloader.feedparser, "parse", lambda url: feed)
+        monkeypatch.setattr(downloader, "_read_feed", lambda url: feed)
         dl = downloader.PodcastDownloader(db=MagicMock(), data_dir=str(tmp_path))
 
         assert dl.fetch_episodes("http://example.com/rss") == []
@@ -359,7 +359,7 @@ class TestProblemsAreRecorded:
 <item><title>A</title><enclosure url="http://x/a.mp3" type="audio/mpeg"/></item>
 </channel></rss>"""
         feed = feedparser.parse(xml)
-        monkeypatch.setattr(downloader.feedparser, "parse", lambda url: feed)
+        monkeypatch.setattr(downloader, "_read_feed", lambda url: feed)
 
         def refuse(*args, **kwargs):
             raise OSError("connection refused")
@@ -398,7 +398,7 @@ class TestProblemsAreRecorded:
 <item><title>A</title><enclosure url="http://x/a.mp3" type="audio/mpeg"/></item>
 </channel></rss>"""
         feed = feedparser.parse(xml)
-        monkeypatch.setattr(downloader.feedparser, "parse", lambda url: feed)
+        monkeypatch.setattr(downloader, "_read_feed", lambda url: feed)
         db = MagicMock()
         db.get_podcast_by_url.return_value = {"id": 1}
         db.episode_exists.return_value = True
@@ -499,3 +499,52 @@ class TestFillMissingShowNotes:
             assert notes == {a: "Notes A", b: "Notes B", c: None, v: "Notes V"}
         finally:
             db.close()
+
+
+class TestReadingFeeds:
+    _FEED = b"""<?xml version="1.0"?><rss version="2.0"><channel><title>T</title>
+<item><title>Typed</title><enclosure url="http://x/a.mp3" type="audio/mpeg"/></item>
+<item><title>Untyped</title><enclosure url="http://x/b.m4a?token=1"/></item>
+<item><title>Video</title><enclosure url="http://x/c.mp4" type="video/mp4"/></item>
+<item><title>No file</title></item>
+</channel></rss>"""
+
+    def _serve(self, monkeypatch, seen=None):
+        from p3 import downloader
+
+        def respond(method, url, **kwargs):
+            if seen is not None:
+                seen.update(kwargs)
+            return MagicMock(content=self._FEED, headers={})
+
+        monkeypatch.setattr(downloader, "_retry_request", respond)
+        return downloader
+
+    def test_the_feed_download_has_a_time_limit(self, tmp_path, monkeypatch):
+        seen = {}
+        downloader = self._serve(monkeypatch, seen)
+        dl = downloader.PodcastDownloader(db=MagicMock(), data_dir=str(tmp_path))
+        assert dl.fetch_episodes("http://example.com/rss")
+        assert seen["timeout"] == 60
+
+    def test_an_enclosure_without_a_type_is_recognized_by_its_name(
+        self, tmp_path, monkeypatch
+    ):
+        downloader = self._serve(monkeypatch)
+        dl = downloader.PodcastDownloader(db=MagicMock(), data_dir=str(tmp_path))
+        episodes = dl.fetch_episodes("http://example.com/rss")
+        assert [e["title"] for e in episodes] == ["Typed", "Untyped"]
+        assert dl.problems == []
+
+    def test_a_feed_that_cannot_be_downloaded_is_a_problem(self, tmp_path, monkeypatch):
+        from p3 import downloader
+
+        def refuse(method, url, **kwargs):
+            raise OSError("timed out")
+
+        monkeypatch.setattr(downloader, "_retry_request", refuse)
+        dl = downloader.PodcastDownloader(db=MagicMock(), data_dir=str(tmp_path))
+        assert dl.fetch_episodes("http://example.com/rss") == []
+        assert dl.problems == [
+            "Could not read the feed http://example.com/rss: timed out"
+        ]

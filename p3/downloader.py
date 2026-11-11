@@ -12,6 +12,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
+from urllib.parse import urlsplit
 
 import feedparser
 import requests
@@ -29,6 +30,7 @@ BROWSER_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
+_AUDIO_EXTENSIONS = (".mp3", ".m4a", ".aac", ".ogg", ".opus", ".wav", ".flac")
 
 
 def _retry_request(method: str, url: str, **kwargs) -> requests.Response:
@@ -52,6 +54,28 @@ def _retry_request(method: str, url: str, **kwargs) -> requests.Response:
             )
             time.sleep(wait)
     raise AssertionError("unreachable: the final attempt re-raises")
+
+
+def _read_feed(url: str):
+    """Download and parse an RSS feed. The download has a time limit, which
+    feedparser's own does not: one stalled feed would otherwise hold up
+    every job queued behind it."""
+    response = _retry_request(
+        "GET", url, timeout=60, headers={"User-Agent": BROWSER_USER_AGENT}
+    )
+    return feedparser.parse(response.content, response_headers=dict(response.headers))
+
+
+def _audio_url(entry) -> Optional[str]:
+    """The audio file of an RSS entry: its first enclosure typed as audio
+    or, where a feed leaves the type out, named like an audio file."""
+    for enclosure in entry.get("enclosures", []):
+        href = enclosure.get("href")
+        kind = enclosure.get("type") or ""
+        path = urlsplit(href or "").path.lower()
+        if href and ("audio" in kind or path.endswith(_AUDIO_EXTENSIONS)):
+            return href
+    return None
 
 
 def _safe_filename(title: str, max_length: int = 50) -> str:
@@ -201,53 +225,39 @@ class PodcastDownloader:
 
     def _rss_episodes(self, rss_url: str) -> List[Dict]:
         """Every episode in an RSS feed, newest-as-listed first, unfiltered
-        by any episode limit."""
+        by any episode limit. A feed that can't be read is recorded in
+        ``problems`` and returns nothing."""
         try:
-            feed = feedparser.parse(rss_url)
-            episodes = []
-
-            if not feed.entries:
-                status = feed.get("status")
-                reason = feed.get("bozo_exception") or (
-                    f"HTTP {status}" if status and status >= 400 else "no episodes"
-                )
-                self.problems.append(f"Could not read the feed {rss_url}: {reason}")
-
-            for entry in feed.entries:
-                # Find audio enclosure
-                audio_url = None
-                for enclosure in entry.get("enclosures", []):
-                    if enclosure.type and "audio" in enclosure.type:
-                        audio_url = enclosure.href
-                        break
-
-                if not audio_url:
-                    continue
-
-                # Publication date; feedparser normalizes both fields to UTC.
-                parsed = entry.get("published_parsed") or entry.get("updated_parsed")
-                pub_date = (
-                    datetime.fromtimestamp(calendar.timegm(parsed), tz=timezone.utc)
-                    if parsed
-                    else None
-                )
-
-                episodes.append(
-                    {
-                        "title": entry.get("title", "Unknown Title"),
-                        "url": audio_url,
-                        "date": pub_date,
-                        "description": _show_notes(entry),
-                        "guid": entry.get("id", audio_url),
-                    }
-                )
-
-            return episodes
-
+            feed = _read_feed(rss_url)
         except Exception as e:
             logger.error("Error fetching RSS feed %s: %s", rss_url, e)
             self.problems.append(f"Could not read the feed {rss_url}: {e}")
             return []
+        if not feed.entries:
+            reason = feed.get("bozo_exception") or "no episodes"
+            self.problems.append(f"Could not read the feed {rss_url}: {reason}")
+
+        episodes = []
+        for entry in feed.entries:
+            audio_url = _audio_url(entry)
+            if not audio_url:
+                continue
+            # Publication date; feedparser normalizes both fields to UTC.
+            parsed = entry.get("published_parsed") or entry.get("updated_parsed")
+            episodes.append(
+                {
+                    "title": entry.get("title", "Unknown Title"),
+                    "url": audio_url,
+                    "date": (
+                        datetime.fromtimestamp(calendar.timegm(parsed), tz=timezone.utc)
+                        if parsed
+                        else None
+                    ),
+                    "description": _show_notes(entry),
+                    "guid": entry.get("id", audio_url),
+                }
+            )
+        return episodes
 
     def list_preview_episodes(self, url: str, months: int = 12) -> List[Dict]:
         """Every episode available for hand-picking when a source is first
