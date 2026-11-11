@@ -1,6 +1,6 @@
 # Ask: natural-language questions over the library
 
-**Status: planned (2026-10-28).** Nothing has been built yet. This document records the plan and the decisions made so far.
+**Status: planned (2026-10-28, reviewed 2026-11-11).** Nothing has been built yet. This document records the plan and the decisions made so far. It is item 3 of the direction in [ROADMAP.md](../ROADMAP.md), which adds two things this plan does not cover: the web as a second source next to the library, and an LLM layer with streaming and tool calls for every provider (Phase 4 below plans streaming only).
 
 ## Goal
 
