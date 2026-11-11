@@ -29,6 +29,7 @@ from .llm import (
     release_ollama_models,
     resolve_provider_and_model,
 )
+from .settings import setting
 from .transcriber import (
     DEFAULT_PARAKEET_MODEL,
     DEFAULT_WHISPER_MODEL,
@@ -139,7 +140,7 @@ def fetch(ctx, max_episodes, dry_run):
     db = ctx.obj["db"]
 
     settings = config.get("settings", {})
-    max_eps = max_episodes or settings.get("max_episodes_per_feed", 10)
+    max_eps = max_episodes or setting(settings, "max_episodes_per_feed")
 
     new_feeds = new_config_feeds(db, config.get("feeds") or [])
     library = db.get_all_podcasts()
@@ -151,7 +152,7 @@ def fetch(ctx, max_episodes, dry_run):
         return PodcastDownloader(
             db=db,
             max_episodes=max_eps,
-            audio_format=settings.get("audio_format", "wav"),
+            audio_format=setting(settings, "audio_format"),
             username=username,
         )
 
@@ -225,17 +226,17 @@ def transcribe(ctx, model, episode_id):
     db = ctx.obj["db"]
 
     settings = config.get("settings", {})
-    whisper_model = model or settings.get("whisper_model", DEFAULT_WHISPER_MODEL)
-    use_parakeet = settings.get("parakeet_enabled", False)
+    whisper_model = model or setting(settings, "whisper_model")
+    use_parakeet = setting(settings, "parakeet_enabled")
 
-    if settings.get("release_ollama_before_transcription", True):
-        release_ollama_models(settings.get("ollama_base_url", DEFAULT_OLLAMA_URL))
+    if setting(settings, "release_ollama_before_transcription"):
+        release_ollama_models(setting(settings, "ollama_base_url"))
     transcriber = AudioTranscriber(
         db=db,
         whisper_model=whisper_model,
         use_parakeet=use_parakeet,
-        parakeet_model=settings.get("parakeet_model", DEFAULT_PARAKEET_MODEL),
-        parakeet_languages=settings.get("parakeet_languages"),
+        parakeet_model=setting(settings, "parakeet_model"),
+        parakeet_languages=setting(settings, "parakeet_languages"),
     )
 
     if episode_id:
@@ -282,7 +283,7 @@ def digest(ctx, provider, model, episode_id):
         db=db,
         llm_provider=llm_provider,
         llm_model=llm_model,
-        ollama_base_url=settings.get("ollama_base_url", DEFAULT_OLLAMA_URL),
+        ollama_base_url=setting(settings, "ollama_base_url"),
     )
 
     if episode_id:
@@ -529,7 +530,7 @@ def write(ctx, topic, date, target_grade, dry_run):
         llm_provider=llm_provider,
         llm_model=llm_model,
         target_grade=target_grade,
-        ollama_base_url=settings.get("ollama_base_url", DEFAULT_OLLAMA_URL),
+        ollama_base_url=setting(settings, "ollama_base_url"),
     )
 
     console.print(f"[blue]Generating blog post: '{topic}'[/blue]")

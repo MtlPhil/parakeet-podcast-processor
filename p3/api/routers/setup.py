@@ -24,8 +24,8 @@ from pydantic import BaseModel
 from p3 import paths, secrets
 from p3.api.auth import current_user, require_admin
 from p3.api.deps import get_db, load_config, user_settings
-from p3.llm import DEFAULT_OLLAMA_URL
 from p3.mailer import send_email
+from p3.settings import setting
 
 router = APIRouter(prefix="/api/setup", tags=["setup"])
 
@@ -116,9 +116,7 @@ class OllamaOut(BaseModel):
 @router.get("/ollama", response_model=OllamaOut)
 def check_ollama(_admin: dict = Depends(require_admin)):
     """Is Ollama running, and which models does it have?"""
-    url = (
-        load_config().get("settings", {}).get("ollama_base_url") or DEFAULT_OLLAMA_URL
-    ).rstrip("/")
+    url = (setting(load_config()["settings"], "ollama_base_url")).rstrip("/")
     try:
         resp = httpx.get(f"{url}/api/tags", timeout=3.0)
         resp.raise_for_status()

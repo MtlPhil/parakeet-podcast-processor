@@ -11,6 +11,7 @@ import yaml
 
 from p3 import paths
 from p3.database import P3Database
+from p3.settings import SHARED_DEFAULTS
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +79,7 @@ USER_SETTING_DEFAULTS: dict[str, Any] = {
     "llm_provider": "ollama",  # LLM for the user's writing: posts, synopses
     "llm_model": None,
     "gemini_model": None,
-    "max_episodes_per_feed": 10,
+    "max_episodes_per_feed": SHARED_DEFAULTS["max_episodes_per_feed"],
     "daily_run_time": "04:00",  # "HH:MM"; set to "" to turn the daily run off
     "daily_run_linkedin": False,
     "daily_run_export": False,

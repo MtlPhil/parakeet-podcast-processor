@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
 from .database import P3Database
+from .settings import DEFAULT_PARAKEET_MODEL, DEFAULT_WHISPER_MODEL, SHARED_DEFAULTS
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +41,6 @@ try:
 except ImportError:
     WHISPER_AVAILABLE = False
 
-DEFAULT_PARAKEET_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
-
-# Languages Parakeet transcribes (setting: parakeet_languages); every other
-# language goes to Whisper.
-DEFAULT_PARAKEET_LANGUAGES = ("en",)
 
 # Short names for Whisper's MLX conversions on Hugging Face. Any other value
 # of the whisper_model setting is used as a Hugging Face repo as-is.
@@ -56,7 +52,6 @@ WHISPER_MODELS = {
     "large": "mlx-community/whisper-large-v3-mlx",
     "turbo": "mlx-community/whisper-large-v3-turbo",
 }
-DEFAULT_WHISPER_MODEL = "turbo"
 
 # Parakeet works through a long episode in chunks of this length, to bound
 # memory use. Consecutive chunks overlap, and parakeet-mlx merges them on the
@@ -88,7 +83,7 @@ class AudioTranscriber:
         self.use_parakeet = use_parakeet
         self.parakeet_model = parakeet_model
         self.parakeet_languages = set(
-            DEFAULT_PARAKEET_LANGUAGES
+            SHARED_DEFAULTS["parakeet_languages"]
             if parakeet_languages is None
             else parakeet_languages
         )

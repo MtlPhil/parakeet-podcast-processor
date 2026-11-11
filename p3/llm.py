@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional, Tuple, Union
 import httpx
 
 from . import secrets
+from .settings import DEFAULT_OLLAMA_URL
 
 try:
     import ollama
@@ -19,7 +20,6 @@ logger = logging.getLogger(__name__)
 
 SUPPORTED_PROVIDERS = ("ollama", "openai", "gemini")
 
-DEFAULT_OLLAMA_URL = "http://localhost:11434"
 DEFAULT_OLLAMA_MODEL = "gemma4:12b"
 DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
 # Used instead when the configured Gemini model stays overloaded or
