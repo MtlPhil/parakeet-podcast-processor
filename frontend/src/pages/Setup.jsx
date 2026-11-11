@@ -227,6 +227,10 @@ function SummariesStep(nav) {
 
 // -------------------------------------------------------- transcription
 
+// What the server uses when the shared settings give no number
+// (USER_SETTING_DEFAULTS in p3/api/deps.py).
+const DEFAULT_MAX_EPISODES = 10;
+
 function TranscriptionStep(nav) {
   const [settings, setSettings] = useState(null);
   useEffect(() => { getSettings().then(({ settings: s }) => setSettings(s)); }, []);
@@ -243,7 +247,7 @@ function TranscriptionStep(nav) {
         await saveShared({
           parakeet_enabled: !!settings.parakeet_enabled,
           whisper_model: settings.whisper_model || 'turbo',
-          max_episodes_per_feed: Number(settings.max_episodes_per_feed) || 3,
+          max_episodes_per_feed: Number(settings.max_episodes_per_feed) || DEFAULT_MAX_EPISODES,
         });
         nav.onNext();
       }}
@@ -261,7 +265,7 @@ function TranscriptionStep(nav) {
       </Field>
       <Field label="Episodes per podcast" htmlFor="max-eps"
         help="How many of a podcast's latest episodes P3 gets when you add it and each day after.">
-        <input id="max-eps" type="number" min="1" max="100" value={settings.max_episodes_per_feed ?? 3}
+        <input id="max-eps" type="number" min="1" max="100" value={settings.max_episodes_per_feed ?? DEFAULT_MAX_EPISODES}
           onChange={(e) => set('max_episodes_per_feed', e.target.value)} className={inputClass} />
       </Field>
       <p className="text-xs text-gray-500">

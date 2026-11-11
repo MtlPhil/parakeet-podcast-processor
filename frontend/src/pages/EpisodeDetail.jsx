@@ -64,6 +64,7 @@ export default function EpisodeDetail() {
 
   const handleAction = async (action) => {
     try {
+      setError(null);
       let result;
       if (action === 'transcribe') result = await transcribeEpisode(id);
       else if (action === 'digest') result = await digestEpisode(id);
@@ -76,6 +77,7 @@ export default function EpisodeDetail() {
 
   const handleGenerateSynopsis = async () => {
     try {
+      setError(null);
       setNotice(null);
       const result = await generateSynopsis(id, { provider: synopsisProvider || undefined });
       if (result?.job_id) startPolling(result.job_id);
@@ -123,7 +125,7 @@ export default function EpisodeDetail() {
     }
   };
 
-  if (error) return <p className="text-red-600">Error: {error}</p>;
+  if (error && !episode) return <p className="text-red-600">Error: {error}</p>;
   if (!episode) return <p className="text-gray-500">Loading...</p>;
 
   // A summary field in the shown language; English until it's translated.
@@ -200,6 +202,7 @@ export default function EpisodeDetail() {
 
       {job && <div className="mb-6"><JobProgress job={job} /></div>}
       {notice && <p className="text-sm text-green-700 mb-6">{notice}</p>}
+      {error && <p className="text-sm text-red-600 mb-6">{error}</p>}
 
       {/* Tabs */}
       <div className="border-b mb-4">

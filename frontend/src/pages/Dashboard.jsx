@@ -14,7 +14,13 @@ import {
 import StatusBadge from '../components/StatusBadge';
 import DailyRunCard from '../components/DailyRunCard';
 
-const today = () => new Date().toISOString().slice(0, 10);
+// Today's date here, as YYYY-MM-DD. toISOString() would give the UTC date,
+// which is already tomorrow in the evening west of Greenwich.
+const today = () => {
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+};
 const RETRYABLE = ['fetch', 'transcribe', 'digest', 'full_pipeline'];
 
 const formatStartTime = (ts) => {

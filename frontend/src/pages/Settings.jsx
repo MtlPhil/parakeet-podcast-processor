@@ -2,29 +2,8 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { allowDeletedEpisode, changeMyPassword, deleteMyAccount, getDeletedEpisodes, getSettings, getUsers, updateMySettings, updateSettings } from '../api/client';
 import DeleteConfirm from '../components/DeleteConfirm';
+import { Checkbox, Field, inputClass } from '../components/Form';
 import { useMe } from '../hooks/useMe';
-
-const inputClass =
-  'w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500';
-
-function Field({ label, htmlFor, help, children }) {
-  return (
-    <div>
-      <label htmlFor={htmlFor} className="block text-sm font-medium text-gray-700 mb-1">{label}</label>
-      {children}
-      {help && <p className="text-xs text-gray-500 mt-1">{help}</p>}
-    </div>
-  );
-}
-
-function Checkbox({ id, checked, onChange, children }) {
-  return (
-    <div className="flex items-center gap-3">
-      <input type="checkbox" id={id} checked={checked} onChange={(e) => onChange(e.target.checked)} className="rounded" />
-      <label htmlFor={id} className="text-sm text-gray-700">{children}</label>
-    </div>
-  );
-}
 
 function SaveButton({ saving, saved, onClick, label }) {
   return (
@@ -135,7 +114,7 @@ function MySettings() {
       <Checkbox id="daily-run-email" checked={own.daily_run_email || false} onChange={(v) => set('daily_run_email', v)}>
         Daily run: email me the new episodes, their digests by theme, and any errors
       </Checkbox>
-      <Field label="Email address" htmlFor="user-email" help="Where the daily report is sent. The mail server itself is set by an admin in the config file.">
+      <Field label="Email address" htmlFor="user-email" help="Where the daily report is sent. An admin sets up the mail server itself, in the setup wizard.">
         <input id="user-email" type="email" value={own.email ?? ''} onChange={(e) => set('email', e.target.value)} className={inputClass} />
       </Field>
 
