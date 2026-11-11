@@ -33,6 +33,22 @@ jobs:
       - name: pytest
         run: uv run --no-sync pytest tests/ -q
 
+  container:
+    # Builds the image and checks that the server in it starts.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: docker build -t p3 .
+      - name: Start it and ask for its status
+        run: |
+          docker run -d --name p3 -p 8000:8000 p3
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8000/api/auth/status && exit 0
+            sleep 2
+          done
+          docker logs p3
+          exit 1
+
   frontend:
     runs-on: ubuntu-latest
     defaults:

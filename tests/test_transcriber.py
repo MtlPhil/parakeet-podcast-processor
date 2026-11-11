@@ -159,8 +159,74 @@ class TestAllOrNothing:
 
     def test_no_engine_installed_says_so(self, db, monkeypatch):
         monkeypatch.setattr(transcriber_module, "WHISPER_AVAILABLE", False)
-        with pytest.raises(TranscriptionError, match="Apple Silicon"):
+        monkeypatch.setattr(transcriber_module, "FASTER_WHISPER_AVAILABLE", False)
+        with pytest.raises(TranscriptionError, match="No speech-to-text engine"):
             AudioTranscriber(db).transcribe_with_whisper("ep.wav")
+
+
+class TestFasterWhisper:
+    """The engine off Apple Silicon, with a stand-in for the model."""
+
+    @pytest.fixture
+    def engine(self, monkeypatch):
+        loaded = []
+
+        class Model:
+            def __init__(self, name, **options):
+                loaded.append((name, options))
+
+            def transcribe(self, path, language=None):
+                self.asked = language
+                segments = (
+                    SimpleNamespace(start=s, end=s + 1, text=t, no_speech_prob=0.25)
+                    for s, t in ((0.0, " Bonjour. "), (1.0, " "))
+                )
+                return segments, SimpleNamespace(language=language or "fr")
+
+        monkeypatch.setattr(transcriber_module, "WHISPER_AVAILABLE", False)
+        monkeypatch.setattr(transcriber_module, "PARAKEET_AVAILABLE", False)
+        monkeypatch.setattr(transcriber_module, "FASTER_WHISPER_AVAILABLE", True)
+        monkeypatch.setattr(
+            transcriber_module, "FasterWhisperModel", Model, raising=False
+        )
+        return loaded
+
+    def test_an_episode_is_transcribed_in_the_language_it_detects(
+        self, db, episode_id, engine
+    ):
+        # Parakeet is asked for but can't run here: Whisper does everything.
+        transcriber = AudioTranscriber(db, whisper_model="large", use_parakeet=True)
+        transcriber.transcribe_episode(episode_id)
+
+        assert engine == [("large-v3", {"device": "auto", "compute_type": "auto"})]
+        assert transcriber._faster_whisper.asked is None  # it detects, untold
+        episode = db.get_episode_by_id(episode_id)
+        assert (episode["status"], episode["language"]) == ("transcribed", "fr")
+        segments = db.get_transcripts_for_episode(episode_id)
+        assert [(s["text"], s["confidence"]) for s in segments] == [("Bonjour.", 0.75)]
+
+    def test_the_model_is_loaded_once_and_unloaded(self, db, engine):
+        transcriber = AudioTranscriber(db)
+        transcriber.transcribe_with_whisper("a.wav")
+        transcriber.transcribe_with_whisper("b.wav", "en")
+        assert len(engine) == 1 and transcriber._faster_whisper.asked == "en"
+        transcriber.unload_models()
+        assert transcriber._faster_whisper is None
+
+    def test_a_failure_while_reading_segments_fails_the_episode(
+        self, db, episode_id, engine, monkeypatch
+    ):
+        def broken(self, path, language=None):
+            def segments():
+                yield SimpleNamespace(start=0, end=1, text="Hi", no_speech_prob=0)
+                raise RuntimeError("decoder crashed")
+
+            return segments(), SimpleNamespace(language="en")
+
+        monkeypatch.setattr(transcriber_module.FasterWhisperModel, "transcribe", broken)
+        with pytest.raises(TranscriptionError, match="decoder crashed"):
+            AudioTranscriber(db).transcribe_episode(episode_id)
+        assert db.get_episode_by_id(episode_id)["status"] == "downloaded"
 
 
 class TestParakeet:

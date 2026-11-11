@@ -21,10 +21,14 @@ and the installer, not the language.
    - Single-user as the default. Today an unset `P3_AUTH` still means proxy
      mode; changing that silently would drop sign-in on a server that
      relies on it, so it needs its own release note.
-2. **Transcription beyond Apple Silicon.** A backend interface with MLX behind
-   it on Apple Silicon and a CPU/CUDA engine elsewhere, chosen after
-   benchmarking the candidates on real episodes. Then a Docker image and
-   tagged releases for self-hosters.
+2. **Transcription beyond Apple Silicon.** Done: faster-whisper transcribes
+   on Linux and Windows, and there is a container image. Still to do:
+   - Run it on real episodes and time it, CPU and GPU; pick the default
+     model per machine from the result (it is `turbo` everywhere today).
+   - A faster engine for English off the Mac, to match Parakeet there
+     (Parakeet through ONNX is the candidate to measure).
+   - A GPU image, published images, and tagged releases.
+   - Wording: the setup wizard and several messages still say "this Mac".
 3. **A wider LLM layer, and Ask.** An Anthropic provider, a configurable
    OpenAI-compatible endpoint (for local servers other than Ollama),
    streaming and tool calls. On top of it, natural-language questions over

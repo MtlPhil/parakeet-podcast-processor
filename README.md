@@ -11,11 +11,12 @@ the GPU through MLX and the default LLM backend is a local
 [Ollama](https://ollama.com) model, so no audio or transcript has to leave the
 machine. OpenAI and Gemini are supported as optional hosted backends.
 
-**Other platforms.** Transcription currently works only on Apple Silicon:
-both speech engines are MLX builds. Everything else (fetching, digests,
-writing, the web app) runs on Linux, where the test suite also runs, but
-without a speech engine an episode cannot get past the download step. A
-cross-platform engine is the next item on the [roadmap](ROADMAP.md).
+**Other platforms.** On Linux and Windows, transcription uses
+[faster-whisper](https://github.com/SYSTRAN/faster-whisper) on the CPU, or
+on an NVIDIA GPU if there is one; Parakeet is Apple Silicon only. This path
+is new: it is covered by tests with a stand-in model, and has not yet been
+run on real episodes or timed. The quickest way to try it is the
+[container](#container). The one-command installer is still Mac only.
 
 P³ ships as both a command-line tool (`p3`) and a web app (FastAPI + React).
 
@@ -131,7 +132,7 @@ redone from the Admin page.
 
 | Requirement | Notes |
 |---|---|
-| macOS on Apple Silicon (M1 or later) | Needed to transcribe: Parakeet MLX and Whisper MLX are only installed on that platform. Elsewhere transcription fails with a message saying so. |
+| macOS on Apple Silicon (M1 or later), Linux or Windows | Apple Silicon gets Parakeet MLX and Whisper MLX; Linux and Windows get faster-whisper. An Intel Mac has no speech engine. |
 | Python 3.11+ | |
 | [ffmpeg](https://ffmpeg.org) | Audio normalization and chunking: `brew install ffmpeg` |
 | [Ollama](https://ollama.com) | Default local LLM backend. Optional if you use OpenAI or Gemini. |
@@ -363,6 +364,23 @@ uvicorn p3.api.main:app --host 127.0.0.1 --port 8000
 Run it from the repository root. Data, config and output paths are relative to
 the working directory.
 
+### Container
+
+For Linux, or anywhere Docker runs:
+
+```bash
+docker build -t p3 .
+docker run -d -p 8000:8000 -v p3-library:/library p3
+```
+
+Open <http://localhost:8000>; the first visit creates the admin account. The
+`/library` volume holds everything: database, audio, settings, generated
+files and the downloaded speech models. To use a local Ollama, set its URL
+in Settings to one the container can reach (on Docker Desktop,
+`http://host.docker.internal:11434`). For an NVIDIA GPU, add `--gpus all`;
+the image carries no CUDA libraries of its own, so this needs a base image
+that does and is untested.
+
 ### Users and sign-in
 
 The `P3_AUTH` environment variable picks one of three modes.
@@ -512,7 +530,8 @@ p3/
 ├── downloader.py     RSS and YouTube fetching, download with retry, ffmpeg normalization
 ├── youtube.py        YouTube URL parsing, listing and audio download via yt-dlp
 ├── url_resolver.py   Source URL resolution: RSS, Apple Podcasts (iTunes Lookup API), YouTube
-├── transcriber.py    Language detection, Parakeet MLX (chunked) and Whisper MLX
+├── transcriber.py    Language detection, Parakeet MLX (chunked), Whisper MLX;
+│                     faster-whisper where MLX doesn't run
 ├── cleaner.py        Digests, long-form synopsis, Quebec French translation
 ├── writer.py         Graded blog posts, LinkedIn posts, social snippets
 ├── exporter.py       Markdown / JSON / HTML formatting

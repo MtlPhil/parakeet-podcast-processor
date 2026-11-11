@@ -1,9 +1,13 @@
-"""Audio transcription using Parakeet MLX or Whisper MLX (Apple Silicon).
+"""Audio transcription: Parakeet MLX or Whisper MLX on Apple Silicon,
+faster-whisper (CPU or an NVIDIA GPU) everywhere else.
 
 Each episode's language is detected first. Parakeet transcribes the languages
 it handles reliably (English by default); everything else goes to Whisper,
 which is told the language. Parakeet has no language input: on spontaneous
 non-English speech it drifts into English that reads like a translation.
+
+Without MLX there is no Parakeet and no separate language detection:
+faster-whisper detects the language itself and transcribes everything.
 
 An episode is transcribed completely or not at all: a failure raises
 TranscriptionError and leaves the episode as it was, so it can be retried.
@@ -42,6 +46,13 @@ except ImportError:
     WHISPER_AVAILABLE = False
 
 
+try:
+    from faster_whisper import WhisperModel as FasterWhisperModel
+
+    FASTER_WHISPER_AVAILABLE = True
+except ImportError:
+    FASTER_WHISPER_AVAILABLE = False
+
 # Short names for Whisper's MLX conversions on Hugging Face. Any other value
 # of the whisper_model setting is used as a Hugging Face repo as-is.
 WHISPER_MODELS = {
@@ -65,6 +76,11 @@ _LANGUAGE_PROBE_SECONDS = 30
 _LANGUAGE_PROBE_START = 60
 
 
+# faster-whisper has its own names for the same models; only this one
+# differs from P3's short names.
+_FASTER_WHISPER_NAMES = {"large": "large-v3"}
+
+
 class TranscriptionError(RuntimeError):
     """An episode could not be transcribed; the message says why."""
 
@@ -80,6 +96,9 @@ class AudioTranscriber:
     ):
         self.db = db
         self.whisper_model = WHISPER_MODELS.get(whisper_model, whisper_model)
+        self.faster_whisper_model = _FASTER_WHISPER_NAMES.get(
+            whisper_model, whisper_model
+        )
         self.use_parakeet = use_parakeet
         self.parakeet_model = parakeet_model
         self.parakeet_languages = set(
@@ -89,6 +108,7 @@ class AudioTranscriber:
         )
         # Loaded lazily; the library is untyped.
         self._parakeet: Any = None
+        self._faster_whisper: Any = None
 
     def _load_whisper(self) -> Any:
         """The Whisper model, loaded through mlx_whisper's own cache in the
@@ -129,6 +149,7 @@ class AudioTranscriber:
         """Release loaded models to free memory."""
         self._release_whisper()
         self._parakeet = None
+        self._faster_whisper = None
         if WHISPER_AVAILABLE:
             mx.clear_cache()
         elif PARAKEET_AVAILABLE:
@@ -140,13 +161,11 @@ class AudioTranscriber:
     def transcribe_with_whisper(
         self, audio_path: str, language: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Transcribe audio using Whisper (MLX), in ``language`` if given;
-        otherwise Whisper detects it from the first 30 seconds."""
+        """Transcribe audio using Whisper, in ``language`` if given;
+        otherwise Whisper detects it from the first 30 seconds. MLX runs it
+        on Apple Silicon, faster-whisper elsewhere."""
         if not WHISPER_AVAILABLE:
-            raise TranscriptionError(
-                "No speech-to-text engine is installed: transcription needs "
-                "mlx-whisper, which runs only on a Mac with Apple Silicon"
-            )
+            return self._transcribe_with_faster_whisper(audio_path, language)
         try:
             result = mlx_whisper.transcribe(
                 audio_path,
@@ -172,6 +191,44 @@ class AudioTranscriber:
                 for segment in result.get("segments", [])
             ],
             "language": result.get("language"),
+        }
+
+    def _transcribe_with_faster_whisper(
+        self, audio_path: str, language: Optional[str]
+    ) -> Dict[str, Any]:
+        if not FASTER_WHISPER_AVAILABLE:
+            raise TranscriptionError(
+                "No speech-to-text engine is installed: transcription needs "
+                "mlx-whisper (Apple Silicon) or faster-whisper (elsewhere)"
+            )
+        try:
+            if self._faster_whisper is None:
+                logger.info("Loading faster-whisper: %s", self.faster_whisper_model)
+                # An NVIDIA GPU if there is one, else the CPU, in the
+                # fastest number format either supports.
+                self._faster_whisper = FasterWhisperModel(
+                    self.faster_whisper_model, device="auto", compute_type="auto"
+                )
+            segments, info = self._faster_whisper.transcribe(
+                audio_path, language=language
+            )
+            # The segments are produced as they are read: errors surface here.
+            segments = list(segments)
+        except Exception as e:
+            raise TranscriptionError(f"Whisper failed: {e}") from e
+
+        return {
+            "segments": [
+                {
+                    "start": segment.start,
+                    "end": segment.end,
+                    "text": segment.text.strip(),
+                    "speaker": None,
+                    "confidence": 1.0 - segment.no_speech_prob,
+                }
+                for segment in segments
+            ],
+            "language": info.language,
         }
 
     def transcribe_with_parakeet(
