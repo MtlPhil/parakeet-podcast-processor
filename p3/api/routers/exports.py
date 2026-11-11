@@ -6,9 +6,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 
 from p3.api.auth import current_username
-from p3.api.deps import content_dir, get_db
+from p3.api.deps import get_db
 from p3.api.job_queue import job_runner
 from p3.api.tasks import task_export
+from p3.paths import content_dir
 
 router = APIRouter(prefix="/api/exports", tags=["exports"])
 

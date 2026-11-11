@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Optional
 
-from p3.api.deps import content_dir, get_db, load_config, user_settings
+from p3.api.deps import get_db, load_config, user_settings
 from p3.api.job_queue import job_runner
 from p3.database import INTERRUPTED_ERROR
 from p3.llm import (
@@ -21,6 +21,7 @@ from p3.llm import (
     release_ollama_models,
     resolve_provider_and_model,
 )
+from p3.paths import content_dir
 
 logger = logging.getLogger(__name__)
 

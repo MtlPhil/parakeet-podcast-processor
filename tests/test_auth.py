@@ -28,9 +28,7 @@ def env(tmp_path, monkeypatch):
     from p3.api.routers import auth as auth_routes
 
     monkeypatch.setattr(auth_routes, "_FAILED_LOGIN_DELAY", 0)
-    secrets = {name: tmp_path / f"{name}.txt" for name in setup_routes._SECRET_FILES}
-    monkeypatch.setattr(setup_routes, "_SECRET_FILES", secrets)
-    monkeypatch.setattr(setup_routes, "SERVER_ENV", tmp_path / "server.env")
+    monkeypatch.setenv("P3_HOME", str(tmp_path))
     yield tmp_path
     deps.close_db()
 
@@ -287,7 +285,7 @@ class TestWizardEndpoints:
             "openai_api_key": False,
             "smtp_password": False,
         }
-        path = env / "gemini_api_key.txt"
+        path = env / "config" / "gemini_api_key.txt"
         assert path.read_text().strip() == "abc123"
         assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
         assert "abc123" not in admin.get("/api/setup/secrets").text
@@ -304,7 +302,7 @@ class TestWizardEndpoints:
         assert admin.put("/api/setup/network", json={"lan": True}).status_code == 409
         resp = admin.put("/api/setup/network", json={"lan": True, "force": True})
         assert resp.json()["lan"] is True
-        assert "P3_HOST=0.0.0.0" in (env / "server.env").read_text()
+        assert "P3_HOST=0.0.0.0" in (env / "config" / "server.env").read_text()
 
     def test_wizard_admin_endpoints_need_an_admin(self, env):
         admin = _client()

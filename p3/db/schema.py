@@ -7,6 +7,7 @@ that has shipped.
 """
 
 import logging
+from typing import Optional
 
 from .connection import Connection
 
@@ -14,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class Schema(Connection):
-    def __init__(self, db_path: str = "data/p3.duckdb"):
+    def __init__(self, db_path: Optional[str] = None):
         super().__init__(db_path)
         try:
             self._migrate()

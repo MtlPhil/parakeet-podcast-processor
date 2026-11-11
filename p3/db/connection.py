@@ -8,10 +8,12 @@ from typing import Any, Dict, List, Optional
 
 import duckdb
 
+from .. import paths
+
 
 class Connection:
-    def __init__(self, db_path: str = "data/p3.duckdb"):
-        self.db_path = Path(db_path)
+    def __init__(self, db_path: Optional[str] = None):
+        self.db_path = Path(db_path) if db_path else paths.database()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._base_conn = duckdb.connect(str(self.db_path))
         self._local = threading.local()

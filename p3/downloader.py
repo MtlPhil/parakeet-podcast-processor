@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 import feedparser
 import requests
 
-from . import youtube
+from . import paths, youtube
 from .database import P3Database
 
 logger = logging.getLogger(__name__)
@@ -138,7 +138,7 @@ class PodcastDownloader:
     def __init__(
         self,
         db: P3Database,
-        data_dir: str = "data",
+        data_dir: Optional[str] = None,
         max_episodes: int = 10,
         audio_format: str = "wav",
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
@@ -149,7 +149,7 @@ class PodcastDownloader:
         Without one (tests, pre-multi-user use) nothing is linked."""
         self.db = db
         self.username = username
-        self.data_dir = Path(data_dir)
+        self.data_dir = Path(data_dir) if data_dir else paths.data_dir()
         self.audio_dir = self.data_dir / "audio"
         self.audio_dir.mkdir(parents=True, exist_ok=True)
         self.max_episodes = max_episodes

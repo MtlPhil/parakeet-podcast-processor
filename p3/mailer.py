@@ -3,23 +3,18 @@ last report, their digests by theme, and any errors. Also an episode's synopsis,
 sent on request."""
 
 import logging
-import os
 import smtplib
 import ssl
 from datetime import datetime
 from email.message import EmailMessage
 from html import escape
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from . import secrets
 from .database import P3Database
 from .exporter import localized
 
 logger = logging.getLogger(__name__)
-
-# Optional on-disk location for the SMTP password (gitignored). The
-# SMTP_PASSWORD environment variable takes precedence.
-SMTP_PASSWORD_FILE = Path("config/smtp_password.txt")
 
 _LABELS = {
     "en": {
@@ -47,13 +42,6 @@ _LABELS = {
         "other": "Autre",
     },
 }
-
-
-def load_smtp_password() -> Optional[str]:
-    password = os.getenv("SMTP_PASSWORD")
-    if not password and SMTP_PASSWORD_FILE.exists():
-        password = SMTP_PASSWORD_FILE.read_text(encoding="utf-8").strip()
-    return password or None
 
 
 def _report_entry(
@@ -220,10 +208,10 @@ def send_email(settings: Dict[str, Any], to: str, subject: str, text: str, html:
     if not host:
         raise RuntimeError("smtp_host is not set in config/feeds.yaml")
     user = settings.get("smtp_user")
-    password = load_smtp_password()
+    password = secrets.read("smtp_password")
     if user and not password:
         raise RuntimeError(
-            f"No SMTP password found: set SMTP_PASSWORD or create {SMTP_PASSWORD_FILE}"
+            f"No SMTP password found: {secrets.missing('smtp_password')}"
         )
 
     sender = settings.get("smtp_from") or user

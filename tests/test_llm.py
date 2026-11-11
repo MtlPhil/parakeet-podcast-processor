@@ -49,9 +49,9 @@ class TestLoadApiKey:
         assert load_api_key("openai") == "sk-test"
 
     def test_gemini_env_takes_precedence_over_file(self, monkeypatch, tmp_path):
-        key_file = tmp_path / "gemini_api_key.txt"
-        key_file.write_text("from-file\n")
-        monkeypatch.setattr(llm, "GEMINI_API_KEY_FILE", key_file)
+        monkeypatch.setenv("P3_HOME", str(tmp_path))
+        (tmp_path / "config").mkdir()
+        (tmp_path / "config" / "gemini_api_key.txt").write_text("from-file\n")
 
         monkeypatch.setenv("GEMINI_API_KEY", "from-env")
         assert load_api_key("gemini") == "from-env"
@@ -61,7 +61,7 @@ class TestLoadApiKey:
 
     def test_gemini_missing_key(self, monkeypatch, tmp_path):
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-        monkeypatch.setattr(llm, "GEMINI_API_KEY_FILE", tmp_path / "missing.txt")
+        monkeypatch.setenv("P3_HOME", str(tmp_path))
         assert load_api_key("gemini") is None
 
 

@@ -13,6 +13,7 @@ from rich.logging import RichHandler
 from rich.progress import track
 from rich.table import Table
 
+from . import paths
 from .api.deps import read_config
 from .cleaner import DigestError, TranscriptCleaner
 from .database import P3Database
@@ -64,7 +65,7 @@ def _setup_logging(verbosity: int):
             logging.getLogger(name).setLevel(logging.WARNING)
 
 
-def load_config(config_path: str = "config/feeds.yaml"):
+def load_config(config_path: str):
     """Load configuration from YAML file."""
     config_file = Path(config_path)
 
@@ -92,8 +93,12 @@ def _check_prerequisite(name: str, cmd: list) -> bool:
 
 
 @click.group()
-@click.option("--config", default="config/feeds.yaml", help="Configuration file path")
-@click.option("--db", default="data/p3.duckdb", help="Database file path")
+@click.option(
+    "--config",
+    default=None,
+    help="Configuration file path [default: config/feeds.yaml]",
+)
+@click.option("--db", default=None, help="Database file path [default: data/p3.duckdb]")
 @click.option("-v", "--verbose", count=True, help="Enable debug logging")
 @click.option(
     "-q", "--quiet", is_flag=True, help="Suppress all output except warnings/errors"
@@ -111,9 +116,9 @@ def main(ctx, config, db, verbose, quiet):
 
     _setup_logging(verbosity)
 
-    ctx.obj["config_path"] = config
-    ctx.obj["db_path"] = db
-    ctx.obj["db"] = P3Database(db)
+    ctx.obj["config_path"] = config or str(paths.config_file())
+    ctx.obj["db_path"] = db or str(paths.database())
+    ctx.obj["db"] = P3Database(ctx.obj["db_path"])
 
 
 @main.command()
@@ -398,13 +403,12 @@ def _write_transcript_file(
     type=click.Choice(["txt", "markdown"]),
     help="Export format",
 )
-@click.option(
-    "--output-dir", default="exports", help="Output directory for transcripts"
-)
+@click.option("--output-dir", default=None, help="Output directory [default: exports]")
 @click.pass_context
 def export_transcript(ctx, date, fmt, output_dir):
     """Export transcript(s) for one episode, or for every episode on a date."""
     db = ctx.obj["db"]
+    output_dir = output_dir or str(paths.content_dir("exports"))
 
     if date:
         try:
@@ -601,14 +605,12 @@ def init(ctx):
         console.print()
 
     # Create directories
-    dirs = ["data", "config", "data/audio", "exports", "blog_posts", "linkedin_posts"]
-    for dir_name in dirs:
-        Path(dir_name).mkdir(parents=True, exist_ok=True)
-        console.print(f"  Created directory: {dir_name}")
+    paths.ensure()
+    console.print(f"  Created the folders under {paths.home().resolve()}")
 
     # Copy example config if it doesn't exist
     config_path = Path(ctx.obj["config_path"])
-    example_path = Path("config/feeds.yaml.example")
+    example_path = paths.config_dir() / "feeds.yaml.example"
 
     if not config_path.exists() and example_path.exists():
         config_path.parent.mkdir(parents=True, exist_ok=True)

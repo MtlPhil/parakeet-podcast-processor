@@ -1,12 +1,12 @@
 """Provider-agnostic chat client shared by the summarizer and the writer."""
 
 import logging
-import os
 import time
-from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union
 
 import httpx
+
+from . import secrets
 
 try:
     import ollama
@@ -30,12 +30,6 @@ GEMINI_FALLBACK_MODEL = "gemini-3.6-flash"
 # transcript (~100k characters) is about 25k tokens, plus the prompt.
 _OLLAMA_NUM_CTX = 32768
 
-# Optional on-disk location for the Gemini API key (gitignored). The
-# GEMINI_API_KEY environment variable takes precedence.
-GEMINI_API_KEY_FILE = Path("config/gemini_api_key.txt")
-# Same for OpenAI: OPENAI_API_KEY takes precedence over this file.
-OPENAI_API_KEY_FILE = Path("config/openai_api_key.txt")
-
 _REQUEST_TIMEOUT = 120.0
 
 # Gemini answers 503 (and sometimes 429/5xx or nothing at all) while it is
@@ -53,16 +47,8 @@ class _GeminiUnavailable(RuntimeError):
 
 def load_api_key(provider: str) -> Optional[str]:
     """Look up the API key for a hosted provider, or None if unset."""
-    if provider == "openai":
-        key = os.getenv("OPENAI_API_KEY")
-        if not key and OPENAI_API_KEY_FILE.exists():
-            key = OPENAI_API_KEY_FILE.read_text(encoding="utf-8").strip()
-        return key or None
-    if provider == "gemini":
-        key = os.getenv("GEMINI_API_KEY")
-        if not key and GEMINI_API_KEY_FILE.exists():
-            key = GEMINI_API_KEY_FILE.read_text(encoding="utf-8").strip()
-        return key or None
+    if provider in ("openai", "gemini"):
+        return secrets.read(f"{provider}_api_key")
     return None
 
 
@@ -183,7 +169,9 @@ class LLMClient:
 
     def _chat_openai(self, system: str, user: str, max_tokens: int) -> str:
         if not self.api_key:
-            raise RuntimeError("OPENAI_API_KEY is not set")
+            raise RuntimeError(
+                f"No OpenAI API key found: {secrets.missing('openai_api_key')}"
+            )
         with httpx.Client(timeout=_REQUEST_TIMEOUT) as client:
             response = client.post(
                 "https://api.openai.com/v1/chat/completions",
@@ -207,8 +195,7 @@ class LLMClient:
     def _chat_gemini(self, system: str, user: str, max_tokens: int) -> str:
         if not self.api_key:
             raise RuntimeError(
-                "No Gemini API key found: set GEMINI_API_KEY or create "
-                f"{GEMINI_API_KEY_FILE}"
+                f"No Gemini API key found: {secrets.missing('gemini_api_key')}"
             )
         try:
             return self._gemini_request(self.api_key, system, user, max_tokens)
