@@ -1260,11 +1260,30 @@ def retry_report_email(username: str):
         db.set_state(run_key("email_attempts", username), "")
 
 
+# The backlog stops retrying an episode whose pipeline failed this many
+# times in a row (a broken audio file fails the same way every time). It
+# can still be run by hand, and a success starts the count over.
+MAX_BACKLOG_FAILURES = 3
+
+
 def queue_backlog(db, username: str) -> list[str]:
     """After the report: a normal-lane pipeline job for each of the user's
-    episodes still unprocessed that has no job pending or running already."""
+    episodes still unprocessed that has no job pending or running already,
+    unless it failed MAX_BACKLOG_FAILURES times in a row."""
     busy = {j["episode_id"] for j in db.get_active_jobs(username)}
-    episodes = [e for e in db.get_all_episodes(username) if e["id"] not in busy]
+    failures = db.failed_in_a_row()
+    episodes = []
+    for e in db.get_all_episodes(username):
+        if e["id"] in busy or e["status"] == "processed":
+            continue
+        if failures.get(e["id"], 0) >= MAX_BACKLOG_FAILURES:
+            logger.warning(
+                "Not retrying %s: it failed %d times in a row",
+                e["title"],
+                failures[e["id"]],
+            )
+            continue
+        episodes.append(e)
     job_ids = queue_step_jobs(db, episodes, "pipeline", None, username)
     if job_ids:
         logger.info("Queued %d backlog episode(s) for %s", len(job_ids), username)

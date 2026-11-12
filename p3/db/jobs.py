@@ -139,6 +139,29 @@ class Jobs(Digests):
             return f" WHERE {condition}", []
         return f" WHERE {condition} AND {self._JOB_VISIBLE}", [username, username]
 
+    def failed_in_a_row(self) -> Dict[int, int]:
+        """For each episode, how many of its transcribe, digest and pipeline
+        jobs failed since the last one that completed. Failures a server
+        restart caused (INTERRUPTED_ERROR) are not the episode's and don't
+        count."""
+        rows = self.conn.execute(
+            """
+            SELECT j.episode_id, COUNT(*) FROM jobs j
+            WHERE j.job_type IN ('transcribe', 'digest', 'full_pipeline')
+              AND j.status = 'failed'
+              AND j.error IS DISTINCT FROM ?
+              AND j.created_at > COALESCE((
+                  SELECT MAX(c.created_at) FROM jobs c
+                  WHERE c.episode_id = j.episode_id
+                    AND c.status = 'completed'
+                    AND c.job_type IN ('transcribe', 'digest', 'full_pipeline')
+              ), TIMESTAMP '1970-01-01')
+            GROUP BY j.episode_id
+        """,
+            [INTERRUPTED_ERROR],
+        ).fetchall()
+        return {episode_id: count for episode_id, count in rows}
+
     def job_visible_to(self, job_id: str, username: str) -> bool:
         """True if the user started this job or follows its podcast."""
         where, params = self._jobs_where("j.id = ?", username)
