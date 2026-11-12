@@ -73,6 +73,7 @@ class PodcastOut(BaseModel):
     category: Optional[str] = None
     source_type: str = "rss"
     created_at: Optional[Any] = None
+    added_at: Optional[Any] = None  # to the user's library
     episode_count: Optional[int] = None
 
 

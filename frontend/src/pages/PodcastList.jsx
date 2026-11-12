@@ -1,12 +1,48 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { getPodcasts, deletePodcast } from '../api/client';
 import SourceBadge from '../components/SourceBadge';
 import { TagChips } from '../components/Tags';
 
+const byName = (a, b) =>
+  a.title.localeCompare(b.title, undefined, { sensitivity: 'base', numeric: true });
+
+// Each sort's natural order first (A to Z, newest, most episodes), then
+// reversed by the arrow button. Ties go by name, A to Z.
+const SORTS = {
+  name: { label: 'Name', orders: ['A to Z', 'Z to A'], compare: () => 0 },
+  added: {
+    label: 'Date added',
+    orders: ['Newest first', 'Oldest first'],
+    compare: (a, b) => (b.added_at || '').localeCompare(a.added_at || ''),
+  },
+  episodes: {
+    label: 'Episodes',
+    orders: ['Most first', 'Fewest first'],
+    compare: (a, b) => (b.episode_count ?? 0) - (a.episode_count ?? 0),
+  },
+};
+
+const sortBy = (sort, reversed) => (a, b) => {
+  const sign = reversed ? -1 : 1;
+  return sort === 'name'
+    ? sign * byName(a, b)
+    : sign * SORTS[sort].compare(a, b) || byName(a, b);
+};
+
 export default function PodcastList() {
   const [podcasts, setPodcasts] = useState([]);
   const [error, setError] = useState(null);
+  // In the address, so a reload or the back button keeps them.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const sort = SORTS[searchParams.get('sort')] ? searchParams.get('sort') : 'name';
+  const reversed = searchParams.get('order') === 'reverse';
+  const sorted = [...podcasts].sort(sortBy(sort, reversed));
+  const setSort = (key, reverse) =>
+    setSearchParams(
+      { ...(key !== 'name' && { sort: key }), ...(reverse && { order: 'reverse' }) },
+      { replace: true },
+    );
 
   const load = useCallback(
     () => getPodcasts().then(setPodcasts).catch((e) => setError(e.message)),
@@ -42,8 +78,35 @@ export default function PodcastList() {
       {podcasts.length === 0 ? (
         <p className="text-gray-500">No podcasts added yet.</p>
       ) : (
+        <>
+        <div className="flex items-center gap-2 mb-3 text-xs text-gray-500">
+          <span>Sort by</span>
+          <div className="inline-flex rounded-lg border overflow-hidden" role="group" aria-label="Sort by">
+            {Object.entries(SORTS).map(([key, { label }]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setSort(key, false)}
+                aria-pressed={sort === key}
+                className={`px-2.5 py-1 ${sort === key ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={() => setSort(sort, !reversed)}
+            aria-pressed={reversed}
+            title="Reverse the order"
+            className="inline-flex items-center gap-1 rounded-lg border bg-white px-2.5 py-1 text-gray-600 hover:bg-gray-50"
+          >
+            <span aria-hidden="true">⇅</span>
+            {SORTS[sort].orders[reversed ? 1 : 0]}
+          </button>
+        </div>
         <div className="grid gap-4">
-          {podcasts.map((p) => (
+          {sorted.map((p) => (
             <div key={p.id} className="bg-white rounded-lg border p-4 flex items-center justify-between">
               <Link to={`/podcasts/${p.id}`} className="flex-1 min-w-0">
                 <h3 className="font-medium text-gray-900 truncate">{p.title}</h3>
@@ -52,6 +115,7 @@ export default function PodcastList() {
                   <SourceBadge type={p.source_type} />
                   <TagChips value={p.category} className="bg-gray-100 px-2 py-0.5 rounded" />
                   <span>{p.episode_count ?? 0} episodes</span>
+                  {p.added_at && <span>Added {new Date(p.added_at).toLocaleDateString()}</span>}
                 </div>
               </Link>
               <button
@@ -63,6 +127,7 @@ export default function PodcastList() {
             </div>
           ))}
         </div>
+        </>
       )}
     </div>
   );
