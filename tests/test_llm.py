@@ -149,6 +149,10 @@ class TestReleaseOllamaModels:
 class TestGeminiRetries:
     """Gemini's transient failures are retried; the client is a stub."""
 
+    @pytest.fixture(autouse=True)
+    def _no_skipped_models(self, monkeypatch):
+        monkeypatch.setattr(llm, "_gemini_skipped_until", {})
+
     def _client(self, monkeypatch, outcomes):
         sleeps = []
         calls = []
@@ -212,6 +216,35 @@ class TestGeminiRetries:
         client.chat("s", "u")
         assert client.chat("s", "u") == "two"
         assert llm.GEMINI_FALLBACK_MODEL in calls[-1]
+
+    def test_other_clients_skip_the_model_for_a_while(self, monkeypatch):
+        attempts = len(llm._GEMINI_RETRY_WAITS) + 1
+        client, calls, _ = self._client(
+            monkeypatch,
+            [(503, "overloaded")] * attempts + [(200, "one"), (200, "two")],
+        )
+        client.chat("s", "u")
+        # A new client (the next Ask question, the next job) goes straight
+        # to the fallback, with no retries.
+        later = LLMClient(provider="gemini", model="gemini-test", api_key="k")
+        assert later.chat("s", "u") == "two"
+        assert len(calls) == attempts + 2
+        assert llm.GEMINI_FALLBACK_MODEL in calls[-1]
+
+    def test_the_model_is_tried_again_once_the_time_is_up(self, monkeypatch):
+        attempts = len(llm._GEMINI_RETRY_WAITS) + 1
+        client, calls, _ = self._client(
+            monkeypatch,
+            [(503, "overloaded")] * attempts + [(200, "one"), (200, "two")],
+        )
+        client.chat("s", "u")
+        now = llm.time.monotonic()
+        monkeypatch.setattr(
+            llm.time, "monotonic", lambda: now + llm._GEMINI_SKIP_SECONDS + 1
+        )
+        later = LLMClient(provider="gemini", model="gemini-test", api_key="k")
+        assert later.chat("s", "u") == "two"
+        assert "gemini-test" in calls[-1]
 
     def test_falls_back_when_unreachable(self, monkeypatch):
         import httpx
