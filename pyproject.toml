@@ -36,6 +36,14 @@ web = [
 ask = [
     "sentence-transformers>=3.0",
 ]
+# The app in a window of its own (p3-app); includes the web extra's packages.
+desktop = [
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "pydantic>=2.0.0",
+    "pywebview>=6.0",
+    "platformdirs>=4.0",
+]
 dev = [
     "pytest>=7.0.0",
     "black>=23.0.0",
@@ -47,6 +55,9 @@ dev = [
 
 [project.scripts]
 p3 = "p3.cli:main"
+
+[project.gui-scripts]
+p3-app = "p3.desktop:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -64,5 +75,5 @@ plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
 # Third-party packages without type information.
-module = ["faster_whisper", "feedparser", "mlx_whisper", "mlx_whisper.*", "parakeet_mlx", "mlx.*", "sentence_transformers", "sentence_transformers.*", "torch", "torch.*", "yt_dlp", "yt_dlp.*"]
+module = ["faster_whisper", "feedparser", "mlx_whisper", "mlx_whisper.*", "parakeet_mlx", "mlx.*", "sentence_transformers", "sentence_transformers.*", "torch", "torch.*", "webview", "yt_dlp", "yt_dlp.*"]
 ignore_missing_imports = true

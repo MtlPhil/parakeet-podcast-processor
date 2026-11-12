@@ -392,6 +392,35 @@ uvicorn p3.api.main:app --host 127.0.0.1 --port 8000
 Run it from the repository root. Data, config and output paths are relative to
 the working directory.
 
+### Desktop app
+
+P³ in a window of its own, with no browser, no sign-in and no background
+service:
+
+```bash
+uv sync --frozen --extra desktop     # or: pip install -e ".[desktop]"
+p3-app
+```
+
+`p3-app` starts the server inside the app, reachable from this computer
+only, and opens a native window on it (WebKit on macOS, WebView2 on Windows,
+GTK or Qt on Linux). Closing the window stops it, so nothing runs, including
+the daily run, while the app is closed. The library lives in your
+application data folder (`~/Library/Application Support/P3` on macOS,
+`%LOCALAPPDATA%\P3` on Windows, `~/.local/share/P3` on Linux); set `P3_HOME`
+to use another, such as an existing `~/P3`. Only one P³ can have a library
+open: stop the background service before opening the same library in the app.
+
+This is the launcher only. There is no installer or signed download yet: it
+needs Python and the steps above.
+
+### On a phone
+
+The web app can be added to a phone's home screen (Share → Add to Home
+Screen on iOS, Install app on Android) and then opens full-screen like an
+app. It still talks to the P³ server on your computer, so the phone must be
+able to reach it.
+
 ### Container
 
 For Linux, or anywhere Docker runs:
@@ -573,6 +602,7 @@ p3/
 ├── ask.py            Ask: question step, retrieval, streamed answer, citation checks
 ├── model_gate.py     Ask: no model calls while transcription models are loaded
 ├── eval_ask.py       Ask: retrieval and answer evaluation
+├── desktop.py        The app in its own window (`p3-app`)
 ├── paths.py          Where every file lives: under P3_HOME, or the current folder
 ├── secrets.py        API keys and the mail password: environment, else a file
 ├── settings.py       The shared settings and their defaults
