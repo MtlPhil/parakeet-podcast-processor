@@ -153,7 +153,11 @@ fi
 ok "$("$P3_HOME/.venv/bin/python" --version)"
 
 step "Installing P3 and its speech-to-text engines (the longest step)"
-( cd "$P3_HOME" && quietly "$UV" pip install --python .venv/bin/python -e ".[web]" imageio-ffmpeg ) || die \
+# The versions pinned in uv.lock, as CI tests them. ffmpeg isn't one of
+# P3's dependencies: it is added after the sync, which removes what the
+# lock doesn't list.
+( cd "$P3_HOME" && quietly "$UV" sync --frozen --extra web \
+    && quietly "$UV" pip install --python .venv/bin/python imageio-ffmpeg ) || die \
   "Installing P3's Python packages failed." \
   "If your macOS is old, update it in System Settings › General › Software Update and try again."
 ok "Python packages installed"
