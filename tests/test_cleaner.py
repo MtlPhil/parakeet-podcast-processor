@@ -673,3 +673,83 @@ class TestRefreshDigest:
             assert summary["key_topics"] == ["old"]
         finally:
             db.close()
+
+
+class TestRespellNames:
+    """Names misspelled by speech recognition are spelled as in the show's
+    title and notes before any prompt reads the transcript."""
+
+    _NOTES = "20VC: Revolut hits $115B. Tony Marinaro and the Montreal Canadiens."
+
+    def _respell(self, text, source=_NOTES):
+        from p3.cleaner import _respell_names
+
+        return _respell_names(text, source)
+
+    def test_misspelled_names_take_the_notes_spelling(self):
+        text = (
+            "We have Revolute, the juggernaut. Give me Revolute at 115. "
+            "And Revolute's founder. With Tony Marinero and the Canadians."
+        )
+        assert self._respell(text) == (
+            "We have Revolut, the juggernaut. Give me Revolut at 115. "
+            "And Revolut's founder. With Tony Marinaro and the Canadiens."
+        )
+
+    def test_every_use_is_respelled_even_lowercase(self):
+        assert self._respell("I like Revolute and Revolute, even revolute.") == (
+            "I like Revolut and Revolut, even Revolut."
+        )
+
+    def test_a_word_mostly_written_lowercase_is_not_a_name(self):
+        text = "I like Revolute, even revolute and revolute."
+        assert self._respell(text) == text
+
+    def test_a_capital_that_only_starts_a_sentence_is_not_a_name(self):
+        text = "Montreal is cold. Montral lost again."
+        assert self._respell(text) == text
+
+    def test_a_name_the_transcript_already_spells_more_often_wins(self):
+        # The recognizer knows "Marinaro": its "Mariner" is someone else.
+        text = "Tony Marinaro said so, Tony Marinaro again, then Mitch Mariner."
+        assert self._respell(text) == text
+
+    def test_other_forms_of_a_word_are_left_alone(self):
+        source = "Europe, Canadiens, Texas and YouTube"
+        text = "the Europeans, a Canadian team, the Texans and the YouTubers"
+        assert self._respell(text, source) == text
+
+    def test_ordinary_words_and_short_or_acronym_names_are_not_names(self):
+        # "Hosts" is used lowercase in the transcript, "NASDAQ" is all
+        # capitals, "Rory" is too short.
+        source = "Hosts Rory and NASDAQ"
+        text = "The hosts and Hostz, then Rorie and Nasdak."
+        assert self._respell(text, source) == text
+
+    def test_nothing_to_compare_with_changes_nothing(self):
+        assert self._respell("We have Revolute.", "") == "We have Revolute."
+        assert self._respell("", self._NOTES) == ""
+
+    def test_prompts_read_the_respelled_transcript(self, tmp_path):
+        from p3.cleaner import TranscriptCleaner
+
+        db = P3Database(str(tmp_path / "test.duckdb"))
+        try:
+            pid = db.add_podcast("Pod", "http://example.com/rss")
+            eid = db.add_episode(
+                pid,
+                "Fintech news",
+                None,
+                "http://example.com/ep.mp3",
+                description="<p>Revolut hits $115B</p>",
+            )
+            db.add_transcript_segments(
+                eid, [_seg("And we have Revolute, the bank.", 0, 5)]
+            )
+            cleaner = TranscriptCleaner(db=db, llm_provider="ollama")
+            assert cleaner._transcript(eid) == "And we have Revolut, the bank."
+            # The stored transcript is not changed.
+            segments = db.get_transcripts_for_episode(eid)
+            assert segments[0]["text"] == "And we have Revolute, the bank."
+        finally:
+            db.close()

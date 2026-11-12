@@ -88,6 +88,105 @@ def _episode_context(episode: Optional[Dict[str, Any]]) -> str:
     return "\n".join(lines) + "\n\n"
 
 
+# _NAMES_RULE alone isn't enough for a small model: shown "Revolute" ten
+# times in the transcript and "Revolut" once in the notes, it wrote both,
+# and then "Revolutionary". So the transcript the prompts read already uses
+# the notes' spelling (_respell_names).
+_NAME_MIN_LEN = 5
+_NAME_MIN_SIMILARITY = 0.8
+_NAME_MAX_LEN_DIFF = 2
+_WORD = re.compile(r"[^\W\d_]+", re.UNICODE)
+
+
+def _is_other_form(a: str, b: str) -> bool:
+    """Whether two lowercase words are forms of one word ("europe" and
+    "europeans", "texas" and "texans", "canadian" and "canadiens": a
+    singular is never respelled as a plural) rather than one misspelling
+    the other. A trailing "e" alone is a misspelling ("revolute")."""
+    if a.endswith("s") != b.endswith("s"):
+        return True
+    for x, y in ((a, b), (a.removesuffix("s"), b.removesuffix("s"))):
+        short, long = sorted((x, y), key=len)
+        if long != short and long.startswith(short) and long[len(short) :] != "e":
+            return True
+    return False
+
+
+def _respell_names(text: str, source: str) -> str:
+    """``text`` with names misspelled by speech recognition spelled as in
+    ``source`` (the episode's title and show notes).
+
+    A name is a word of ``source`` with a capital letter, not all capitals,
+    at least _NAME_MIN_LEN letters, that the transcript never uses as an
+    ordinary lowercase word. A transcript word is taken for a misspelling of
+    it when:
+    - it is capitalized in most of its uses inside a sentence (speech
+      recognition capitalizes names; a sentence's first word says nothing);
+    - it is used more often than the name's own spelling (a recognizer that
+      writes "Tuesday" nine times means "Thursday" when it writes it);
+    - it starts with the same letter, is at least _NAME_MIN_SIMILARITY
+      alike, at most _NAME_MAX_LEN_DIFF letters longer or shorter, and is
+      not another form of it (_is_other_form) or a word of ``source``.
+    Every use of it is then replaced.
+
+    Known risk: two different names a letter apart are merged when only one
+    is in the notes (Marinaro in the notes turns a Mitch Mariner, meaning
+    Marner, into Marinaro)."""
+    from difflib import SequenceMatcher
+
+    if not text or not source:
+        return text
+    count: Dict[str, int] = {}
+    capitalized: Dict[str, int] = {}
+    inside: Dict[str, int] = {}
+    for m in _WORD.finditer(text):
+        word, lower = m.group(), m.group().lower()
+        count[lower] = count.get(lower, 0) + 1
+        before = text[: m.start()].rstrip()[-1:]
+        if before and before not in ".!?":
+            inside[lower] = inside.get(lower, 0) + 1
+            if word[0].isupper():
+                capitalized[lower] = capitalized.get(lower, 0) + 1
+    lowercase_words = {m.group() for m in _WORD.finditer(text) if m.group().islower()}
+
+    source_words = set(_WORD.findall(source))
+    source_lower = {w.lower() for w in source_words}
+    names = {
+        w.lower(): w
+        for w in source_words
+        if len(w) >= _NAME_MIN_LEN
+        and not w.isupper()
+        and any(c.isupper() for c in w)
+        and w.lower() not in lowercase_words
+    }
+
+    replacements: Dict[str, str] = {}
+    for lower, n in count.items():
+        if len(lower) < _NAME_MIN_LEN or lower in source_lower:
+            continue
+        uses_inside = inside.get(lower, 0)
+        if not uses_inside or capitalized.get(lower, 0) * 2 <= uses_inside:
+            continue
+        best, best_ratio = None, _NAME_MIN_SIMILARITY
+        for name_lower, name in names.items():
+            if (
+                name_lower[0] != lower[0]
+                or abs(len(name_lower) - len(lower)) > _NAME_MAX_LEN_DIFF
+                or count.get(name_lower, 0) >= n
+                or _is_other_form(name_lower, lower)
+            ):
+                continue
+            ratio = SequenceMatcher(None, lower, name_lower).ratio()
+            if ratio >= best_ratio:
+                best, best_ratio = name, ratio
+        if best:
+            replacements[lower] = best
+    if not replacements:
+        return text
+    logger.info("Respelled from the show notes: %s", replacements)
+    return _WORD.sub(lambda m: replacements.get(m.group().lower(), m.group()), text)
+
+
 _SUMMARY_PROMPT = (
     """Analyze this podcast transcript and extract structured information in JSON format:
 
@@ -302,10 +401,18 @@ class TranscriptCleaner:
 
     def _transcript(self, episode_id: int) -> str:
         """An episode's transcript as the prompts read it: fillers removed by
-        regex, nothing rewritten (the prompts skip ads themselves, see
+        regex, names spelled as the show writes them (_respell_names),
+        nothing else rewritten (the prompts skip ads themselves, see
         _AD_RULE). Empty if the episode has no transcript."""
         segments = self.db.get_transcripts_for_episode(episode_id)
-        return self._basic_clean_text(" ".join(s["text"] for s in segments))
+        text = self._basic_clean_text(" ".join(s["text"] for s in segments))
+        episode = self.db.get_episode_by_id(episode_id)
+        if not isinstance(episode, dict):
+            return text
+        title = episode.get("title")
+        title = title if isinstance(title, str) else ""
+        notes = _notes_text(episode.get("description"))
+        return _respell_names(text, f"{title}\n{notes}")
 
     def _require_llm(self):
         if not self.llm.is_configured:
