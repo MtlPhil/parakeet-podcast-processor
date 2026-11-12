@@ -7,26 +7,42 @@ import { TagChips } from '../components/Tags';
 const byName = (a, b) =>
   a.title.localeCompare(b.title, undefined, { sensitivity: 'base', numeric: true });
 
-// Name A to Z; newest added first; most episodes first. Ties go by name.
+// Each sort's natural order first (A to Z, newest, most episodes), then
+// reversed by the arrow button. Ties go by name, A to Z.
 const SORTS = {
-  name: { label: 'Name', compare: byName },
+  name: { label: 'Name', orders: ['A to Z', 'Z to A'], compare: () => 0 },
   added: {
     label: 'Date added',
-    compare: (a, b) => (b.added_at || '').localeCompare(a.added_at || '') || byName(a, b),
+    orders: ['Newest first', 'Oldest first'],
+    compare: (a, b) => (b.added_at || '').localeCompare(a.added_at || ''),
   },
   episodes: {
     label: 'Episodes',
-    compare: (a, b) => (b.episode_count ?? 0) - (a.episode_count ?? 0) || byName(a, b),
+    orders: ['Most first', 'Fewest first'],
+    compare: (a, b) => (b.episode_count ?? 0) - (a.episode_count ?? 0),
   },
+};
+
+const sortBy = (sort, reversed) => (a, b) => {
+  const sign = reversed ? -1 : 1;
+  return sort === 'name'
+    ? sign * byName(a, b)
+    : sign * SORTS[sort].compare(a, b) || byName(a, b);
 };
 
 export default function PodcastList() {
   const [podcasts, setPodcasts] = useState([]);
   const [error, setError] = useState(null);
-  // In the address, so a reload or the back button keeps it.
+  // In the address, so a reload or the back button keeps them.
   const [searchParams, setSearchParams] = useSearchParams();
   const sort = SORTS[searchParams.get('sort')] ? searchParams.get('sort') : 'name';
-  const sorted = [...podcasts].sort(SORTS[sort].compare);
+  const reversed = searchParams.get('order') === 'reverse';
+  const sorted = [...podcasts].sort(sortBy(sort, reversed));
+  const setSort = (key, reverse) =>
+    setSearchParams(
+      { ...(key !== 'name' && { sort: key }), ...(reverse && { order: 'reverse' }) },
+      { replace: true },
+    );
 
   const load = useCallback(
     () => getPodcasts().then(setPodcasts).catch((e) => setError(e.message)),
@@ -70,7 +86,7 @@ export default function PodcastList() {
               <button
                 key={key}
                 type="button"
-                onClick={() => setSearchParams(key === 'name' ? {} : { sort: key }, { replace: true })}
+                onClick={() => setSort(key, false)}
                 aria-pressed={sort === key}
                 className={`px-2.5 py-1 ${sort === key ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
               >
@@ -78,6 +94,16 @@ export default function PodcastList() {
               </button>
             ))}
           </div>
+          <button
+            type="button"
+            onClick={() => setSort(sort, !reversed)}
+            aria-pressed={reversed}
+            title="Reverse the order"
+            className="inline-flex items-center gap-1 rounded-lg border bg-white px-2.5 py-1 text-gray-600 hover:bg-gray-50"
+          >
+            <span aria-hidden="true">⇅</span>
+            {SORTS[sort].orders[reversed ? 1 : 0]}
+          </button>
         </div>
         <div className="grid gap-4">
           {sorted.map((p) => (
