@@ -42,16 +42,10 @@ and the installer, not the language.
    - Send one real request through the Anthropic provider and through an
      OpenAI-compatible server (LM Studio, say). Both are tested only with
      stand-ins.
-   - A provider that stays overloaded costs every new request the full set
-     of retries: the switch to `GEMINI_FALLBACK_MODEL` lasts for one client
-     only. Remember it across requests for a while.
    - Speaker names in transcripts and citations (built, unfinished, on the
      `speakers` branch). The review found host lines credited to guests;
      this is Ask's biggest remaining trust gap.
    - Ask, from [docs/ask-plan.md](docs/ask-plan.md):
-     - Show progress while the question is being understood. With a slow
-       provider the page stays empty for minutes (9 on 2026-11-11, with
-       Gemini overloaded).
      - Decide local or hosted answers from the measurements in the plan, or
        try a smaller local answer model, then check the attribution rules
        on a broad question.
@@ -92,28 +86,16 @@ and the installer, not the language.
 - **Blog post tab on the episode page.** Show posts generated from an episode,
   with their grading history.
 - **Frontend tests.** No JavaScript test framework is set up yet.
-- **Ask's catch-up index job in a job list.** The index job queued behind a
-  daily backlog belongs to no user, so no one's job list shows it.
 
 ## Pipeline
 
-- **Stop retrying episodes that cannot succeed.** After each daily run the
-  backlog queues every unprocessed episode again, including one that fails
-  the same way every time (a broken audio file, say).
 - **Recognize an episode whose audio URL changed.** Episodes are identified by
   audio URL; a feed that changes its tracking URLs gets its episodes
   downloaded again. The feed's own episode id (`guid`) is read but not
   stored.
-- **Retry for writing jobs.** Extend job retry to blog, LinkedIn and synopsis
-  jobs.
 - **Speaker diarization.** Fill the `speaker` field on transcript segments,
   which is currently always empty. Built, unfinished, on the `speakers`
   branch (direction, item 3).
-- **Send a run's report once the network is back.** A report that fails to
-  send (no network at the time of the run) is logged and never sent later.
-- **Use the installer with the pinned dependencies.** `install.sh` still
-  installs the newest versions that satisfy `pyproject.toml`; CI and manual
-  installs use `uv.lock`.
 
 ## Content and analysis
 
@@ -121,11 +103,10 @@ and the installer, not the language.
   or spreadsheet.
 - **Investment-thesis generation.** Turn recurring themes across episodes into
   structured investment or research theses.
-- **Summaries in the HTML export.** The episode page and the emails show the
-  model's section titles, lists and bold; the HTML digest export (`p3 export`)
-  still shows the summary as plain text. The summary prompt asks for no
-  headings, which the local model often ignores: either ask for the format
-  that gets shown, or keep tolerating both.
+- **The summary's format.** The summary prompt asks for no headings, which
+  the local model often ignores; every display (episode page, emails, HTML
+  export) now shows its titles and lists. Either ask for that format in the
+  prompt, or keep tolerating both.
 
 ## Testing
 
