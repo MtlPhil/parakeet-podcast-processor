@@ -491,6 +491,31 @@ class TestAskAPI:
         assert _events(follow.text)[-1]["thread_id"] == done["thread_id"]
         assert client.get("/api/ask/threads").json()[0]["message_count"] == 4
 
+    def test_a_slow_answer_keeps_the_connection_alive(self, api, monkeypatch):
+        import time
+
+        from p3.api.routers import ask as ask_router
+
+        client, _ = api
+        make_asker = ask_router._asker
+
+        def slow_asker(username):
+            asker = make_asker(username)
+            stream = asker.answer_stream
+
+            def slow_stream(*args, **kwargs):
+                time.sleep(0.2)  # a model slow to read the question
+                yield from stream(*args, **kwargs)
+
+            asker.answer_stream = slow_stream
+            return asker
+
+        monkeypatch.setattr(ask_router, "_asker", slow_asker)
+        monkeypatch.setattr(ask_router, "_KEEPALIVE_SECONDS", 0.02)
+        resp = client.post("/api/ask", json={"question": "What about bank rates?"})
+        assert ": keep-alive" in resp.text
+        assert _events(resp.text)[-1]["event"] == "done"
+
     def test_threads_are_private(self, api):
         client, _ = api
         done = _events(client.post("/api/ask", json={"question": "rates?"}).text)[-1]
