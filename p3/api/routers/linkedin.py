@@ -56,6 +56,7 @@ def create_linkedin_post(
         episode_id=body.episode_id,
         podcast_id=episode["podcast_id"],
         username=username,
+        args={"provider": body.provider, "model": body.model},
     )
     job_runner.enqueue(
         task_write_linkedin,

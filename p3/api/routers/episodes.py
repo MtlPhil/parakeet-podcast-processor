@@ -198,13 +198,14 @@ def generate_synopsis(
     if not db.get_summary_by_episode(episode_id):
         raise HTTPException(400, "Episode has no summary yet; run digest first")
 
+    body = body or SynopsisCreate()
     job_id = db.create_job(
         "synopsis",
         episode_id=episode_id,
         podcast_id=episode["podcast_id"],
         username=username,
+        args={"provider": body.provider, "model": body.model},
     )
-    body = body or SynopsisCreate()
     job_runner.enqueue(
         task_generate_synopsis, job_id, episode_id, body.provider, body.model, username
     )

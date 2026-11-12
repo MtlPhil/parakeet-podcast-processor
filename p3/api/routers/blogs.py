@@ -49,7 +49,17 @@ def create_blog(body: BlogCreate, username: str = Depends(current_username)):
     db = get_db()
     target_date = body.date or datetime.now().strftime("%Y-%m-%d")
 
-    job_id = db.create_job("write", username=username)
+    job_id = db.create_job(
+        "write",
+        username=username,
+        args={
+            "topic": body.topic,
+            "date": target_date,
+            "target_grade": body.target_grade,
+            "provider": body.provider,
+            "model": body.model,
+        },
+    )
     job_runner.enqueue(
         task_write_blog,
         job_id,
