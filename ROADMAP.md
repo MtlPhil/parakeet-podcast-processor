@@ -39,8 +39,30 @@ and the installer, not the language.
      citations kept apart.
    - Streaming and tool calls for every provider: OpenAI-compatible servers
      and Anthropic answer whole today.
+   - Send one real request through the Anthropic provider and through an
+     OpenAI-compatible server (LM Studio, say). Both are tested only with
+     stand-ins.
+   - A provider that stays overloaded costs every new request the full set
+     of retries: the switch to `GEMINI_FALLBACK_MODEL` lasts for one client
+     only. Remember it across requests for a while.
    - Speaker names in transcripts and citations (built, unfinished, on the
-     `speakers` branch), and the other open items in the plan.
+     `speakers` branch). The review found host lines credited to guests;
+     this is Ask's biggest remaining trust gap.
+   - Ask, from [docs/ask-plan.md](docs/ask-plan.md):
+     - Show progress while the question is being understood. With a slow
+       provider the page stays empty for minutes (9 on 2026-11-11, with
+       Gemini overloaded).
+     - Decide local or hosted answers from the measurements in the plan, or
+       try a smaller local answer model, then check the attribution rules
+       on a broad question.
+     - Count by concept, not only by the words the question names.
+     - Measure subtler overstatement than the support check catches
+       (`python -m p3.eval_ask answers`).
+     - Tools for the model, beyond the broad-question routing.
+     - Rank cold opens and ad reads lower; citation popovers that work on
+       touch screens; flag a single citation.
+     - An answer cut short by a server restart is lost (answers run on
+       daemon threads).
 4. **A desktop app.** Done: `p3-app` opens P³ in a native window with the
    server inside it, and the web app can be installed on a phone's home
    screen. Still to do:
@@ -52,6 +74,9 @@ and the installer, not the language.
      item).
    - Opening an existing `~/P3` library from the app without setting
      `P3_HOME` by hand, and handing over from the background service.
+   - Open `p3-app` on macOS, Windows and Linux once: the launcher is tested,
+     but no window has been opened on any of them.
+   - Install the web app on a phone's home screen once; it is untried.
    - A native iPhone app ([docs/ios-app-plan.md](docs/ios-app-plan.md)),
      deferred until after.
 
@@ -67,6 +92,8 @@ and the installer, not the language.
 - **Blog post tab on the episode page.** Show posts generated from an episode,
   with their grading history.
 - **Frontend tests.** No JavaScript test framework is set up yet.
+- **Ask's catch-up index job in a job list.** The index job queued behind a
+  daily backlog belongs to no user, so no one's job list shows it.
 
 ## Pipeline
 
@@ -82,6 +109,8 @@ and the installer, not the language.
 - **Speaker diarization.** Fill the `speaker` field on transcript segments,
   which is currently always empty. Built, unfinished, on the `speakers`
   branch (direction, item 3).
+- **Send a run's report once the network is back.** A report that fails to
+  send (no network at the time of the run) is logged and never sent later.
 - **Use the installer with the pinned dependencies.** `install.sh` still
   installs the newest versions that satisfy `pyproject.toml`; CI and manual
   installs use `uv.lock`.
@@ -92,6 +121,11 @@ and the installer, not the language.
   or spreadsheet.
 - **Investment-thesis generation.** Turn recurring themes across episodes into
   structured investment or research theses.
+- **Summaries in the HTML export.** The episode page and the emails show the
+  model's section titles, lists and bold; the HTML digest export (`p3 export`)
+  still shows the summary as plain text. The summary prompt asks for no
+  headings, which the local model often ignores: either ask for the format
+  that gets shown, or keep tolerating both.
 
 ## Testing
 
