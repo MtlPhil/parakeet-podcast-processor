@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
   askStream,
@@ -11,6 +11,7 @@ import {
   rateAskAnswer,
   stopAsk,
 } from '../api/client';
+import MarkdownText from '../components/MarkdownText';
 import { useMe } from '../hooks/useMe';
 
 const formatTime = (seconds) => {
@@ -52,66 +53,41 @@ const sourceLine = (s) =>
     .filter(Boolean)
     .join(' · ');
 
-// Answer text with [n] citations turned into links to their sources.
+// Answer text (Markdown, see MarkdownText) with [n] citations turned into
+// links to their sources.
 function AnswerText({ text, sources, weak }) {
   const byNumber = Object.fromEntries((sources || []).map((s) => [s.n, s]));
   const weakNumbers = new Set((weak || []).map((w) => w.n));
-  const renderLine = (line, key) => {
-    const parts = line.split(/(\[\d+\])/g);
-    return (
-      <Fragment key={key}>
-        {parts.map((part, i) => {
-          const match = /^\[(\d+)\]$/.exec(part);
-          const source = match && byNumber[Number(match[1])];
-          if (!source) return part;
-          return (
-            <Link
-              key={i}
-              to={sourceLink(source)}
-              title={
-                weakNumbers.has(source.n)
-                  ? `${sourceLine(source)} — this passage may not support the sentence`
-                  : sourceLine(source)
-              }
-              className={`inline-block align-super text-[10px] font-semibold rounded px-1 mx-0.5 no-underline ${
-                weakNumbers.has(source.n)
-                  ? 'text-amber-800 bg-amber-100 hover:bg-amber-200'
-                  : 'text-blue-700 bg-blue-50 hover:bg-blue-100'
-              }`}
-            >
-              {source.n}
-            </Link>
-          );
-        })}
-      </Fragment>
-    );
-  };
-  const blocks = text.split(/\n{2,}/);
+  const withCitations = (run) =>
+    run.split(/(\[\d+\])/g).map((part, i) => {
+      const match = /^\[(\d+)\]$/.exec(part);
+      const source = match && byNumber[Number(match[1])];
+      if (!source) return part;
+      return (
+        <Link
+          key={i}
+          to={sourceLink(source)}
+          title={
+            weakNumbers.has(source.n)
+              ? `${sourceLine(source)} — this passage may not support the sentence`
+              : sourceLine(source)
+          }
+          className={`inline-block align-super text-[10px] font-semibold rounded px-1 mx-0.5 no-underline ${
+            weakNumbers.has(source.n)
+              ? 'text-amber-800 bg-amber-100 hover:bg-amber-200'
+              : 'text-blue-700 bg-blue-50 hover:bg-blue-100'
+          }`}
+        >
+          {source.n}
+        </Link>
+      );
+    });
   return (
-    <div className="space-y-3 text-sm text-gray-800 leading-relaxed">
-      {blocks.map((block, b) => {
-        const lines = block.split('\n');
-        if (lines.every((l) => /^\s*[-*•]\s+/.test(l))) {
-          return (
-            <ul key={b} className="list-disc pl-5 space-y-1">
-              {lines.map((l, i) => (
-                <li key={i}>{renderLine(l.replace(/^\s*[-*•]\s+/, ''), i)}</li>
-              ))}
-            </ul>
-          );
-        }
-        return (
-          <p key={b}>
-            {lines.map((l, i) => (
-              <Fragment key={i}>
-                {i > 0 && <br />}
-                {renderLine(l.replace(/^\*\*(.+)\*\*$/, '$1'), i)}
-              </Fragment>
-            ))}
-          </p>
-        );
-      })}
-    </div>
+    <MarkdownText
+      text={text}
+      renderText={withCitations}
+      className="space-y-3 text-sm text-gray-800 leading-relaxed"
+    />
   );
 }
 
