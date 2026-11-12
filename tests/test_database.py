@@ -799,8 +799,8 @@ class TestMigrations:
         assert runs == [1]
 
     def test_a_database_from_before_numbering_is_adopted(self, tmp_path):
-        """It has the tables but no record of migrations: the baseline runs
-        over it and keeps its rows."""
+        """It has the tables but no record of migrations: every migration
+        runs over it and keeps its rows."""
         path = str(tmp_path / "old.duckdb")
         db = P3Database(path)
         pid = db.add_podcast("Pod", "http://example.com/rss")
@@ -808,7 +808,7 @@ class TestMigrations:
         db.close()
         db = P3Database(path)
         assert db.get_podcast_by_id(pid)["title"] == "Pod"
-        assert self._versions(db) == [1]
+        assert self._versions(db) == list(range(1, len(P3Database._MIGRATIONS) + 1))
         db.close()
 
     def test_a_database_from_a_newer_version_is_refused(self, tmp_path):

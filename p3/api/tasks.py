@@ -6,6 +6,7 @@ Pipeline modules are imported inside each task so the API starts quickly
 without loading ML dependencies.
 """
 
+import json
 import logging
 import threading
 import time
@@ -13,14 +14,11 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Optional
 
+from p3 import model_gate
 from p3.api.deps import get_db, load_config, user_settings
 from p3.api.job_queue import job_runner
 from p3.database import INTERRUPTED_ERROR
-from p3.llm import (
-    DEFAULT_OLLAMA_URL,
-    release_ollama_models,
-    resolve_provider_and_model,
-)
+from p3.llm import release_ollama_models, resolve_provider_and_model
 from p3.paths import content_dir
 from p3.settings import setting
 
@@ -55,6 +53,52 @@ def _release_ollama(settings: dict) -> None:
     turned it off."""
     if setting(settings, "release_ollama_before_transcription"):
         release_ollama_models(setting(settings, "ollama_base_url"))
+
+
+# Set while transcription models are loaded (see p3/model_gate.py). Ask then
+# answers with keyword search only: its models and the transcription models
+# don't fit in 16 GB together.
+transcribing = model_gate.transcribing
+
+
+def _begin_transcription(settings: dict) -> None:
+    """Stop Ask's model calls (waiting for those in flight), then free its
+    reranker and Ollama's models. Call it inside the ``try`` whose
+    ``finally`` calls ``model_gate.resume()``."""
+    if not model_gate.pause_for_transcription():
+        logger.warning("Ask model calls still running as transcription starts")
+    from p3.embedder import release_ask_models
+
+    release_ask_models()
+    _release_ollama(settings)
+
+
+def _make_embedder(settings: dict):
+    from p3.embedder import DEFAULT_EMBEDDING_MODEL, Embedder
+
+    return Embedder(
+        settings.get("embedding_model") or DEFAULT_EMBEDDING_MODEL,
+        setting(settings, "ollama_base_url"),
+    )
+
+
+def _index_episode(db, episode_id: int, settings: dict) -> str:
+    """Add a digested episode to the Ask index. Never raises: when embedding
+    fails the passages are kept for keyword search, and a later "Index
+    library" run embeds them. Returns a note for the job message."""
+    from p3.indexer import index_episode
+
+    try:
+        count = index_episode(db, episode_id, _make_embedder(settings))
+        return f"{count} passages indexed"
+    except Exception as e:
+        logger.warning("Embedding episode %d failed: %s", episode_id, e)
+    try:
+        index_episode(db, episode_id, None)
+        return "indexed for keyword search only (embedding failed)"
+    except Exception as e:
+        logger.exception("Indexing episode %d failed", episode_id)
+        return f"not indexed: {e}"
 
 
 def _make_cleaner(
@@ -381,18 +425,22 @@ def task_import_feeds(job_id: str, feeds: list[dict]):
 
 def _transcribe(db, job_id: str, episode: dict, settings: dict):
     """Transcribe ``episode`` as part of job ``job_id``, whose message shows
-    the time elapsed meanwhile. The models are unloaded afterwards, whether
-    or not it worked. Raises TranscriptionError if it didn't."""
+    the time elapsed meanwhile. Ask stops loading models meanwhile (see
+    _begin_transcription). The models are unloaded afterwards, whether or
+    not it worked. Raises TranscriptionError if it didn't."""
     label = f"Transcribing: {episode['title']}"
     db.update_job(job_id, message=label)
-    _release_ollama(settings)
-    transcriber = _make_transcriber(db, settings)
+    transcriber = None
     stop_heartbeat = _start_heartbeat(db, job_id, label)
     try:
+        _begin_transcription(settings)
+        transcriber = _make_transcriber(db, settings)
         transcriber.transcribe_episode(episode["id"])
     finally:
         stop_heartbeat()
-        transcriber.unload_models()
+        if transcriber is not None:
+            transcriber.unload_models()
+        model_gate.resume()
 
 
 def task_transcribe(job_id: str, episode_id: int):
@@ -405,14 +453,157 @@ def task_transcribe(job_id: str, episode_id: int):
 # ------------------------------------------------------------------
 
 
+def task_index(job_id: str, username: Optional[str] = None):
+    """Add every processed episode missing from the Ask index (or embedded
+    with another model) to it: the backfill after enabling Ask or changing
+    the embedding model. Gives way to a daily run between episodes: it stops
+    and queues a new index job for the rest behind it, for the same user."""
+    db = get_db()
+    try:
+        db.update_job(job_id, status="running", message="Indexing the library...")
+        from p3.indexer import index_pending
+
+        def on_progress(done: int, total: int, message: str):
+            db.update_job(
+                job_id, progress=done / total if total else 0, message=message
+            )
+
+        stats = index_pending(
+            db,
+            _make_embedder(_get_settings()),
+            progress=on_progress,
+            should_stop=lambda: job_runner.priority_waiting,
+        )
+        left = stats["pending"] - stats["indexed"] - stats["failed"]
+        if left > 0:
+            next_job = db.create_job("index", username=username)
+            job_runner.enqueue(task_index, next_job, username)
+        db.update_job(
+            job_id,
+            status="completed" if not stats["failed"] else "failed",
+            progress=1.0,
+            message=(
+                f"Indexed {stats['indexed']} of {stats['pending']} episodes"
+                + (f", {stats['failed']} failed" if stats["failed"] else "")
+                + (f"; {left} left for the next index job" if left > 0 else "")
+            ),
+            error=(
+                f"{stats['failed']} episodes could not be indexed (see the log)"
+                if stats["failed"]
+                else None
+            ),
+        )
+    except Exception as e:
+        logger.exception("Index task failed")
+        db.update_job(job_id, status="failed", error=str(e))
+
+
+def task_eval_generate(job_id: str, count: int = 60):
+    """Write evaluation questions from the indexed library with the shared
+    summarizing LLM: to data/eval/questions.json if there is none yet, else
+    to a dated file next to it, so a reviewed set is never overwritten."""
+    db = get_db()
+    try:
+        db.update_job(job_id, status="running", message="Writing questions...")
+        from p3.eval_ask import (
+            EVAL_DIR,
+            QUESTIONS_FILE,
+            generate_questions,
+            write_json,
+        )
+        from p3.llm import LLMClient
+
+        settings = _get_settings()
+        provider, model = resolve_provider_and_model(settings)
+        llm = LLMClient(
+            provider=provider,
+            model=model,
+            ollama_base_url=setting(settings, "ollama_base_url"),
+            num_ctx=8192,
+        )
+        questions = generate_questions(db, llm, count)
+        EVAL_DIR.mkdir(parents=True, exist_ok=True)
+        out = QUESTIONS_FILE
+        try:
+            # "x": never replace a question set, even one created meanwhile.
+            with open(out, "x") as f:
+                json.dump(questions, f, indent=2, ensure_ascii=False)
+        except FileExistsError:
+            out = EVAL_DIR / f"questions-generated-{datetime.now():%Y%m%d-%H%M%S}.json"
+            write_json(out, questions)
+        db.update_job(
+            job_id,
+            status="completed",
+            progress=1.0,
+            message=f"Wrote {len(questions)} questions to {out} (review them)",
+        )
+    except Exception as e:
+        logger.exception("Question generation failed")
+        db.update_job(job_id, status="failed", error=str(e))
+
+
+def task_eval_retrieval(job_id: str):
+    """Score retrieval on data/eval/questions.json; the result goes to
+    data/eval/results/."""
+    db = get_db()
+    try:
+        db.update_job(job_id, status="running", message="Evaluating retrieval...")
+        from p3.embedder import (
+            DEFAULT_RERANKER_MODEL,
+            get_reranker,
+            release_ask_models,
+        )
+        from p3.eval_ask import (
+            EVAL_DIR,
+            evaluate_retrieval,
+            load_questions,
+            write_json,
+        )
+        from p3.retriever import Retriever
+
+        settings = _get_settings()
+        reranker = (
+            get_reranker(settings.get("reranker_model") or DEFAULT_RERANKER_MODEL)
+            if settings.get("ask_rerank", True)
+            else None
+        )
+        try:
+            result = evaluate_retrieval(
+                db, Retriever(db, _make_embedder(settings), reranker), load_questions()
+            )
+        finally:
+            release_ask_models()
+        out = EVAL_DIR / "results" / f"retrieval-{datetime.now():%Y%m%d-%H%M%S}.json"
+        write_json(out, result)
+        final = result["overall"].get("final", {})
+        db.update_job(
+            job_id,
+            status="completed",
+            progress=1.0,
+            message=(
+                f"recall@{result['k']} {final.get('recall', 0):.2f}, "
+                f"MRR {final.get('mrr', 0):.2f} on {final.get('n', 0)} questions"
+            ),
+        )
+    except Exception as e:
+        logger.exception("Retrieval evaluation failed")
+        db.update_job(job_id, status="failed", error=str(e))
+
+
 def task_digest(job_id: str, episode_id: int):
     """Generate structured summary for an episode."""
     db = get_db()
     try:
         db.update_job(job_id, status="running", message="Generating summary...")
-        _make_cleaner(db, _get_settings()).generate_summary(episode_id)
+        settings = _get_settings()
+        _make_cleaner(db, settings).generate_summary(episode_id)
+        db.update_job(job_id, progress=0.9, message="Indexing for Ask...")
+        note = _index_episode(db, episode_id, settings)
         db.update_job(
-            job_id, status="completed", progress=1.0, message="Summary complete"
+            job_id,
+            status="completed",
+            progress=1.0,
+            message=f"Summary complete; {note}",
         )
     except Exception as e:
         logger.exception("Digest task failed")
@@ -697,6 +888,7 @@ def task_refresh_digests(job_id: str, stop_at: Optional[str] = None):
             started = datetime.now()
             try:
                 cleaner.refresh_digest(episode_id)
+                _index_episode(db, episode_id, settings)
             except Exception as e:
                 logger.warning("Refreshing episode %d failed: %s", episode_id, e)
                 failed.append(f"episode {episode_id}: {e}")
@@ -1051,7 +1243,22 @@ def queue_backlog(db, username: str) -> list[str]:
     job_ids = queue_step_jobs(db, episodes, "pipeline", None, username)
     if job_ids:
         logger.info("Queued %d backlog episode(s) for %s", len(job_ids), username)
+    _queue_index_catch_up(db)
     return job_ids
+
+
+def _queue_index_catch_up(db) -> None:
+    """Queue an index job behind the backlog when episodes are missing from
+    the Ask index (an embedding that failed, show notes found by a later
+    fetch), unless one is already waiting."""
+    from p3.embedder import DEFAULT_EMBEDDING_MODEL
+
+    model = _get_settings().get("embedding_model") or DEFAULT_EMBEDDING_MODEL
+    if not db.episodes_to_index(model):
+        return
+    if any(j["job_type"] == "index" for j in db.get_active_jobs()):
+        return
+    job_runner.enqueue(task_index, db.create_job("index"))
 
 
 def _email_run_report(db, run_id: str, username: str) -> bool:
@@ -1106,15 +1313,13 @@ def task_full_pipeline(job_id: str, episode_id: int, digest: bool = True):
         if digest and episode["status"] != "processed":
             db.update_job(job_id, progress=0.5, message="Generating summary...")
             _make_cleaner(db, settings).generate_summary(episode_id)
-
-        db.update_job(
-            job_id,
-            status="completed",
-            progress=1.0,
-            message=(
-                "Pipeline complete" if digest else f"Transcribed: {episode['title']}"
-            ),
-        )
+        if digest:
+            db.update_job(job_id, progress=0.9, message="Indexing for Ask...")
+            note = _index_episode(db, episode_id, settings)
+            message = f"Pipeline complete; {note}"
+        else:
+            message = f"Transcribed: {episode['title']}"
+        db.update_job(job_id, status="completed", progress=1.0, message=message)
     except Exception as e:
         logger.exception("Pipeline task failed")
         db.update_job(job_id, status="failed", error=str(e))

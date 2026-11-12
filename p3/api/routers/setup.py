@@ -74,6 +74,7 @@ def finish(user: dict = Depends(current_user)):
 
 
 class SecretsOut(BaseModel):
+    anthropic_api_key: bool
     gemini_api_key: bool
     openai_api_key: bool
     smtp_password: bool
@@ -82,6 +83,7 @@ class SecretsOut(BaseModel):
 class SecretsIn(BaseModel):
     """null leaves a secret unchanged; an empty string removes it."""
 
+    anthropic_api_key: Optional[str] = None
     gemini_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
     smtp_password: Optional[str] = None

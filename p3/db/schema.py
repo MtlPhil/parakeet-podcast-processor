@@ -46,6 +46,12 @@ class Schema(Connection):
                 self.conn.execute(
                     "INSERT INTO schema_migrations (version) VALUES (?)", (version,)
                 )
+        if applied < len(self._MIGRATIONS):
+            # Write the schema changes to the database file now. A hard kill
+            # soon after an upgrade otherwise leaves them only in the WAL, and
+            # DuckDB has failed to replay a WAL holding an ALTER TABLE on
+            # episodes, so the database would no longer open.
+            self.conn.execute("CHECKPOINT")
 
     def _baseline(self):
         """Migration 1: the schema as of November 2026. Every statement is
@@ -288,7 +294,71 @@ class Schema(Connection):
             "CREATE INDEX IF NOT EXISTS idx_jobs_episode_id ON jobs(episode_id)"
         )
 
-    _MIGRATIONS = (_baseline,)
+    def _ask_index(self):
+        """Migration 2: Ask's passage index and conversations."""
+        # Ask: passages of each episode (see p3/chunker.py) with their
+        # embeddings, and the BM25 term table over them. Ids are assigned
+        # under _chunk_lock rather than by a sequence, so a hard kill can't
+        # leave a sequence behind the rows (see _resync_sequences). No
+        # foreign keys: chunks are written and deleted with their episode.
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS chunks (
+                id INTEGER PRIMARY KEY,
+                episode_id INTEGER NOT NULL,
+                seq INTEGER NOT NULL,
+                kind VARCHAR NOT NULL,
+                start_s DOUBLE,
+                end_s DOUBLE,
+                text VARCHAR NOT NULL,
+                prefix VARCHAR,
+                language VARCHAR,
+                n_terms INTEGER NOT NULL,
+                embedding FLOAT[],
+                embed_model VARCHAR,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chunks_episode_id ON chunks(episode_id)"
+        )
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS chunk_terms (
+                chunk_id INTEGER NOT NULL,
+                episode_id INTEGER NOT NULL,
+                term VARCHAR NOT NULL,
+                tf INTEGER NOT NULL
+            )
+        """)
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chunk_terms_term ON chunk_terms(term)"
+        )
+        # Ask conversations. Messages keep what produced them (passages and
+        # scores, timings, model and prompt versions) so any answer can be
+        # explained and reproduced.
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS ask_threads (
+                id VARCHAR PRIMARY KEY,
+                username VARCHAR NOT NULL,
+                title VARCHAR,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS ask_messages (
+                id VARCHAR PRIMARY KEY,
+                thread_id VARCHAR NOT NULL,
+                role VARCHAR NOT NULL,
+                content VARCHAR NOT NULL,
+                citations JSON,
+                retrieval JSON,
+                timings JSON,
+                models JSON,
+                rating INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+    _MIGRATIONS = (_baseline, _ask_index)
 
     def _resync_sequences(self):
         """Ensure each id sequence starts past its table's current max id.

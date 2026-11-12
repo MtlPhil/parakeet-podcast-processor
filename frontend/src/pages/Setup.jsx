@@ -108,7 +108,7 @@ function LanguageStep({ me, reload, ...nav }) {
 function SummariesStep(nav) {
   const [provider, setProvider] = useState(null);
   const [model, setModel] = useState('');
-  const [keys, setKeys] = useState({ gemini_api_key: '', openai_api_key: '' });
+  const [keys, setKeys] = useState({ gemini_api_key: '', openai_api_key: '', anthropic_api_key: '' });
   const [saved, setSaved] = useState(null);
   const [ollama, setOllama] = useState(null);
 
@@ -156,6 +156,7 @@ function SummariesStep(nav) {
     const secretChanges = {};
     if (keys.gemini_api_key.trim()) secretChanges.gemini_api_key = keys.gemini_api_key;
     if (keys.openai_api_key.trim()) secretChanges.openai_api_key = keys.openai_api_key;
+    if (keys.anthropic_api_key.trim()) secretChanges.anthropic_api_key = keys.anthropic_api_key;
     if (Object.keys(secretChanges).length) await setSecrets(secretChanges);
     nav.onNext();
   };
@@ -179,12 +180,16 @@ function SummariesStep(nav) {
         <Choice name="provider" value="openai" current={provider} onChange={choose} title="OpenAI (ChatGPT)">
           Needs an API key from platform.openai.com. Usage is billed by OpenAI.
         </Choice>
+        <Choice name="provider" value="anthropic" current={provider} onChange={choose} title="Anthropic (Claude)">
+          Needs an API key from console.anthropic.com. Usage is billed by Anthropic.
+        </Choice>
         <Choice name="provider" value="ollama" current={provider} onChange={choose} title="Ollama, on this Mac">
           Free and private: nothing leaves this Mac. Needs the Ollama app and a fast Mac with plenty of memory; summaries are slower.
         </Choice>
       </div>
 
       {provider === 'gemini' && keyField('gemini_api_key', 'Gemini API key')}
+      {provider === 'anthropic' && keyField('anthropic_api_key', 'Anthropic API key')}
       {provider === 'openai' && (
         <>
           {keyField('openai_api_key', 'OpenAI API key')}

@@ -1,10 +1,19 @@
 """Podcasts and episodes."""
 
+import threading
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .schema import Schema
+
+
+def _has_notes(description: Optional[str]) -> bool:
+    """Whether show notes hold any text once markup is removed (blank ones are
+    not stored, so they can't keep an episode waiting to be indexed)."""
+    from p3.chunker import notes_text
+
+    return bool(notes_text(description))
 
 
 class Library(Schema):
@@ -141,6 +150,8 @@ class Library(Schema):
         """
         if date is not None and date.tzinfo is not None:
             date = date.astimezone(timezone.utc).replace(tzinfo=None)
+        if not _has_notes(description):
+            description = None
         next_id = self.conn.execute("SELECT nextval('episode_id_seq')").fetchone()[0]
         self.conn.execute(
             """
@@ -155,7 +166,7 @@ class Library(Schema):
     def set_missing_description(self, url: str, description: Optional[str]) -> bool:
         """Store the show notes of an episode that has none yet (episodes
         added before they were kept). True if it changed."""
-        if not description or not description.strip():
+        if not _has_notes(description):
             return False
         row = self.conn.execute(
             "SELECT id FROM episodes WHERE url = ? "
@@ -185,7 +196,9 @@ class Library(Schema):
         return self._fetchall_as_dicts(cursor)
 
     def set_episode_description(self, episode_id: int, description: str):
-        """Store an episode's show notes."""
+        """Store an episode's show notes, unless they hold no text."""
+        if not _has_notes(description):
+            return
         self.conn.execute(
             "UPDATE episodes SET description = ? WHERE id = ?",
             (description, episode_id),
@@ -384,11 +397,20 @@ class Library(Schema):
         freed = sum(self.remove_audio(episode_id) for episode_id in ids)
         return {"episodes": len(ids), "bytes_freed": freed}
 
+    # Held while an episode's Ask passages are rewritten (see
+    # Ask.replace_chunks) or the episode is erased, so neither sees the other
+    # half done.
+    _chunk_lock = threading.Lock()
+
     def purge_episode(self, episode_id: int):
-        """Erase an episode nobody has, with everything that hangs off it."""
+        """Erase an episode nobody has, with everything that hangs off it,
+        after any rewrite of its Ask passages finishes. (Not one transaction:
+        DuckDB's foreign-key check doesn't see rows deleted earlier in the
+        same transaction, so the episode row couldn't go.)"""
         self.remove_audio(episode_id)
-        for table in ("transcripts", "summaries", "jobs"):
-            self.conn.execute(
-                f"DELETE FROM {table} WHERE episode_id = ?", (episode_id,)
-            )
-        self.conn.execute("DELETE FROM episodes WHERE id = ?", (episode_id,))
+        with self._chunk_lock:
+            for table in ("transcripts", "summaries", "jobs", "chunk_terms", "chunks"):
+                self.conn.execute(
+                    f"DELETE FROM {table} WHERE episode_id = ?", (episode_id,)
+                )
+            self.conn.execute("DELETE FROM episodes WHERE id = ?", (episode_id,))

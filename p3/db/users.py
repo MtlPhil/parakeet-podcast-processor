@@ -101,7 +101,8 @@ class Users(Jobs):
     def delete_user(self, username: str):
         """Erase a user and everything only they had: podcasts nobody else
         follows and episodes nobody else has, with their transcripts,
-        summaries, jobs and audio. Shared ones stay.
+        summaries, jobs and audio, and their Ask conversations. Shared ones
+        stay.
 
         Not one transaction: DuckDB rejects deleting a row and what references
         it in the same transaction. The user's row goes last, so a failure
@@ -118,7 +119,18 @@ class Users(Jobs):
                 "SELECT podcast_id FROM user_podcasts WHERE username = ?", (username,)
             ).fetchall()
         ]
-        for table in ("jobs", "sessions", "user_deleted_episodes", "user_episodes"):
+        self.conn.execute(
+            "DELETE FROM ask_messages WHERE thread_id IN "
+            "(SELECT id FROM ask_threads WHERE username = ?)",
+            (username,),
+        )
+        for table in (
+            "jobs",
+            "sessions",
+            "user_deleted_episodes",
+            "user_episodes",
+            "ask_threads",
+        ):
             self.conn.execute(f"DELETE FROM {table} WHERE username = ?", (username,))
         # Per-user keys end in ":<username>"; usernames can't contain ":".
         self.conn.execute(
