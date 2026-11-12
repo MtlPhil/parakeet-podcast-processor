@@ -14,6 +14,7 @@ dependencies = [
     "duckdb>=0.9.0",
     "feedparser>=6.0.0",
     "requests>=2.31.0",
+    "faster-whisper>=1.2.0; sys_platform == 'linux' or sys_platform == 'win32'",
     "mlx-whisper>=0.4.3; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "pyyaml>=6.0",
     "rich>=13.0.0",
@@ -59,5 +60,5 @@ plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
 # Third-party packages without type information.
-module = ["feedparser", "mlx_whisper", "mlx_whisper.*", "parakeet_mlx", "mlx.*", "yt_dlp", "yt_dlp.*"]
+module = ["faster_whisper", "feedparser", "mlx_whisper", "mlx_whisper.*", "parakeet_mlx", "mlx.*", "yt_dlp", "yt_dlp.*"]
 ignore_missing_imports = true
