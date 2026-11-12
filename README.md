@@ -74,6 +74,12 @@ P³ ships as both a command-line tool (`p3`) and a web app (FastAPI + React).
   - Every digest, synopsis and post exists in English and Quebec French.
     Each user picks the language shown first and can switch on any page.
   - *Social snippets* (Twitter/LinkedIn) generated from a finished blog post.
+- **Ask.** Questions in plain language, in English or French, answered from
+  your own library with every claim cited to an episode and a transcript
+  moment. Passages are found by keyword (BM25) and by meaning (bge-m3
+  embeddings), reranked by a cross-encoder, and the answer streams in. "How
+  often" and "which episodes" questions also list every episode that
+  mentions what they count. Conversations are kept, and answers can be rated.
 - **Exports.** Daily digests as Markdown, JSON or email-ready HTML, plus
   per-episode transcripts as Markdown (single file or a zip per podcast).
 - **Web app.** Dashboard, podcast and episode pages, transcript and summary
@@ -175,6 +181,7 @@ use the manual installation below (proxy mode is the default).
 brew install ffmpeg
 brew install ollama          # or download the app from https://ollama.com
 ollama pull gemma4:12b       # any chat model works; set it in config
+ollama pull bge-m3           # Ask's embedding model (optional)
 
 # 2. Python package, at the dependency versions pinned in uv.lock
 git clone https://github.com/MtlPhil/parakeet-podcast-processor.git
@@ -186,6 +193,9 @@ source .venv/bin/activate
 # 3. Initialize directories, config and the database
 p3 init
 ```
+
+Add `--extra ask` for Ask's reranker (it pulls in PyTorch). Without it, Ask
+still works, ranking passages by keyword and embedding only.
 
 Without uv, `python3 -m venv .venv && source .venv/bin/activate &&
 pip install -e ".[web]"` installs the newest versions that satisfy
@@ -240,12 +250,16 @@ settings:
                                     # or a Hugging Face repo of an MLX Whisper model
   release_ollama_before_transcription: true  # unload Ollama before transcribing
 
-  llm_provider: ollama              # ollama | openai | gemini
-  llm_model: "gemma4:12b"           # model for ollama/openai
+  llm_provider: ollama              # ollama | openai | gemini | anthropic
+  llm_model: "gemma4:12b"           # model for ollama/openai (and anthropic, if a Claude model)
   ollama_base_url: "http://localhost:11434"
   gemini_model: "gemini-3.8-flash"  # model used when the provider is gemini
 
   export_format: [markdown, json]   # defaults for `p3 export`
+
+  embedding_model: bge-m3           # Ask's Ollama embedding model; changing it re-indexes
+  ask_rerank: true                  # needs the "ask" extra
+  ask_min_free_memory: 25           # % free before Ask loads a local answer model
 ```
 
 ### LLM providers
@@ -255,6 +269,12 @@ settings:
 | `ollama` | none | Runs locally. Models are unloaded shortly after use to free memory. |
 | `openai` | `OPENAI_API_KEY` environment variable, or the key alone in `config/openai_api_key.txt` (gitignored) | Any chat-completions model, e.g. `gpt-4o-mini`. |
 | `gemini` | `GEMINI_API_KEY` environment variable, or the key alone in `config/gemini_api_key.txt` (gitignored) | Uses `gemini_model`. |
+| `anthropic` | `ANTHROPIC_API_KEY` environment variable, or the key alone in `config/anthropic_api_key.txt` (gitignored) | Uses `llm_model` if it names a Claude model, else `claude-haiku-5-5`. |
+
+The `openai` provider also talks to any server that speaks OpenAI's API
+(LM Studio, llama.cpp, vLLM): set the `OPENAI_BASE_URL` environment variable
+to its address, for example `http://localhost:1234/v1`. Such a server needs
+no key.
 
 In the web app, the synopsis, blog and LinkedIn actions can also switch to
 Gemini for a single request without changing the default.
@@ -262,7 +282,7 @@ Gemini for a single request without changing the default.
 If a hosted provider is selected but no key is found, digests fail with a
 message naming the missing key.
 
-Admins can also enter both keys in the web app's setup wizard, which writes
+Admins can also enter the keys in the web app's setup wizard, which writes
 those files.
 
 ### Emailed reports
@@ -343,11 +363,19 @@ The app's pages:
   themed blog posts from a day's digests. Browse everything generated so far.
 - **Search**: find episodes by words in their title, summary or transcript,
   with the matching transcript lines and timestamps.
+- **Ask**: a question in plain language, answered from your episodes with
+  numbered citations that open the transcript at that moment. Filter by show
+  and date, follow up in the same conversation, rate answers, copy them to
+  your notes. Answers use your writing LLM. While a transcription runs, Ask
+  loads no model and answers with keyword search only; a local answer model
+  is only loaded with enough memory free, otherwise Ask shows the passages
+  it found.
 - **Settings**: your language, writing tone (sent to the writer with every
   post), writing LLM, episodes per feed and daily run. Admins also see the
   shared transcription and summarizing settings.
 - **Admin** (admins only): users and their roles; free disk space; translate
-  digests made before French versions existed.
+  digests made before French versions existed; build the Ask index for
+  episodes digested before it existed; Ask's evaluation and rated answers.
 
 Interactive API docs are available at `http://127.0.0.1:8000/docs`.
 
@@ -455,7 +483,8 @@ on a server others can reach.
 | `P3_AUTH` | `local` for P³'s own accounts, `single` for one person with no sign-in; anything else, or unset, is proxy mode |
 | `P3_DEV_USER` | Proxy mode only: the user to act as when no `Remote-User` header arrives |
 | `P3_LOG_LEVEL` | Log level of the web server's own messages (default `INFO`) |
-| `OPENAI_API_KEY`, `GEMINI_API_KEY`, `SMTP_PASSWORD` | Secrets; each takes precedence over its file in `config/` |
+| `OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `SMTP_PASSWORD` | Secrets; each takes precedence over its file in `config/` |
+| `OPENAI_BASE_URL` | Another server for the `openai` provider (default: OpenAI's own) |
 
 `P3_HOST`, `P3_PORT` and `P3_MANAGED` belong to the Mac installer's launcher
 (`bin/p3-serve`), and the other `P3_*` variables to `install.sh`, which
@@ -536,13 +565,20 @@ p3/
 ├── writer.py         Graded blog posts, LinkedIn posts, social snippets
 ├── exporter.py       Markdown / JSON / HTML formatting
 ├── mailer.py         The daily run's emailed report (SMTP)
-├── llm.py            Ollama / OpenAI / Gemini chat client and provider resolution
+├── llm.py            Ollama / OpenAI / Gemini / Anthropic chat client, provider resolution
+├── chunker.py        Ask: an episode cut into ~60 s passages, plus notes and summary
+├── embedder.py       Ask: bge-m3 embeddings through Ollama, the cross-encoder reranker
+├── indexer.py        Ask: passages, embeddings and BM25 terms stored after each digest
+├── retriever.py      Ask: BM25 + vector search, fusion, rerank, per-episode cap
+├── ask.py            Ask: question step, retrieval, streamed answer, citation checks
+├── model_gate.py     Ask: no model calls while transcription models are loaded
+├── eval_ask.py       Ask: retrieval and answer evaluation
 ├── paths.py          Where every file lives: under P3_HOME, or the current folder
 ├── secrets.py        API keys and the mail password: environment, else a file
 ├── settings.py       The shared settings and their defaults
 ├── database.py       The storage layer, assembled from db/
 ├── db/               DuckDB storage by subject: connection, schema (numbered
-│                     migrations), library, digests, jobs, users, search
+│                     migrations), library, digests, jobs, users, search, ask
 └── api/
     ├── main.py       FastAPI app, lifespan, cross-site write check, static frontend
     ├── auth.py       Who is making a request: an account, the proxy's header, or the owner
@@ -553,13 +589,13 @@ p3/
     ├── content.py    Reading generated posts back from disk
     ├── models.py     Pydantic request/response schemas
     └── routers/      podcasts, episodes, jobs, transcripts, summaries, exports,
-                      blogs, linkedin, search, settings, daily_run, users,
-                      auth, setup
+                      blogs, linkedin, search, ask, settings, daily_run,
+                      users, auth, setup
 frontend/             React + Vite + Tailwind single-page app
 tests/                pytest suite (no external services required)
 bin/                  Launcher and uninstaller used by the Mac installer
 install.sh            One-command Mac installer and updater
-docs/                 Plans for work not built yet
+docs/                 Plans and design decisions
 ```
 
 ### Data model
@@ -583,6 +619,10 @@ DuckDB file at `data/p3.duckdb`:
 - `user_podcasts`, `user_episodes`, `user_deleted_episodes`: who follows which
   podcast, who has which episode, and which episodes a user deleted
   (remembered by URL, so a deleted episode's data can go)
+- `chunks`, `chunk_terms`: Ask's passages with their embeddings, and their
+  BM25 terms
+- `ask_threads`, `ask_messages`: Ask conversations; each answer keeps the
+  passages and scores that produced it, its timings and its model versions
 - `app_state`: small key-value store (daily run dates, imported config feeds)
 - `schema_migrations`: which numbered migrations this database has had
 
@@ -605,8 +645,8 @@ by a previous process are marked as failed on startup, and they can be retried.
 
 ### LLM usage
 
-`cleaner.py` and `writer.py` share one `LLMClient` (`llm.py`). Requests are
-bounded in two ways:
+`cleaner.py`, `writer.py` and `ask.py` share one `LLMClient` (`llm.py`).
+Requests are bounded in two ways:
 
 - **Input.** Transcripts are cut to about 100k characters, keeping the start and
   end. The synopsis works section by section rather than on the whole

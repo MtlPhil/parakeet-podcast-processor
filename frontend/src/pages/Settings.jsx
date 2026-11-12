@@ -77,6 +77,7 @@ function MySettings() {
           <option value="ollama">Ollama (local)</option>
           <option value="openai">OpenAI</option>
           <option value="gemini">Gemini</option>
+          <option value="anthropic">Anthropic (Claude)</option>
         </select>
       </Field>
 
@@ -173,6 +174,7 @@ function SharedSettings() {
           <option value="ollama">Ollama (local)</option>
           <option value="openai">OpenAI</option>
           <option value="gemini">Gemini</option>
+          <option value="anthropic">Anthropic (Claude)</option>
         </select>
       </Field>
       <Field label="Summarizing LLM model" htmlFor="shared-model">
@@ -211,6 +213,12 @@ function SharedSettings() {
           className={inputClass}
         />
       </Field>
+      <Field label="Ask: embedding model" htmlFor="embedding-model" help="Ollama model that indexes passages for Ask. Changing it re-indexes the whole library (Admin → Index the library).">
+        <input id="embedding-model" type="text" value={s.embedding_model || ''} onChange={(e) => set('embedding_model', e.target.value)} placeholder="bge-m3" className={inputClass} />
+      </Field>
+      <Checkbox id="ask-rerank" checked={s.ask_rerank ?? true} onChange={(v) => set('ask_rerank', v)}>
+        Ask: rerank passages (better answers; loads a ~1 GB model while questions are asked, and Ask can then decline questions the library doesn&apos;t cover)
+      </Checkbox>
       <Field label="Audio format" htmlFor="audio-format">
         <select id="audio-format" value={s.audio_format || 'wav'} onChange={(e) => set('audio_format', e.target.value)} className={inputClass}>
           <option value="wav">WAV</option>

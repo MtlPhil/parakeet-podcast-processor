@@ -247,3 +247,97 @@ class TestGeminiRetries:
             client.chat("s", "u")
         assert len(calls) == 1 and sleeps == []
         assert client.model == "gemini-test"
+
+
+class _Recorder:
+    """Stands in for httpx.Client: records the request, replies as told."""
+
+    def __init__(self, monkeypatch, status=200, body=None):
+        recorder = self
+        self.status, self.body = status, body or {}
+
+        class Response:
+            status_code = status
+            text = "error text"
+
+            def json(self_inner):
+                return recorder.body
+
+        class Client:
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def post(self, url, headers=None, json=None):
+                recorder.url, recorder.headers, recorder.json = url, headers, json
+                return Response()
+
+        monkeypatch.setattr(llm.httpx, "Client", Client)
+
+
+class TestOpenAICompatibleServer:
+    _REPLY = {"choices": [{"message": {"content": " hi "}}]}
+
+    def test_openai_itself_by_default(self, monkeypatch):
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        seen = _Recorder(monkeypatch, body=self._REPLY)
+        assert LLMClient("openai", "gpt-x", api_key="sk").chat("s", "u") == "hi"
+        assert seen.url == "https://api.openai.com/v1/chat/completions"
+        assert seen.headers == {"Authorization": "Bearer sk"}
+
+    def test_another_server_needs_no_key(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("P3_HOME", str(tmp_path))
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:1234/v1/")
+        seen = _Recorder(monkeypatch, body=self._REPLY)
+        client = LLMClient("openai", "local-model")
+        assert client.is_configured
+        assert client.chat("s", "u") == "hi"
+        assert seen.url == "http://localhost:1234/v1/chat/completions"
+        assert seen.headers == {}
+
+
+class TestAnthropic:
+    def test_a_plain_request(self, monkeypatch):
+        seen = _Recorder(
+            monkeypatch,
+            body={
+                "content": [
+                    {"type": "thinking", "thinking": ""},
+                    {"type": "text", "text": " Bonjour. "},
+                ]
+            },
+        )
+        client = LLMClient("anthropic", "claude-haiku-5-5", api_key="key")
+        assert client.chat("system", "user", max_tokens=300) == "Bonjour."
+        assert seen.url == "https://api.anthropic.com/v1/messages"
+        assert seen.headers == {"x-api-key": "key", "anthropic-version": "2026-10-21"}
+        assert seen.json == {
+            "model": "claude-haiku-5-5",
+            "max_tokens": 300,
+            "system": "system",
+            "messages": [{"role": "user", "content": "user"}],
+        }
+
+    def test_errors_and_a_missing_key_are_reported(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("P3_HOME", str(tmp_path))
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        with pytest.raises(RuntimeError, match="No Anthropic API key"):
+            LLMClient("anthropic", "m").chat("s", "u")
+        _Recorder(monkeypatch, status=529)
+        with pytest.raises(RuntimeError, match="Anthropic API error: 529"):
+            LLMClient("anthropic", "m", api_key="key").chat("s", "u")
+
+    def test_the_shared_ollama_model_is_not_sent_to_anthropic(self):
+        settings = {"llm_provider": "ollama", "llm_model": "gemma4:12b"}
+        assert resolve_provider_and_model(settings, provider="anthropic") == (
+            "anthropic",
+            llm.DEFAULT_ANTHROPIC_MODEL,
+        )
+        settings = {"llm_provider": "anthropic", "llm_model": "claude-sonnet-5-5"}
+        assert resolve_provider_and_model(settings)[1] == "claude-sonnet-5-5"

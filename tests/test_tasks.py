@@ -237,6 +237,12 @@ class TestRefreshDigests:
                 clock["now"] += timedelta(minutes=minutes_per_episode)
 
         monkeypatch.setattr(tasks, "_make_cleaner", lambda db, s: FakeCleaner())
+        self.indexed = []
+        monkeypatch.setattr(
+            tasks,
+            "_index_episode",
+            lambda db, episode_id, s: self.indexed.append(episode_id),
+        )
         return tasks, db, ids, refreshed
 
     def test_refreshes_what_is_left_and_detects_language(self, monkeypatch, tmp_path):
@@ -245,6 +251,8 @@ class TestRefreshDigests:
             job = db.create_job("refresh")
             tasks.task_refresh_digests(job)
             assert sorted(refreshed) == ids[1:]
+            # Ask must not keep citing the digest that was just replaced.
+            assert self.indexed == refreshed
             assert db.get_job(job)["status"] == "completed"
             assert (
                 "2 digest(s) refreshed, 0 failed, 0 left" in db.get_job(job)["message"]

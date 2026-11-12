@@ -29,13 +29,18 @@ and the installer, not the language.
      (Parakeet through ONNX is the candidate to measure).
    - A GPU image, published images, and tagged releases.
    - Wording: the setup wizard and several messages still say "this Mac".
-3. **A wider LLM layer, and Ask.** An Anthropic provider, a configurable
-   OpenAI-compatible endpoint (for local servers other than Ollama),
-   streaming and tool calls. On top of it, natural-language questions over
-   the library with cited answers, as designed in
-   [docs/ask-plan.md](docs/ask-plan.md), plus the web as a second source:
-   a hosted model's built-in search where there is one, a search API for
-   local models, with web and podcast citations kept apart.
+3. **A wider LLM layer, and Ask.** Done: an Anthropic provider, any
+   OpenAI-compatible server through `OPENAI_BASE_URL`, and Ask: questions
+   answered from the library with cited passages (keyword and meaning
+   search, reranking, streamed answers, conversations, evaluation), as
+   designed in [docs/ask-plan.md](docs/ask-plan.md). Still to do:
+   - The web as a second source: a hosted model's built-in search where
+     there is one, a search API for local models, with web and podcast
+     citations kept apart.
+   - Streaming and tool calls for every provider: OpenAI-compatible servers
+     and Anthropic answer whole today.
+   - Speaker names in transcripts and citations (built, unfinished, on the
+     `speakers` branch), and the other open items in the plan.
 4. **A desktop app.** A shell around the existing React app with the Python
    engine bundled, with signed installers for macOS, Windows and Linux; the
    web app made installable on a phone. A native iPhone app
@@ -45,9 +50,9 @@ and the installer, not the language.
 
 - **Push-based job progress.** Replace polling of `/api/jobs/{id}` with
   Server-Sent Events or WebSockets.
-- **Full-text search.** Search today is a case-insensitive substring match
-  over titles, summaries and transcripts. Ranked full-text search comes with
-  Ask (direction, item 3).
+- **Ranked search.** The Search page is a case-insensitive substring match
+  over titles, summaries and transcripts. Ask's BM25 index (`chunk_terms`)
+  could rank it.
 - **Podcast discovery.** Browse and search a podcast directory by category
   instead of pasting feed URLs.
 - **Blog post tab on the episode page.** Show posts generated from an episode,
@@ -66,7 +71,8 @@ and the installer, not the language.
 - **Retry for writing jobs.** Extend job retry to blog, LinkedIn and synopsis
   jobs.
 - **Speaker diarization.** Fill the `speaker` field on transcript segments,
-  which is currently always empty.
+  which is currently always empty. Built, unfinished, on the `speakers`
+  branch (direction, item 3).
 - **Use the installer with the pinned dependencies.** `install.sh` still
   installs the newest versions that satisfy `pyproject.toml`; CI and manual
   installs use `uv.lock`.

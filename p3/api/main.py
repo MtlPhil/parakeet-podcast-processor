@@ -17,6 +17,9 @@ from p3.api.auth import current_username
 from p3.api.deps import close_db, get_db
 from p3.api.job_queue import job_runner
 from p3.api.models import StatsOut
+from p3.api.routers import (
+    ask,
+)
 from p3.api.routers import auth as auth_routes
 from p3.api.routers import (
     blogs,
@@ -72,6 +75,12 @@ async def lifespan(app: FastAPI):
     # Warm up database and clear jobs orphaned by a previous process
     db = get_db()
     stale = db.fail_stale_jobs()
+    # Questions a restart left without a reply get one saying so.
+    closed = db.close_unanswered_ask_turns(
+        "(The server restarted before this question was answered; ask it again.)"
+    )
+    if closed:
+        logger.info("Closed %d Ask question(s) a restart left unanswered", closed)
     if stale:
         logger.warning("Marked %d interrupted job(s) as failed", stale)
     # Start the serial pipeline worker, then the daily run that feeds it
@@ -145,6 +154,7 @@ app.include_router(blogs.router)
 app.include_router(linkedin.router)
 app.include_router(settings.router)
 app.include_router(search.router)
+app.include_router(ask.router)
 app.include_router(daily_run.router)
 app.include_router(users.router)
 app.include_router(auth_routes.router)

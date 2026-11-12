@@ -13,6 +13,7 @@ from . import paths
 
 # Secret name (also its file's name, plus ".txt") to environment variable.
 ENV_VARS = {
+    "anthropic_api_key": "ANTHROPIC_API_KEY",
     "gemini_api_key": "GEMINI_API_KEY",
     "openai_api_key": "OPENAI_API_KEY",
     "smtp_password": "SMTP_PASSWORD",

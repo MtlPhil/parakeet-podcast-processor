@@ -281,6 +281,7 @@ class TestWizardEndpoints:
         _setup_admin(admin)
         resp = admin.put("/api/setup/secrets", json={"gemini_api_key": " abc123 "})
         assert resp.json() == {
+            "anthropic_api_key": False,
             "gemini_api_key": True,
             "openai_api_key": False,
             "smtp_password": False,

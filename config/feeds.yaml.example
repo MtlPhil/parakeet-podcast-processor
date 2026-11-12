@@ -27,14 +27,27 @@ settings:
   # so the LLM and the transcription models never share memory
   release_ollama_before_transcription: true
 
-  # LLM used for summaries and writing: ollama, openai or gemini
+  # LLM used for summaries and writing: ollama, openai, gemini or anthropic
   llm_provider: ollama
   llm_model: "gemma4:12b"
   ollama_base_url: "http://localhost:11434"
   # Model used when the provider is gemini (key: GEMINI_API_KEY or
   # config/gemini_api_key.txt). OpenAI reads OPENAI_API_KEY or
-  # config/openai_api_key.txt.
+  # config/openai_api_key.txt, and OPENAI_BASE_URL names another server that
+  # speaks its API (LM Studio, llama.cpp, vLLM). Anthropic reads
+  # ANTHROPIC_API_KEY or config/anthropic_api_key.txt and uses llm_model if it
+  # names a Claude model.
   gemini_model: "gemini-3.8-flash"
+
+  # Ask (questions over the library). Passages are embedded with this Ollama
+  # model (ollama pull bge-m3); changing it means re-indexing. The reranker
+  # needs the "ask" extra (pip install -e ".[ask]"). Answers use each user's
+  # writing LLM.
+  embedding_model: bge-m3
+  ask_rerank: true
+  # A local answer model is only loaded with this much memory free (and its
+  # size plus 5.5 GB); otherwise Ask returns the passages found.
+  ask_min_free_memory: 25
 
   # Mail server for the daily run's emailed report (each user turns it on and
   # sets their address in Settings). The password is read from SMTP_PASSWORD
