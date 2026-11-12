@@ -3,6 +3,7 @@ last report, their digests by theme, and any errors. Also an episode's synopsis,
 sent on request."""
 
 import logging
+import re
 import smtplib
 import ssl
 from datetime import datetime
@@ -15,6 +16,11 @@ from .database import P3Database
 from .exporter import localized
 
 logger = logging.getLogger(__name__)
+
+# The little Markdown the summarizing model writes (see markdown_html).
+_HEADING = re.compile(r"^(?:#{1,6}\s+(.+)|\*\*([^*]+)\*\*:?)$")
+_BULLET = re.compile(r"^[*-]\s+(.*)$")
+_BOLD = re.compile(r"\*\*([^*]+)\*\*")
 
 _LABELS = {
     "en": {
@@ -170,9 +176,7 @@ def build_email(
             for ep in items:
                 text += [f"{ep['podcast']}: {ep['title']}", ep["summary"], ""]
                 html.append(f"<h4>{escape(ep['podcast'])}: {escape(ep['title'])}</h4>")
-                for para in ep["summary"].split("\n\n"):
-                    if para.strip():
-                        html.append(f"<p>{escape(para.strip())}</p>")
+                html.append(markdown_html(ep["summary"]))
     else:
         text.append(t["none"])
         html.append(f"<p>{escape(t['none'])}</p>")
@@ -186,6 +190,55 @@ def build_email(
     return subject, "\n".join(text), "".join(html)
 
 
+def _inline_html(text: str) -> str:
+    return _BOLD.sub(r"<strong>\1</strong>", escape(text))
+
+
+def markdown_html(text: str) -> str:
+    """A summary or synopsis as email HTML, every piece escaped. The model
+    writes a little Markdown: lines that are only bold (or "#" headings) as
+    section titles, shown as bold lines; "*" and "-" lines as bullet lists;
+    **phrases** in bold. The episode page shows it the same way
+    (frontend/src/components/MarkdownText.jsx)."""
+    html: List[str] = []
+    paragraph: List[str] = []
+    items: List[str] = []
+
+    def end_paragraph():
+        if paragraph:
+            html.append(f"<p>{_inline_html(' '.join(paragraph))}</p>")
+            paragraph.clear()
+
+    def end_list():
+        if items:
+            html.append(
+                "<ul>" + "".join(f"<li>{_inline_html(i)}</li>" for i in items) + "</ul>"
+            )
+            items.clear()
+
+    for raw in text.split("\n"):
+        line = raw.strip()
+        heading = _HEADING.match(line)
+        bullet = _BULLET.match(line)
+        if not line:
+            end_paragraph()
+            end_list()
+        elif heading:
+            end_paragraph()
+            end_list()
+            title = (heading.group(1) or heading.group(2)).rstrip(":")
+            html.append(f"<p><strong>{_inline_html(title)}</strong></p>")
+        elif bullet:
+            end_paragraph()
+            items.append(bullet.group(1))
+        else:
+            end_list()
+            paragraph.append(line)
+    end_paragraph()
+    end_list()
+    return "".join(html)
+
+
 def build_synopsis_email(
     podcast: str, title: str, url: str, synopsis: str, language: str
 ) -> Tuple[str, str, str]:
@@ -197,7 +250,8 @@ def build_synopsis_email(
     html = [
         f"<h2>{escape(title)}</h2>",
         f'<p>{escape(podcast)} · <a href="{escape(url)}">{escape(url)}</a></p>',
-    ] + [f"<p>{escape(p)}</p>" for p in paragraphs]
+        markdown_html(synopsis),
+    ]
     return subject, "\n".join(text).rstrip() + "\n", "".join(html)
 
 

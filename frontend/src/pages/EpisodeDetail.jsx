@@ -21,6 +21,7 @@ import ExternalLink from '../components/ExternalLink';
 import JobProgress from '../components/JobProgress';
 import ProviderSelect from '../components/ProviderSelect';
 import EmailSynopsis from '../components/EmailSynopsis';
+import MarkdownText from '../components/MarkdownText';
 
 const TABS = ['overview', 'transcript', 'summary'];
 
@@ -336,7 +337,7 @@ export default function EpisodeDetail() {
               {text('full_summary') && (
                 <div>
                   <h3 className="font-medium text-gray-800 mb-1">{language === 'fr' ? 'Résumé' : 'Summary'}</h3>
-                  <p className="text-sm text-gray-700">{text('full_summary')}</p>
+                  <MarkdownText text={text('full_summary')} />
                 </div>
               )}
               {text('long_summary') ? (
@@ -347,11 +348,7 @@ export default function EpisodeDetail() {
                     </h3>
                     <EmailSynopsis episodeId={id} language={language} />
                   </div>
-                  <div className="space-y-2">
-                    {text('long_summary').split('\n\n').map((para, i) => (
-                      <p key={i} className="text-sm text-gray-700">{para}</p>
-                    ))}
-                  </div>
+                  <MarkdownText text={text('long_summary')} />
                 </div>
               ) : (
                 <div className="bg-gray-50 border rounded-lg p-3 flex flex-wrap items-center gap-2">

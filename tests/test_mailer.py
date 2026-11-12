@@ -119,6 +119,22 @@ def test_synopsis_email_escapes_html():
     assert "<p>Two &amp; three.</p>" in html
 
 
+def test_markdown_from_the_model_becomes_html():
+    summary = (
+        "Intro <i>line</i>\none.\n\n**Section One** \nBody with **bold** & more.\n\n"
+        "**Other Headlines:**\n* **Gemini**: faster.\n- Nvidia <b>news</b>.\n\n## Last\nEnd."
+    )
+    assert mailer.markdown_html(summary) == (
+        "<p>Intro &lt;i&gt;line&lt;/i&gt; one.</p>"
+        "<p><strong>Section One</strong></p>"
+        "<p>Body with <strong>bold</strong> &amp; more.</p>"
+        "<p><strong>Other Headlines</strong></p>"
+        "<ul><li><strong>Gemini</strong>: faster.</li>"
+        "<li>Nvidia &lt;b&gt;news&lt;/b&gt;.</li></ul>"
+        "<p><strong>Last</strong></p><p>End.</p>"
+    )
+
+
 def test_send_requires_a_sender():
     """Without smtp_from or smtp_user there is no From address; the mail
     library's own error for that says nothing useful."""
