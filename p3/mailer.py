@@ -3,7 +3,6 @@ last report, their digests by theme, and any errors. Also an episode's synopsis,
 sent on request."""
 
 import logging
-import re
 import smtplib
 import ssl
 from datetime import datetime
@@ -13,14 +12,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import secrets
 from .database import P3Database
-from .exporter import localized
+from .exporter import localized, markdown_html
 
 logger = logging.getLogger(__name__)
-
-# The little Markdown the summarizing model writes (see markdown_html).
-_HEADING = re.compile(r"^(?:#{1,6}\s+(.+)|\*\*([^*]+)\*\*:?)$")
-_BULLET = re.compile(r"^[*-]\s+(.*)$")
-_BOLD = re.compile(r"\*\*([^*]+)\*\*")
 
 _LABELS = {
     "en": {
@@ -188,55 +182,6 @@ def build_email(
         html.append("</ul>")
 
     return subject, "\n".join(text), "".join(html)
-
-
-def _inline_html(text: str) -> str:
-    return _BOLD.sub(r"<strong>\1</strong>", escape(text))
-
-
-def markdown_html(text: str) -> str:
-    """A summary or synopsis as email HTML, every piece escaped. The model
-    writes a little Markdown: lines that are only bold (or "#" headings) as
-    section titles, shown as bold lines; "*" and "-" lines as bullet lists;
-    **phrases** in bold. The episode page shows it the same way
-    (frontend/src/components/MarkdownText.jsx)."""
-    html: List[str] = []
-    paragraph: List[str] = []
-    items: List[str] = []
-
-    def end_paragraph():
-        if paragraph:
-            html.append(f"<p>{_inline_html(' '.join(paragraph))}</p>")
-            paragraph.clear()
-
-    def end_list():
-        if items:
-            html.append(
-                "<ul>" + "".join(f"<li>{_inline_html(i)}</li>" for i in items) + "</ul>"
-            )
-            items.clear()
-
-    for raw in text.split("\n"):
-        line = raw.strip()
-        heading = _HEADING.match(line)
-        bullet = _BULLET.match(line)
-        if not line:
-            end_paragraph()
-            end_list()
-        elif heading:
-            end_paragraph()
-            end_list()
-            title = (heading.group(1) or heading.group(2)).rstrip(":")
-            html.append(f"<p><strong>{_inline_html(title)}</strong></p>")
-        elif bullet:
-            end_paragraph()
-            items.append(bullet.group(1))
-        else:
-            end_list()
-            paragraph.append(line)
-    end_paragraph()
-    end_list()
-    return "".join(html)
 
 
 def build_synopsis_email(

@@ -119,6 +119,25 @@ class TestHtmlExport:
         assert "&lt;script&gt;" in html
         assert "&amp;" in html
 
+    def test_the_summary_markdown_is_shown_as_html(self, exporter):
+        summaries = [
+            {
+                "podcast_title": "Pod",
+                "episode_title": "Ep",
+                "key_topics": [],
+                "themes": [],
+                "quotes": [],
+                "startups": [],
+                "full_summary": "Intro.\n\n**Section**\n* **Point**: one & two",
+                "digest_date": date(2025, 8, 25),
+                "created_at": datetime(2025, 8, 25, 10, 0, 0),
+            }
+        ]
+        html = exporter.export_email_html(summaries, date(2025, 8, 25))
+        assert "<p>Intro.</p><p><strong>Section</strong></p>" in html
+        assert "<ul><li><strong>Point</strong>: one &amp; two</li></ul>" in html
+        assert "**" not in html
+
     def test_empty_summaries(self, exporter):
         html = exporter.export_email_html([], date(2025, 8, 25))
         assert "No summaries available" in html
