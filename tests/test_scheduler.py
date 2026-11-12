@@ -410,6 +410,18 @@ class TestBacklog:
         tasks.queue_backlog(db, ann)
         assert "task_full_pipeline" in _names(enqueued)
 
+    def test_the_catch_up_index_job_is_the_users(self, env):
+        db, enqueued = env
+        ann = _user(db, "ann")
+        eid = self._episode(db, ann, "http://example.com/done")
+        db.update_episode_status(eid, "processed")  # not in the Ask index yet
+
+        tasks.queue_backlog(db, ann)
+        [args] = [a for fn, a in enqueued if fn.__name__ == "task_index"]
+        job_id, username = args
+        assert username == ann
+        assert db.job_visible_to(job_id, ann)
+
 
 class TestRetries:
     """A run that reads no feed is retried; a report that fails to send is
