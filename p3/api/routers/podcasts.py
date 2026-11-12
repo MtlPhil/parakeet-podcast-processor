@@ -45,8 +45,14 @@ def _subscribed_podcast(db, podcast_id: int, username: str) -> dict:
 def list_podcasts(username: str = Depends(current_username)):
     db = get_db()
     podcasts = db.get_all_podcasts(username)
+    is_owner = username == db.get_owner()
     for p in podcasts:
         p["episode_count"] = len(db.get_episodes_by_podcast(p["id"], username))
+        # Added to the user's library when they followed it. The owner took
+        # over every podcast already in P3 when users were introduced; for
+        # those, the day the podcast was added counts.
+        followed = p.pop("followed_at", None) or p["created_at"]
+        p["added_at"] = min(followed, p["created_at"]) if is_owner else followed
     return podcasts
 
 

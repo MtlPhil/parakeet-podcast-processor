@@ -46,7 +46,8 @@ class Library(Schema):
         return self._fetchone_as_dict(cursor)
 
     def get_all_podcasts(self, username: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Get all podcasts, or only those a user subscribes to."""
+        """Get all podcasts, or only those a user subscribes to, then with
+        ``followed_at``, when they subscribed."""
         if username is None:
             cursor = self.conn.execute(
                 "SELECT * FROM podcasts ORDER BY created_at DESC"
@@ -54,7 +55,7 @@ class Library(Schema):
         else:
             cursor = self.conn.execute(
                 """
-                SELECT p.* FROM podcasts p
+                SELECT p.*, up.created_at AS followed_at FROM podcasts p
                 JOIN user_podcasts up ON up.podcast_id = p.id AND up.username = ?
                 ORDER BY p.created_at DESC
             """,

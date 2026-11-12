@@ -1227,6 +1227,28 @@ class TestYouTubeSources:
         # No source is created up front.
         assert client.get("/api/podcasts").json() == []
 
+    def test_date_added_is_when_the_user_followed_it(self):
+        client.get("/api/me")  # the first user: the owner
+        db = deps.get_db()
+        db.ensure_user("bob")
+        pid = db.add_podcast("Old", "http://example.com/old.rss")
+        db.subscribe(USER, pid)
+        db.subscribe("bob", pid)
+        db.conn.execute(
+            "UPDATE podcasts SET created_at = '2025-11-10 15:06' WHERE id = ?", (pid,)
+        )
+        db.conn.execute(
+            "UPDATE user_podcasts SET created_at = '2026-10-17 12:04' "
+            "WHERE podcast_id = ?",
+            (pid,),
+        )
+        # The owner took it over later; it has been in their library since
+        # it was added. Bob followed it on the later date.
+        [mine] = client.get("/api/podcasts").json()
+        assert mine["added_at"].startswith("2025-11-10")
+        [bobs] = client.get("/api/podcasts", headers=BOB).json()
+        assert bobs["added_at"].startswith("2026-10-17")
+
     def test_rss_sources_report_rss_type(self):
         client.post("/api/podcasts", json={"url": "http://example.com/feed.xml"})
         [podcast] = client.get("/api/podcasts").json()

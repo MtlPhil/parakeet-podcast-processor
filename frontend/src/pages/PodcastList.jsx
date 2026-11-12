@@ -1,12 +1,32 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { getPodcasts, deletePodcast } from '../api/client';
 import SourceBadge from '../components/SourceBadge';
 import { TagChips } from '../components/Tags';
 
+const byName = (a, b) =>
+  a.title.localeCompare(b.title, undefined, { sensitivity: 'base', numeric: true });
+
+// Name A to Z; newest added first; most episodes first. Ties go by name.
+const SORTS = {
+  name: { label: 'Name', compare: byName },
+  added: {
+    label: 'Date added',
+    compare: (a, b) => (b.added_at || '').localeCompare(a.added_at || '') || byName(a, b),
+  },
+  episodes: {
+    label: 'Episodes',
+    compare: (a, b) => (b.episode_count ?? 0) - (a.episode_count ?? 0) || byName(a, b),
+  },
+};
+
 export default function PodcastList() {
   const [podcasts, setPodcasts] = useState([]);
   const [error, setError] = useState(null);
+  // In the address, so a reload or the back button keeps it.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const sort = SORTS[searchParams.get('sort')] ? searchParams.get('sort') : 'name';
+  const sorted = [...podcasts].sort(SORTS[sort].compare);
 
   const load = useCallback(
     () => getPodcasts().then(setPodcasts).catch((e) => setError(e.message)),
@@ -42,8 +62,25 @@ export default function PodcastList() {
       {podcasts.length === 0 ? (
         <p className="text-gray-500">No podcasts added yet.</p>
       ) : (
+        <>
+        <div className="flex items-center gap-2 mb-3 text-xs text-gray-500">
+          <span>Sort by</span>
+          <div className="inline-flex rounded-lg border overflow-hidden" role="group" aria-label="Sort by">
+            {Object.entries(SORTS).map(([key, { label }]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setSearchParams(key === 'name' ? {} : { sort: key }, { replace: true })}
+                aria-pressed={sort === key}
+                className={`px-2.5 py-1 ${sort === key ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
         <div className="grid gap-4">
-          {podcasts.map((p) => (
+          {sorted.map((p) => (
             <div key={p.id} className="bg-white rounded-lg border p-4 flex items-center justify-between">
               <Link to={`/podcasts/${p.id}`} className="flex-1 min-w-0">
                 <h3 className="font-medium text-gray-900 truncate">{p.title}</h3>
@@ -52,6 +89,7 @@ export default function PodcastList() {
                   <SourceBadge type={p.source_type} />
                   <TagChips value={p.category} className="bg-gray-100 px-2 py-0.5 rounded" />
                   <span>{p.episode_count ?? 0} episodes</span>
+                  {p.added_at && <span>Added {new Date(p.added_at).toLocaleDateString()}</span>}
                 </div>
               </Link>
               <button
@@ -63,6 +101,7 @@ export default function PodcastList() {
             </div>
           ))}
         </div>
+        </>
       )}
     </div>
   );
