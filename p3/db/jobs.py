@@ -21,18 +21,20 @@ class Jobs(Digests):
         username: Optional[str] = None,
         episode_guids: Optional[List[str]] = None,
         max_episodes: Optional[int] = None,
+        args: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Create a new background job. Returns the job ID. A fetch job
         records what it fetches: ``episode_guids`` (hand-picked) and/or
-        ``max_episodes``, read back by ``job_fetch_args``."""
+        ``max_episodes``, read back by ``job_fetch_args``; a writing job its
+        other arguments as ``args``, read back by ``job_args``."""
         job_id = str(uuid.uuid4())
         guids = json.dumps(episode_guids) if episode_guids is not None else None
         self.conn.execute(
             """
             INSERT INTO jobs
                 (id, episode_id, podcast_id, job_type, status, run_id, username,
-                 episode_guids, max_episodes)
-            VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+                 episode_guids, max_episodes, args)
+            VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
         """,
             (
                 job_id,
@@ -43,6 +45,7 @@ class Jobs(Digests):
                 username,
                 guids,
                 max_episodes,
+                json.dumps(args) if args is not None else None,
             ),
         )
         return job_id
@@ -52,6 +55,12 @@ class Jobs(Digests):
         """(max_episodes, episode_guids) a fetch job was created with."""
         raw = job.get("episode_guids")
         return job.get("max_episodes"), json.loads(raw) if raw is not None else None
+
+    @staticmethod
+    def job_args(job: Dict[str, Any]) -> Dict[str, Any]:
+        """The ``args`` a job was created with; empty if none."""
+        raw = job.get("args")
+        return json.loads(raw) if raw else {}
 
     def update_job(
         self,
@@ -138,6 +147,29 @@ class Jobs(Digests):
         if username is None:
             return f" WHERE {condition}", []
         return f" WHERE {condition} AND {self._JOB_VISIBLE}", [username, username]
+
+    def failed_in_a_row(self) -> Dict[int, int]:
+        """For each episode, how many of its transcribe, digest and pipeline
+        jobs failed since the last one that completed. Failures a server
+        restart caused (INTERRUPTED_ERROR) are not the episode's and don't
+        count."""
+        rows = self.conn.execute(
+            """
+            SELECT j.episode_id, COUNT(*) FROM jobs j
+            WHERE j.job_type IN ('transcribe', 'digest', 'full_pipeline')
+              AND j.status = 'failed'
+              AND j.error IS DISTINCT FROM ?
+              AND j.created_at > COALESCE((
+                  SELECT MAX(c.created_at) FROM jobs c
+                  WHERE c.episode_id = j.episode_id
+                    AND c.status = 'completed'
+                    AND c.job_type IN ('transcribe', 'digest', 'full_pipeline')
+              ), TIMESTAMP '1970-01-01')
+            GROUP BY j.episode_id
+        """,
+            [INTERRUPTED_ERROR],
+        ).fetchall()
+        return {episode_id: count for episode_id, count in rows}
 
     def job_visible_to(self, job_id: str, username: str) -> bool:
         """True if the user started this job or follows its podcast."""

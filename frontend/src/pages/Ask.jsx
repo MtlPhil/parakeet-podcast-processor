@@ -300,6 +300,9 @@ function AssistantMessage({ message, question }) {
   );
 }
 
+// Seconds on reading the question after which the page says why it waits.
+const SLOW_SECONDS = 30;
+
 // While an answer is written: the stage, the time so far, and the passages
 // as soon as the search has found them, so there is something to read.
 function Pending({ stage, sources, startedAt }) {
@@ -315,6 +318,12 @@ function Pending({ stage, sources, startedAt }) {
         <span className="animate-pulse">{STAGES[stage] || 'Working…'}</span>{' '}
         <span className="tabular-nums">{seconds} s</span>
       </p>
+      {stage === 'understanding' && seconds >= SLOW_SECONDS && (
+        <p className="text-xs text-gray-500 mt-1">
+          The model is slow to answer. If its provider is overloaded, P3 retries, then switches
+          to a backup model. The answer is saved even if you leave this page.
+        </p>
+      )}
       {sources?.length > 0 && (
         <>
           <p className="text-xs text-gray-500 mt-1">

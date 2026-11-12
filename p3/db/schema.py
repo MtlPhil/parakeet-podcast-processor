@@ -358,7 +358,12 @@ class Schema(Connection):
             )
         """)
 
-    _MIGRATIONS = (_baseline, _ask_index)
+    def _job_args(self):
+        """Migration 3: what a writing job was asked for (topic, date,
+        model...), as JSON, so it can be retried as it was."""
+        self.conn.execute("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS args VARCHAR")
+
+    _MIGRATIONS = (_baseline, _ask_index, _job_args)
 
     def _resync_sequences(self):
         """Ensure each id sequence starts past its table's current max id.

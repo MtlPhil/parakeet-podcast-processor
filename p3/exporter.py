@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from datetime import date, datetime
 from html import escape
 from pathlib import Path
@@ -10,6 +11,62 @@ from typing import Any, Dict, List, Optional
 from . import paths
 
 logger = logging.getLogger(__name__)
+
+
+# The little Markdown the summarizing model writes (see markdown_html).
+_HEADING = re.compile(r"^(?:#{1,6}\s+(.+)|\*\*([^*]+)\*\*:?)$")
+_BULLET = re.compile(r"^[*-]\s+(.*)$")
+_BOLD = re.compile(r"\*\*([^*]+)\*\*")
+
+
+def _inline_html(text: str) -> str:
+    return _BOLD.sub(r"<strong>\1</strong>", escape(text))
+
+
+def markdown_html(text: str) -> str:
+    """A summary or synopsis as HTML (emails, the HTML export), every piece
+    escaped. The model
+    writes a little Markdown: lines that are only bold (or "#" headings) as
+    section titles, shown as bold lines; "*" and "-" lines as bullet lists;
+    **phrases** in bold. The episode page shows it the same way
+    (frontend/src/components/MarkdownText.jsx)."""
+    html: List[str] = []
+    paragraph: List[str] = []
+    items: List[str] = []
+
+    def end_paragraph():
+        if paragraph:
+            html.append(f"<p>{_inline_html(' '.join(paragraph))}</p>")
+            paragraph.clear()
+
+    def end_list():
+        if items:
+            html.append(
+                "<ul>" + "".join(f"<li>{_inline_html(i)}</li>" for i in items) + "</ul>"
+            )
+            items.clear()
+
+    for raw in text.split("\n"):
+        line = raw.strip()
+        heading = _HEADING.match(line)
+        bullet = _BULLET.match(line)
+        if not line:
+            end_paragraph()
+            end_list()
+        elif heading:
+            end_paragraph()
+            end_list()
+            title = (heading.group(1) or heading.group(2)).rstrip(":")
+            html.append(f"<p><strong>{_inline_html(title)}</strong></p>")
+        elif bullet:
+            end_paragraph()
+            items.append(bullet.group(1))
+        else:
+            end_list()
+            paragraph.append(line)
+    end_paragraph()
+    end_list()
+    return "".join(html)
 
 
 def shown_language(language: Optional[str], episode_language: Optional[str]) -> str:
@@ -208,7 +265,7 @@ class DigestExporter:
                     html += f'<div class="episode"><h3>{escape(episode["episode_title"])}</h3>'
 
                     if episode["full_summary"]:
-                        html += f'<div class="summary"><strong>Summary:</strong> {escape(episode["full_summary"])}</div>'
+                        html += f'<div class="summary"><strong>Summary:</strong>{markdown_html(episode["full_summary"])}</div>'
 
                     if episode["key_topics"]:
                         html += '<div class="topics"><strong>Key Topics:</strong><ul>'

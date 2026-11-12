@@ -21,7 +21,7 @@ const today = () => {
   const pad = (n) => String(n).padStart(2, '0');
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 };
-const RETRYABLE = ['fetch', 'transcribe', 'digest', 'full_pipeline'];
+const RETRYABLE = ['fetch', 'transcribe', 'digest', 'full_pipeline', 'write_linkedin', 'synopsis', 'write'];
 
 const formatStartTime = (ts) => {
   if (!ts) return '—';

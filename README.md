@@ -81,7 +81,8 @@ P³ ships as both a command-line tool (`p3`) and a web app (FastAPI + React).
   embeddings), reranked by a cross-encoder, and the answer streams in. "How
   often" and "which episodes" questions also list every episode that
   mentions what they count. Conversations are kept, and answers can be rated.
-- **Exports.** Daily digests as Markdown, JSON or email-ready HTML, plus
+- **Exports.** Daily digests as Markdown, JSON or email-ready HTML (the
+  summaries' section titles and lists kept), plus
   per-episode transcripts as Markdown (single file or a zip per podcast).
 - **Web app.** Dashboard, podcast and episode pages, transcript and summary
   views, search across transcripts and summaries, bulk add (paste URLs or
@@ -94,7 +95,8 @@ P³ ships as both a command-line tool (`p3`) and a web app (FastAPI + React).
   off), the user's podcasts are fetched and new episodes transcribed and
   summarized, optionally followed by LinkedIn drafts, a digest export and an
   emailed report. A run that could read no feed (no network) is tried again
-  every 15 minutes, a few times.
+  every 15 minutes, a few times, and a report that couldn't be sent for lack
+  of network goes out once it is back (within a day).
 - **Disk cleanup.** An episode's audio is deleted once it is digested; the
   transcript and summary are kept.
 - **Safe background processing.** Heavy work runs through a single serial job
@@ -131,7 +133,9 @@ Every step is also all or nothing. If transcription fails part-way, or the LLM
 cannot be reached or returns something unusable, nothing is stored, the
 episode keeps its status, and the job fails with the reason. Failed jobs can
 be retried from the dashboard, and the daily run picks up unprocessed
-episodes again the next day. The one exception is the French translation of
+episodes again the next day, except one that failed three times in a row
+(a broken audio file fails the same way every time), which waits until it
+is run by hand. The one exception is the French translation of
 a digest: if it fails, the English digest is kept and the translation can be
 redone from the Admin page.
 
@@ -160,8 +164,8 @@ On a Mac with Apple Silicon (M1 or newer), open Terminal and paste:
 curl -fsSL https://raw.githubusercontent.com/MtlPhil/parakeet-podcast-processor/main/install.sh | bash
 ```
 
-It needs no Homebrew, Xcode or git: Python, ffmpeg and deno are downloaded
-into `~/Parakeet`, and P3 starts in the background (and at every login). Your
+It needs no Homebrew, Xcode or git: Python (with the package versions pinned
+in `uv.lock`), ffmpeg and deno are downloaded into `~/Parakeet`, and P3 starts in the background (and at every login). Your
 browser then opens P3's setup: create your account (the first one is the
 admin), then choose a language, the service that writes summaries, the daily
 digest email, whether other devices on your home network can open P3, and
@@ -280,6 +284,11 @@ no key.
 In the web app, the synopsis, blog and LinkedIn actions can also switch to
 Gemini for a single request without changing the default.
 
+Gemini requests that hit an overload, a timeout or a dropped connection are
+retried after 5, 15 and 45 seconds. If the model stays unavailable, P³
+switches to `gemini-3.6-flash`, and every request for the next 30 minutes
+goes straight to it rather than waiting out the retries again.
+
 If a hosted provider is selected but no key is found, digests fail with a
 message naming the missing key.
 
@@ -302,7 +311,9 @@ settings:
 
 The password is read from the `SMTP_PASSWORD` environment variable or
 `config/smtp_password.txt` (gitignored). A report that fails to send is tried
-again every 15 minutes, a few times.
+again every 15 minutes: until it goes out, if the mail server couldn't be
+reached (no network), for up to a day; eight times if the server refused it
+(a wrong password, say).
 
 ## Using the CLI
 
@@ -353,7 +364,9 @@ The app's pages:
 
 - **Dashboard**: pipeline counts, one-click "transcribe / digest / run
   everything" for the whole library, and a paginated job history. Failed
-  fetch, transcribe, digest and pipeline jobs can be retried.
+  jobs can be retried: fetch, transcribe, digest and pipeline jobs, and
+  LinkedIn posts, synopses and blog posts, with the same choices (topic,
+  date, model) they were started with.
 - **Podcasts**: add a feed (RSS, Apple Podcasts link, or YouTube channel,
   video or playlist), fetch new episodes,
   run steps for every episode of a podcast, and download all transcripts as a
@@ -370,7 +383,9 @@ The app's pages:
   your notes. Answers use your writing LLM. While a transcription runs, Ask
   loads no model and answers with keyword search only; a local answer model
   is only loaded with enough memory free, otherwise Ask shows the passages
-  it found.
+  it found. When the model is slow to start, the page says why it waits; an
+  answer is saved even if you leave the page, and appears when you reopen
+  the conversation.
 - **Settings**: your language, writing tone (sent to the writer with every
   post), writing LLM, episodes per feed and daily run. Admins also see the
   shared transcription and summarizing settings.
@@ -643,7 +658,9 @@ DuckDB file at `data/p3.duckdb`:
   themes, quotes and companies, keyed by episode and digest date, plus Quebec
   French versions (`*_fr`) of the summary, synopsis, topics and themes
 - `jobs`: background job type, status, progress, message, error, timestamps,
-  the user who started it, and the daily run it belongs to
+  the user who started it, the daily run it belongs to, and what it was asked
+  to do (a fetch's episodes, a writing job's topic, date and model) so it can
+  be retried as it was
 - `users`: username, name, email, role (`admin` or `user`), own settings, and
   in local sign-in mode a password hash
 - `sessions`: local sign-in sessions, keyed by the hash of their cookie token

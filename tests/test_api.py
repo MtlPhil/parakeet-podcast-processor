@@ -723,6 +723,83 @@ class TestJobs:
         assert new_job["job_type"] == "transcribe"
         assert new_job["episode_id"] == eid
 
+    def _queue(self, monkeypatch):
+        from p3.api import job_queue
+
+        queued = []
+
+        def record(fn, *args, **kwargs):
+            queued.append((fn.__name__, args))
+
+        monkeypatch.setattr(job_queue.job_runner, "enqueue", record)
+        monkeypatch.setattr(job_queue.job_runner, "enqueue_priority", record)
+        return queued
+
+    def _episode(self, db):
+        pid = db.add_podcast("Pod", "http://example.com/rss")
+        return db.add_episode(pid, "Ep", datetime.now(), "http://example.com/e.mp3")
+
+    def test_retry_linkedin_repeats_the_request(self, monkeypatch):
+        queued = self._queue(monkeypatch)
+        db = deps.get_db()
+        eid = self._episode(db)
+        body = {"episode_id": eid, "provider": "gemini", "model": "gemini-x"}
+        jid = client.post("/api/linkedin", json=body).json()["job_id"]
+        db.update_job(jid, status="failed", error="timed out")
+
+        queued.clear()
+        resp = client.post(f"/api/jobs/{jid}/retry")
+        assert resp.status_code == 200
+        new_id = resp.json()["job_id"]
+        assert queued == [
+            ("task_write_linkedin", (new_id, eid, "gemini", "gemini-x", USER))
+        ]
+        # Once a later post for the episode is written, no more retries.
+        db.update_job(new_id, status="completed")
+        assert client.post(f"/api/jobs/{jid}/retry").status_code == 400
+
+    def test_retry_synopsis_until_there_is_one(self, monkeypatch):
+        queued = self._queue(monkeypatch)
+        db = deps.get_db()
+        eid = self._episode(db)
+        db.add_summary(eid, [], [], [], [], "Short summary.")
+        jid = client.post(f"/api/episodes/{eid}/synopsis").json()["job_id"]
+        db.update_job(jid, status="failed", error="timed out")
+
+        queued.clear()
+        resp = client.post(f"/api/jobs/{jid}/retry")
+        assert resp.status_code == 200
+        assert queued == [
+            ("task_generate_synopsis", (resp.json()["job_id"], eid, None, None, USER))
+        ]
+        db.update_summary_long_summary(eid, "Notes.")
+        assert client.post(f"/api/jobs/{jid}/retry").status_code == 400
+
+    def test_retry_blog_post_with_its_topic_and_date(self, monkeypatch):
+        queued = self._queue(monkeypatch)
+        db = deps.get_db()
+        ids = []
+        for topic in ("AI agents", "Hockey"):
+            body = {"topic": topic, "date": "2026-11-01", "target_grade": 85}
+            ids.append(client.post("/api/blogs", json=body).json()["job_id"])
+        for jid in ids:
+            db.update_job(jid, status="failed", error="timed out")
+
+        queued.clear()
+        # Two posts on different topics are two retries, not one.
+        assert client.post("/api/jobs/retry-failed").json()["queued"] == 2
+        assert sorted(args[1:4] for _, args in queued) == [
+            ("AI agents", "2026-11-01", 85.0),
+            ("Hockey", "2026-11-01", 85.0),
+        ]
+
+    def test_a_writing_job_without_its_arguments_is_not_retried(self):
+        db = deps.get_db()
+        jid = db.create_job("write", username=USER)  # from before they were kept
+        db.update_job(jid, status="failed")
+        client.get("/api/me")
+        assert client.post(f"/api/jobs/{jid}/retry").status_code == 400
+
     def test_retry_unsupported_type(self):
         db = deps.get_db()
         jid = db.create_job("export", username=USER)

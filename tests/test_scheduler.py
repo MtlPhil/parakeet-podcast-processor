@@ -1,6 +1,7 @@
 """Tests for the per-user daily run scheduler (no jobs are executed)."""
 
-from datetime import datetime
+import smtplib
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -8,6 +9,7 @@ import p3.api.deps as deps
 from p3.api import job_queue, tasks
 from p3.api.scheduler import parse_run_time, run_if_due
 from p3.api.tasks import run_key
+from p3.database import INTERRUPTED_ERROR
 
 
 @pytest.fixture
@@ -182,7 +184,7 @@ class TestDailyRunSteps:
         )
         order = []
         monkeypatch.setattr(
-            tasks, "_email_run_report", lambda *a: order.append("email") or True
+            tasks, "_email_run_report", lambda *a: order.append("email") or None
         )
         ann = _user(db, "ann")
         pid = db.add_podcast("Pod", "http://example.com/rss")
@@ -360,6 +362,67 @@ class TestResumeInterruptedRun:
         assert tasks.resume_daily_run(db, user, max_age=timedelta(days=2)) is None
 
 
+class TestBacklog:
+    def _episode(self, db, ann, url):
+        podcast = db.get_podcast_by_url("http://example.com/rss")
+        pid = (
+            podcast["id"]
+            if podcast
+            else db.add_podcast("Pod", "http://example.com/rss")
+        )
+        eid = db.add_episode(pid, url, datetime(2026, 10, 1), url)
+        db.link_episode(ann, eid)
+        return eid
+
+    def _job(self, db, eid, status, hours_ago, error=None):
+        job = db.create_job("full_pipeline", episode_id=eid, username="ann")
+        db.update_job(job, status=status, error=error)
+        db.conn.execute(
+            "UPDATE jobs SET created_at = ? WHERE id = ?",
+            (datetime.now() - timedelta(hours=hours_ago), job),
+        )
+
+    def test_an_episode_that_keeps_failing_is_left_alone(self, env):
+        db, enqueued = env
+        ann = _user(db, "ann")
+        broken = self._episode(db, ann, "http://example.com/broken")
+        fine = self._episode(db, ann, "http://example.com/fine")
+        for hours in (3, 2, 1):
+            self._job(db, broken, "failed", hours, error="bad audio")
+        self._job(db, fine, "failed", 2, error="bad audio")
+
+        tasks.queue_backlog(db, ann)
+        queued = [a[1] for fn, a in enqueued if fn.__name__ == "task_full_pipeline"]
+        assert queued == [fine]
+
+    def test_restarts_dont_count_and_a_success_starts_over(self, env):
+        db, enqueued = env
+        ann = _user(db, "ann")
+        eid = self._episode(db, ann, "http://example.com/ep")
+        for hours in (9, 8, 7):
+            self._job(db, eid, "failed", hours, error="bad audio")
+        self._job(db, eid, "completed", 6)  # transcribed, say
+        self._job(db, eid, "failed", 5, error="bad audio")
+        for hours in (4, 3, 2):
+            self._job(db, eid, "failed", hours, error=INTERRUPTED_ERROR)
+
+        assert db.failed_in_a_row() == {eid: 1}
+        tasks.queue_backlog(db, ann)
+        assert "task_full_pipeline" in _names(enqueued)
+
+    def test_the_catch_up_index_job_is_the_users(self, env):
+        db, enqueued = env
+        ann = _user(db, "ann")
+        eid = self._episode(db, ann, "http://example.com/done")
+        db.update_episode_status(eid, "processed")  # not in the Ask index yet
+
+        tasks.queue_backlog(db, ann)
+        [args] = [a for fn, a in enqueued if fn.__name__ == "task_index"]
+        job_id, username = args
+        assert username == ann
+        assert db.job_visible_to(job_id, ann)
+
+
 class TestRetries:
     """A run that reads no feed is retried; a report that fails to send is
     sent again."""
@@ -494,7 +557,48 @@ class TestRetries:
         assert db.get_state(run_key("email_retry", ann)) == ""
         assert db.get_state(run_key("email_error", ann)) == ""
 
-    def test_email_retries_give_up_eventually(self, env, monkeypatch):
+    def test_a_refused_email_gives_up_after_a_few_tries(self, env, monkeypatch):
+        from p3 import mailer
+
+        db, _ = env
+
+        def refused(*args):
+            raise smtplib.SMTPAuthenticationError(535, b"bad password")
+
+        monkeypatch.setattr(mailer, "send_email", refused)
+        ann = _user(db, "ann", daily_run_email=True, email="a@b.c")
+        tasks.daily_finish("run-1", ann)
+        for _ in range(tasks.MAX_EMAIL_ATTEMPTS):
+            tasks.retry_report_email(ann)
+        assert db.get_state(run_key("email_retry", ann)) == ""
+
+    def test_without_network_the_report_waits_for_it(self, env, monkeypatch):
+        import socket
+
+        from p3 import mailer
+
+        db, _ = env
+        network = {"up": False}
+        sent = []
+
+        def send(*args):
+            if not network["up"]:
+                raise socket.gaierror(8, "nodename nor servname provided")
+            sent.append(args)
+
+        monkeypatch.setattr(mailer, "send_email", send)
+        ann = _user(db, "ann", daily_run_email=True, email="a@b.c")
+        tasks.daily_finish("run-1", ann)
+        # Many more tries than a refused email gets, still pending.
+        for _ in range(tasks.MAX_EMAIL_ATTEMPTS * 2):
+            tasks.retry_report_email(ann)
+        assert db.get_state(run_key("email_retry", ann)) == "run-1"
+        network["up"] = True
+        tasks.retry_report_email(ann)
+        assert len(sent) == 1
+        assert db.get_state(run_key("email_retry", ann)) == ""
+
+    def test_an_unsent_report_is_dropped_after_a_day(self, env, monkeypatch):
         from p3 import mailer
 
         db, _ = env
@@ -505,6 +609,8 @@ class TestRetries:
         monkeypatch.setattr(mailer, "send_email", down)
         ann = _user(db, "ann", daily_run_email=True, email="a@b.c")
         tasks.daily_finish("run-1", ann)
-        for _ in range(tasks.MAX_EMAIL_ATTEMPTS):
-            tasks.retry_report_email(ann)
+        assert db.get_state(run_key("email_retry", ann)) == "run-1"
+        day_ago = datetime.now() - timedelta(hours=tasks.REPORT_RETRY_HOURS)
+        db.set_state(run_key("email_retry_since", ann), day_ago.isoformat())
+        tasks.retry_report_email(ann)
         assert db.get_state(run_key("email_retry", ann)) == ""

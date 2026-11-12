@@ -39,6 +39,12 @@ _ANTHROPIC_VERSION = "2026-10-21"
 # Used instead when the configured Gemini model stays overloaded or
 # unreachable through every retry.
 GEMINI_FALLBACK_MODEL = "gemini-3.6-flash"
+# A model that failed that way is skipped for this long by every client
+# (the next Ask question, the next job), which goes straight to the
+# fallback instead of waiting out the retries again.
+_GEMINI_SKIP_SECONDS = 30 * 60
+# Model name -> time.monotonic() until which it is skipped.
+_gemini_skipped_until: Dict[str, float] = {}
 
 # Context window requested from Ollama: the longest cleaned/truncated
 # transcript (~100k characters) is about 25k tokens, plus the prompt.
@@ -220,11 +226,24 @@ class LLMClient:
             if text:
                 yield text
 
+    def _skip_unavailable_gemini(self):
+        """Use the fallback model while the configured one is skipped (see
+        _GEMINI_SKIP_SECONDS)."""
+        until = _gemini_skipped_until.get(self.model)
+        if until and time.monotonic() < until and self.model != GEMINI_FALLBACK_MODEL:
+            logger.info(
+                "%s was unavailable recently; using %s",
+                self.model,
+                GEMINI_FALLBACK_MODEL,
+            )
+            self.model = GEMINI_FALLBACK_MODEL
+
     def _stream_gemini(self, system: str, user: str, max_tokens: int) -> Iterator[str]:
         if not self.api_key:
             raise RuntimeError(
                 f"No Gemini API key found: {secrets.missing('gemini_api_key')}"
             )
+        self._skip_unavailable_gemini()
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
             f"{self.model}:streamGenerateContent?alt=sse"
@@ -351,14 +370,17 @@ class LLMClient:
             raise RuntimeError(
                 f"No Gemini API key found: {secrets.missing('gemini_api_key')}"
             )
+        self._skip_unavailable_gemini()
         try:
             return self._gemini_request(self.api_key, system, user, max_tokens)
         except _GeminiUnavailable as e:
             if self.model == GEMINI_FALLBACK_MODEL:
                 raise
-            # The client keeps the fallback, so the rest of a multi-request
+            # This client keeps the fallback, so the rest of a multi-request
             # job (synopsis sections, translation chunks) doesn't wait out
-            # the retries on the overloaded model again.
+            # the retries on the overloaded model again, and other clients
+            # skip the model for a while.
+            _gemini_skipped_until[self.model] = time.monotonic() + _GEMINI_SKIP_SECONDS
             logger.warning(
                 "%s is unavailable (%s); falling back to %s",
                 self.model,

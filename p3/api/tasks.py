@@ -8,6 +8,7 @@ without loading ML dependencies.
 
 import json
 import logging
+import smtplib
 import threading
 import time
 import uuid
@@ -1135,10 +1136,14 @@ def daily_queue_content(run_id: str, username: str):
 
 # A run that could read none of its feeds (no network at run time) is tried
 # again later instead of counting as the day's run, and a report email that
-# failed to send is sent again later. Both every RETRY_MINUTES, a few times.
+# failed to send is sent again later. Both every RETRY_MINUTES, a few times;
+# a report that failed only because the mail server couldn't be reached is
+# tried until it is REPORT_RETRY_HOURS old (about when the next run's report
+# takes over), so it goes out once the network is back.
 RETRY_MINUTES = 15
 MAX_RUN_ATTEMPTS = 8
 MAX_EMAIL_ATTEMPTS = 8
+REPORT_RETRY_HOURS = 24
 
 
 def attempts_today(db, key: str, today: str) -> int:
@@ -1195,19 +1200,38 @@ def daily_finish(run_id: str, username: str):
     db.set_state(run_key("retry_at", username), "")
     logger.info("Daily run finished for %s", username)
     try:
-        if not _email_run_report(db, run_id, username):
-            _schedule_email_retry(db, run_id, username)
+        error = _email_run_report(db, run_id, username)
+        if error:
+            _schedule_email_retry(db, run_id, username, _unreachable(error))
     finally:
         queue_backlog(db, username)
 
 
-def _schedule_email_retry(db, run_id: str, username: str):
-    """Send this run's report again in RETRY_MINUTES, or give up after
-    MAX_EMAIL_ATTEMPTS."""
+def _unreachable(error: Exception) -> bool:
+    """Whether a send failed because the mail server couldn't be reached (no
+    network, no DNS, a timeout) rather than because it refused the message
+    (a wrong password, say), which trying again won't fix."""
+    return isinstance(error, OSError) and not isinstance(
+        error, smtplib.SMTPResponseException
+    )
+
+
+def _schedule_email_retry(db, run_id: str, username: str, unreachable: bool):
+    """Send this run's report again in RETRY_MINUTES. Give up after
+    MAX_EMAIL_ATTEMPTS, or, when the mail server couldn't be reached, once
+    the first failure is REPORT_RETRY_HOURS old."""
     now = datetime.now()
     today = now.date().isoformat()
     sent_tries = attempts_today(db, run_key("email_attempts", username), today) + 1
-    if sent_tries > MAX_EMAIL_ATTEMPTS:
+    since_key = run_key("email_retry_since", username)
+    if db.get_state(run_key("email_retry", username)) != run_id:
+        db.set_state(since_key, now.isoformat("T", "seconds"))
+    since = datetime.fromisoformat(db.get_state(since_key) or now.isoformat())
+    if (
+        now - since >= timedelta(hours=REPORT_RETRY_HOURS)
+        if unreachable
+        else sent_tries > MAX_EMAIL_ATTEMPTS
+    ):
         db.set_state(run_key("email_retry", username), "")
         logger.error("Giving up on emailing the report of run %s", run_id)
         return
@@ -1228,29 +1252,50 @@ def retry_report_email(username: str):
     run_id = db.get_state(run_key("email_retry", username))
     if not run_id:
         return
-    if _email_run_report(db, run_id, username):
+    error = _email_run_report(db, run_id, username)
+    if error:
+        _schedule_email_retry(db, run_id, username, _unreachable(error))
+    else:
         db.set_state(run_key("email_retry", username), "")
         db.set_state(run_key("email_attempts", username), "")
-    else:
-        _schedule_email_retry(db, run_id, username)
+
+
+# The backlog stops retrying an episode whose pipeline failed this many
+# times in a row (a broken audio file fails the same way every time). It
+# can still be run by hand, and a success starts the count over.
+MAX_BACKLOG_FAILURES = 3
 
 
 def queue_backlog(db, username: str) -> list[str]:
     """After the report: a normal-lane pipeline job for each of the user's
-    episodes still unprocessed that has no job pending or running already."""
+    episodes still unprocessed that has no job pending or running already,
+    unless it failed MAX_BACKLOG_FAILURES times in a row."""
     busy = {j["episode_id"] for j in db.get_active_jobs(username)}
-    episodes = [e for e in db.get_all_episodes(username) if e["id"] not in busy]
+    failures = db.failed_in_a_row()
+    episodes = []
+    for e in db.get_all_episodes(username):
+        if e["id"] in busy or e["status"] == "processed":
+            continue
+        if failures.get(e["id"], 0) >= MAX_BACKLOG_FAILURES:
+            logger.warning(
+                "Not retrying %s: it failed %d times in a row",
+                e["title"],
+                failures[e["id"]],
+            )
+            continue
+        episodes.append(e)
     job_ids = queue_step_jobs(db, episodes, "pipeline", None, username)
     if job_ids:
         logger.info("Queued %d backlog episode(s) for %s", len(job_ids), username)
-    _queue_index_catch_up(db)
+    _queue_index_catch_up(db, username)
     return job_ids
 
 
-def _queue_index_catch_up(db) -> None:
+def _queue_index_catch_up(db, username: str) -> None:
     """Queue an index job behind the backlog when episodes are missing from
     the Ask index (an embedding that failed, show notes found by a later
-    fetch), unless one is already waiting."""
+    fetch), unless one is already waiting. The job is the user's whose run
+    queued it, so it shows in their job list."""
     from p3.embedder import DEFAULT_EMBEDDING_MODEL
 
     model = _get_settings().get("embedding_model") or DEFAULT_EMBEDDING_MODEL
@@ -1258,15 +1303,15 @@ def _queue_index_catch_up(db) -> None:
         return
     if any(j["job_type"] == "index" for j in db.get_active_jobs()):
         return
-    job_runner.enqueue(task_index, db.create_job("index"))
+    job_runner.enqueue(task_index, db.create_job("index", username=username), username)
 
 
-def _email_run_report(db, run_id: str, username: str) -> bool:
+def _email_run_report(db, run_id: str, username: str) -> Optional[Exception]:
     """Email the run's report if the user asked for it. Never raises.
-    Returns False only if sending was attempted and failed."""
+    Returns the error if sending was attempted and failed."""
     settings = user_settings(username)
     if not settings.get("daily_run_email"):
-        return True
+        return None
     try:
         from p3.mailer import build_email, collect_run_report, send_email
 
@@ -1288,11 +1333,11 @@ def _email_run_report(db, run_id: str, username: str) -> bool:
         db.set_state(run_key("reported_at", username), cutoff.isoformat())
         db.set_state(run_key("email_error", username), "")
         logger.info("Daily report emailed to %s", to)
-        return True
+        return None
     except Exception as e:
         logger.exception("Could not email the daily report")
         db.set_state(run_key("email_error", username), str(e))
-        return False
+        return e
 
 
 def task_full_pipeline(job_id: str, episode_id: int, digest: bool = True):

@@ -1,5 +1,7 @@
 """Job status routes."""
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from p3.api.auth import current_username
@@ -11,7 +13,10 @@ from p3.api.tasks import (
     task_digest,
     task_fetch,
     task_full_pipeline,
+    task_generate_synopsis,
     task_transcribe,
+    task_write_blog,
+    task_write_linkedin,
 )
 from p3.database import INTERRUPTED_ERROR
 
@@ -40,22 +45,64 @@ def _same_fetch(db, a, b) -> bool:
     return max_a == max_b and set(guids_a or []) == set(guids_b or [])
 
 
-def _newer_completed_fetch(db, job) -> bool:
-    """True if a later fetch of the same podcast and the same selection has
-    already completed. A plain fetch of the newest episodes doesn't stand
-    in for a hand-picked one, nor the other way round."""
+def _newer_completed(db, job, same) -> bool:
+    """True if a later job of the same type, for which ``same(later)``
+    holds, has already completed."""
     for j in db.get_recent_jobs(limit=200):
         if (
-            j["job_type"] == "fetch"
-            and j["podcast_id"] == job["podcast_id"]
+            j["job_type"] == job["job_type"]
             and j["status"] == "completed"
             and j["created_at"]
             and job["created_at"]
             and j["created_at"] > job["created_at"]
-            and _same_fetch(db, j, job)
+            and same(j)
         ):
             return True
     return False
+
+
+def _newer_completed_fetch(db, job) -> bool:
+    """True if a later fetch of the same podcast and the same selection has
+    already completed. A plain fetch of the newest episodes doesn't stand
+    in for a hand-picked one, nor the other way round."""
+    return _newer_completed(
+        db,
+        job,
+        lambda j: j["podcast_id"] == job["podcast_id"] and _same_fetch(db, j, job),
+    )
+
+
+def _writing_plan(db, job):
+    """_retry_plan for LinkedIn posts, synopses and blog posts, from the
+    arguments the job recorded (jobs from before they were recorded use the
+    user's default model; such a blog post can't be retried)."""
+    job_type, username = job["job_type"], job["username"]
+    args = db.job_args(job)
+    provider, model = args.get("provider"), args.get("model")
+    create = {"username": username, "args": args or None}
+
+    if job_type == "write":
+        if not args.get("topic") or not args.get("date"):
+            return None
+        if _newer_completed(db, job, lambda j: db.job_args(j) == args):
+            return None
+        task_args = (args["topic"], args["date"], args.get("target_grade", 91.0))
+        return task_write_blog, (*task_args, provider, model, username), create
+
+    episode = db.get_episode_by_id(job["episode_id"]) if job["episode_id"] else None
+    if not episode or not (username and db.user_has_episode(username, episode["id"])):
+        return None
+    create.update(episode_id=episode["id"], podcast_id=episode["podcast_id"])
+    if job_type == "synopsis":
+        summary = db.get_summary_by_episode(episode["id"])
+        if not summary or summary.get("long_summary"):
+            return None  # no digest to build on, or done since
+        task_fn = task_generate_synopsis
+    else:
+        if _newer_completed(db, job, lambda j: j["episode_id"] == episode["id"]):
+            return None
+        task_fn = task_write_linkedin
+    return task_fn, (episode["id"], provider, model, username), create
 
 
 def _retry_plan(db, job):
@@ -81,6 +128,9 @@ def _retry_plan(db, job):
                 "max_episodes": max_eps,
             },
         )
+
+    if job_type in ("write", "write_linkedin", "synopsis"):
+        return _writing_plan(db, job)
 
     if job_type in _EPISODE_TASKS:
         episode = db.get_episode_by_id(job["episode_id"]) if job["episode_id"] else None
@@ -129,7 +179,15 @@ def retry_failed_jobs(username: str = Depends(current_username)):
     for job in db.get_failed_jobs(username):
         max_eps, guids = db.job_fetch_args(job)
         picks = frozenset(guids) if guids is not None else None
-        key = (job["job_type"], job["episode_id"], job["podcast_id"], max_eps, picks)
+        args = json.dumps(db.job_args(job), sort_keys=True)
+        key = (
+            job["job_type"],
+            job["episode_id"],
+            job["podcast_id"],
+            max_eps,
+            picks,
+            args,
+        )
         if key in seen:
             continue
         seen.add(key)

@@ -25,6 +25,12 @@ from p3.api.models import AskRating, AskRequest
 from p3.llm import DEFAULT_OLLAMA_URL, resolve_provider_and_model
 
 router = APIRouter(prefix="/api/ask", tags=["ask"])
+
+# A line sent this often while the answer is being worked on: a proxy in
+# front (Cloudflare closes a connection after about 100 s with no data)
+# would otherwise drop a stream waiting on a slow model.
+_KEEPALIVE_SECONDS = 15.0
+
 ASK_NUM_CTX = 8192
 logger = logging.getLogger(__name__)
 
@@ -197,7 +203,11 @@ def ask(body: AskRequest, username: str = Depends(current_username)):
     def events():
         yield dumps({"event": "thread", "thread_id": thread_id})
         while True:
-            event = out.get()
+            try:
+                event = out.get(timeout=_KEEPALIVE_SECONDS)
+            except queue.Empty:
+                yield ": keep-alive\n\n"  # an SSE comment: the page skips it
+                continue
             if event is None:
                 return
             yield dumps(event)
