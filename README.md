@@ -34,6 +34,7 @@ P³ ships as both a command-line tool (`p3`) and a web app (FastAPI + React).
 - [Deployment](#deployment)
 - [Architecture](#architecture)
 - [Development](#development)
+- [License](#license)
 - [Acknowledgements](#acknowledgements)
 
 ---
@@ -728,6 +729,14 @@ engines and the LLM are replaced by stand-ins: model inference, real LLM
 requests, the CLI and the Mac installer are not exercised.
 
 See [ROADMAP.md](ROADMAP.md) for planned work.
+
+## License
+
+P³ is released under the [MIT License](LICENSE), the license of the project it
+was forked from ([haasonsaas/parakeet-podcast-processor](https://github.com/haasonsaas/parakeet-podcast-processor)).
+
+The speech and language models P³ downloads at run time are not part of it and
+carry their own licenses.
 
 ## Acknowledgements
 
