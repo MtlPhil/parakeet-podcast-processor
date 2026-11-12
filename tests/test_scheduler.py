@@ -1,6 +1,7 @@
 """Tests for the per-user daily run scheduler (no jobs are executed)."""
 
-from datetime import datetime
+import smtplib
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -182,7 +183,7 @@ class TestDailyRunSteps:
         )
         order = []
         monkeypatch.setattr(
-            tasks, "_email_run_report", lambda *a: order.append("email") or True
+            tasks, "_email_run_report", lambda *a: order.append("email") or None
         )
         ann = _user(db, "ann")
         pid = db.add_podcast("Pod", "http://example.com/rss")
@@ -494,7 +495,48 @@ class TestRetries:
         assert db.get_state(run_key("email_retry", ann)) == ""
         assert db.get_state(run_key("email_error", ann)) == ""
 
-    def test_email_retries_give_up_eventually(self, env, monkeypatch):
+    def test_a_refused_email_gives_up_after_a_few_tries(self, env, monkeypatch):
+        from p3 import mailer
+
+        db, _ = env
+
+        def refused(*args):
+            raise smtplib.SMTPAuthenticationError(535, b"bad password")
+
+        monkeypatch.setattr(mailer, "send_email", refused)
+        ann = _user(db, "ann", daily_run_email=True, email="a@b.c")
+        tasks.daily_finish("run-1", ann)
+        for _ in range(tasks.MAX_EMAIL_ATTEMPTS):
+            tasks.retry_report_email(ann)
+        assert db.get_state(run_key("email_retry", ann)) == ""
+
+    def test_without_network_the_report_waits_for_it(self, env, monkeypatch):
+        import socket
+
+        from p3 import mailer
+
+        db, _ = env
+        network = {"up": False}
+        sent = []
+
+        def send(*args):
+            if not network["up"]:
+                raise socket.gaierror(8, "nodename nor servname provided")
+            sent.append(args)
+
+        monkeypatch.setattr(mailer, "send_email", send)
+        ann = _user(db, "ann", daily_run_email=True, email="a@b.c")
+        tasks.daily_finish("run-1", ann)
+        # Many more tries than a refused email gets, still pending.
+        for _ in range(tasks.MAX_EMAIL_ATTEMPTS * 2):
+            tasks.retry_report_email(ann)
+        assert db.get_state(run_key("email_retry", ann)) == "run-1"
+        network["up"] = True
+        tasks.retry_report_email(ann)
+        assert len(sent) == 1
+        assert db.get_state(run_key("email_retry", ann)) == ""
+
+    def test_an_unsent_report_is_dropped_after_a_day(self, env, monkeypatch):
         from p3 import mailer
 
         db, _ = env
@@ -505,6 +547,8 @@ class TestRetries:
         monkeypatch.setattr(mailer, "send_email", down)
         ann = _user(db, "ann", daily_run_email=True, email="a@b.c")
         tasks.daily_finish("run-1", ann)
-        for _ in range(tasks.MAX_EMAIL_ATTEMPTS):
-            tasks.retry_report_email(ann)
+        assert db.get_state(run_key("email_retry", ann)) == "run-1"
+        day_ago = datetime.now() - timedelta(hours=tasks.REPORT_RETRY_HOURS)
+        db.set_state(run_key("email_retry_since", ann), day_ago.isoformat())
+        tasks.retry_report_email(ann)
         assert db.get_state(run_key("email_retry", ann)) == ""
