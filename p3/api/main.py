@@ -4,7 +4,6 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import timedelta
-from pathlib import Path
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, Request
@@ -13,6 +12,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from p3 import paths
 from p3.api.auth import current_username
 from p3.api.deps import close_db, get_db
 from p3.api.job_queue import job_runner
@@ -68,16 +68,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup / shutdown lifecycle."""
-    # Ensure directories exist
-    for d in (
-        "data",
-        "data/audio",
-        "exports",
-        "blog_posts",
-        "linkedin_posts",
-        "config",
-    ):
-        Path(d).mkdir(parents=True, exist_ok=True)
+    paths.ensure()
     # Warm up database and clear jobs orphaned by a previous process
     db = get_db()
     stale = db.fail_stale_jobs()
@@ -187,8 +178,9 @@ class SPAStaticFiles(StaticFiles):
 
 
 # Serve the React frontend build (production)
-FRONTEND_BUILD = Path("frontend/dist")
-if FRONTEND_BUILD.exists():
+if paths.frontend_build().exists():
     app.mount(
-        "/", SPAStaticFiles(directory=str(FRONTEND_BUILD), html=True), name="frontend"
+        "/",
+        SPAStaticFiles(directory=str(paths.frontend_build()), html=True),
+        name="frontend",
     )

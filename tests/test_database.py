@@ -251,7 +251,7 @@ class TestTranscripts:
         """episodes.status must stay updatable after a transcript/summary
         references the row. DuckDB executes an UPDATE of an indexed column as
         delete+reinsert, which would violate the foreign keys, so there must
-        be no index on episodes(status) (see _initialize_schema)."""
+        be no index on episodes(status) (see Schema._baseline)."""
         pid = db.add_podcast("Pod", "http://example.com/rss")
         eid = db.add_episode(pid, "Ep 1", datetime.now(), "http://example.com/ep1.mp3")
 
@@ -769,3 +769,52 @@ class TestSessions:
         db.create_session("new", "alice", now + timedelta(days=30))
         rows = db.conn.execute("SELECT token_hash FROM sessions ORDER BY 1").fetchall()
         assert [r[0] for r in rows] == ["current", "new"]
+
+
+class TestMigrations:
+    def _versions(self, db):
+        rows = db.conn.execute("SELECT version FROM schema_migrations ORDER BY 1")
+        return [row[0] for row in rows.fetchall()]
+
+    def test_a_new_database_records_every_migration(self, db):
+        assert self._versions(db) == list(range(1, len(P3Database._MIGRATIONS) + 1))
+
+    def test_a_migration_runs_once(self, tmp_path, monkeypatch):
+        path = str(tmp_path / "m.duckdb")
+        P3Database(path).close()
+        runs = []
+
+        def add_column(self):
+            runs.append(1)
+            self.conn.execute("ALTER TABLE podcasts ADD COLUMN note VARCHAR")
+
+        monkeypatch.setattr(
+            P3Database, "_MIGRATIONS", (*P3Database._MIGRATIONS, add_column)
+        )
+        for _ in range(2):
+            db = P3Database(path)
+            db.conn.execute("SELECT note FROM podcasts")
+            assert self._versions(db)[-1] == len(P3Database._MIGRATIONS)
+            db.close()
+        assert runs == [1]
+
+    def test_a_database_from_before_numbering_is_adopted(self, tmp_path):
+        """It has the tables but no record of migrations: the baseline runs
+        over it and keeps its rows."""
+        path = str(tmp_path / "old.duckdb")
+        db = P3Database(path)
+        pid = db.add_podcast("Pod", "http://example.com/rss")
+        db.conn.execute("DROP TABLE schema_migrations")
+        db.close()
+        db = P3Database(path)
+        assert db.get_podcast_by_id(pid)["title"] == "Pod"
+        assert self._versions(db) == [1]
+        db.close()
+
+    def test_a_database_from_a_newer_version_is_refused(self, tmp_path):
+        path = str(tmp_path / "new.duckdb")
+        db = P3Database(path)
+        db.conn.execute("INSERT INTO schema_migrations (version) VALUES (999)")
+        db.close()
+        with pytest.raises(RuntimeError, match="newer version of P3"):
+            P3Database(path)

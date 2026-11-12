@@ -10,18 +10,17 @@ on more than Apple Silicon, with a desktop app in place of a browser tab.
 It stays a Python project: what ties it to the Mac is two speech libraries
 and the installer, not the language.
 
-1. **Restructure, with no change in behaviour.**
-   - One per-OS application data folder. Today every path (`data/`,
-     `config/`, `frontend/dist`) is relative to the working directory, which
-     no packaged app can rely on.
-   - One typed settings object in place of dictionaries read with defaults
-     repeated at each use; secrets in the OS keychain or the environment
-     rather than plain files in `config/`.
-   - `database.py` split by subject, with numbered migrations instead of
-     `ADD COLUMN IF NOT EXISTS` on every start. `api/tasks.py` split into
-     pipeline jobs, the daily run and content jobs.
-   - Single-user by default, with no sign-in; accounts and proxy mode become
-     an optional server mode.
+1. **Restructure, with no change in behaviour.** Done: one home folder for
+   every file (`P3_HOME`), one place that reads secrets, one default per
+   shared setting, the database layer split by subject with numbered
+   migrations, and a single-user mode with no sign-in (`P3_AUTH=single`).
+   Still to do:
+   - `api/tasks.py` (1,100 lines) split into pipeline jobs, the daily run
+     and content jobs.
+   - Secrets in the OS keychain rather than files in `config/`.
+   - Single-user as the default. Today an unset `P3_AUTH` still means proxy
+     mode; changing that silently would drop sign-in on a server that
+     relies on it, so it needs its own release note.
 2. **Transcription beyond Apple Silicon.** A backend interface with MLX behind
    it on Apple Silicon and a CPU/CUDA engine elsewhere, chosen after
    benchmarking the candidates on real episodes. Then a Docker image and

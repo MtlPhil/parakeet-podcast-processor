@@ -9,15 +9,15 @@ from urllib.parse import quote
 
 import yaml
 
+from p3 import paths
 from p3.database import P3Database
+from p3.settings import SHARED_DEFAULTS
 
 logger = logging.getLogger(__name__)
 
-# Folders that hold one subfolder of generated files per user.
-CONTENT_BASES = ("exports", "blog_posts", "linkedin_posts")
-
-_DB_PATH = "data/p3.duckdb"
-_CONFIG_PATH = "config/feeds.yaml"
+# Set by tests to use a database or settings file somewhere else.
+_DB_PATH: Optional[str] = None
+_CONFIG_PATH: Optional[str] = None
 
 # Process-wide database instance; P3Database hands each thread its own cursor.
 _db: P3Database | None = None
@@ -27,7 +27,7 @@ def get_db() -> P3Database:
     """Return the shared database instance, creating it if needed."""
     global _db
     if _db is None or _db.conn is None:
-        _db = P3Database(_DB_PATH)
+        _db = P3Database(_DB_PATH or str(paths.database()))
     return _db
 
 
@@ -54,12 +54,12 @@ def read_config(path: Path) -> dict:
 
 def load_config() -> dict:
     """Load configuration from feeds.yaml."""
-    return read_config(Path(_CONFIG_PATH))
+    return read_config(Path(_CONFIG_PATH) if _CONFIG_PATH else paths.config_file())
 
 
 def save_config(config: dict):
     """Write configuration to feeds.yaml."""
-    config_file = Path(_CONFIG_PATH)
+    config_file = Path(_CONFIG_PATH) if _CONFIG_PATH else paths.config_file()
     config_file.parent.mkdir(parents=True, exist_ok=True)
     with open(config_file, "w", encoding="utf-8") as f:
         yaml.dump(
@@ -79,7 +79,7 @@ USER_SETTING_DEFAULTS: dict[str, Any] = {
     "llm_provider": "ollama",  # LLM for the user's writing: posts, synopses
     "llm_model": None,
     "gemini_model": None,
-    "max_episodes_per_feed": 10,
+    "max_episodes_per_feed": SHARED_DEFAULTS["max_episodes_per_feed"],
     "daily_run_time": "04:00",  # "HH:MM"; set to "" to turn the daily run off
     "daily_run_linkedin": False,
     "daily_run_export": False,
@@ -136,18 +136,12 @@ def attachment(filename: str) -> dict[str, str]:
     }
 
 
-def content_dir(base: str, username: Optional[str]) -> Path:
-    """Folder for a user's generated files (posts, exports): ``base/<user>``.
-    Without a username, ``base`` itself (CLI output)."""
-    return Path(base) / username if username else Path(base)
-
-
 def delete_content(username: str):
     """Delete a user's generated files (posts, exports)."""
-    for base in CONTENT_BASES:
-        folder = content_dir(base, username)
+    for base in paths.CONTENT_BASES:
+        folder = paths.content_dir(base, username)
         # A safeguard for a recursive delete: only ever a direct subfolder.
-        if folder.parent != Path(base) or not folder.is_dir():
+        if folder.parent != paths.content_dir(base) or not folder.is_dir():
             continue
         try:
             shutil.rmtree(folder)

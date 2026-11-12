@@ -7,10 +7,9 @@ from html import escape
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-logger = logging.getLogger(__name__)
+from . import paths
 
-# Default export directory (created by `p3 init`)
-DEFAULT_EXPORT_DIR = Path("exports")
+logger = logging.getLogger(__name__)
 
 
 def shown_language(language: Optional[str], episode_language: Optional[str]) -> str:
@@ -72,7 +71,9 @@ def _segments_to_prose(
 class DigestExporter:
     def __init__(self, db, export_dir: Optional[str] = None):
         self.db = db
-        self.export_dir = Path(export_dir) if export_dir else DEFAULT_EXPORT_DIR
+        self.export_dir = (
+            Path(export_dir) if export_dir else paths.content_dir("exports")
+        )
         self.export_dir.mkdir(parents=True, exist_ok=True)
 
     def get_export_path(self, filename: str) -> Path:

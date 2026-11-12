@@ -15,29 +15,22 @@ import smtplib
 import socket
 import subprocess
 import threading
-from pathlib import Path
 from typing import Optional
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from p3 import paths, secrets
 from p3.api.auth import current_user, require_admin
 from p3.api.deps import get_db, load_config, user_settings
-from p3.llm import DEFAULT_OLLAMA_URL, GEMINI_API_KEY_FILE, OPENAI_API_KEY_FILE
-from p3.mailer import SMTP_PASSWORD_FILE, send_email
+from p3.mailer import send_email
+from p3.settings import setting
 
 router = APIRouter(prefix="/api/setup", tags=["setup"])
 
-SERVER_ENV = Path("config/server.env")
 DEFAULT_PORT = 8000
 LOCAL_HOST, LAN_HOST = "127.0.0.1", "0.0.0.0"
-
-_SECRET_FILES = {
-    "gemini_api_key": GEMINI_API_KEY_FILE,
-    "openai_api_key": OPENAI_API_KEY_FILE,
-    "smtp_password": SMTP_PASSWORD_FILE,
-}
 
 
 def _done_key(username: str) -> str:
@@ -95,10 +88,7 @@ class SecretsIn(BaseModel):
 
 
 def _secrets_status() -> dict:
-    return {
-        name: path.exists() and bool(path.read_text(encoding="utf-8").strip())
-        for name, path in _SECRET_FILES.items()
-    }
+    return {name: secrets.is_saved(name) for name in secrets.ENV_VARS}
 
 
 @router.get("/secrets", response_model=SecretsOut)
@@ -109,18 +99,8 @@ def get_secrets(_admin: dict = Depends(require_admin)):
 @router.put("/secrets", response_model=SecretsOut)
 def set_secrets(body: SecretsIn, _admin: dict = Depends(require_admin)):
     for name, value in body.model_dump().items():
-        if value is None:
-            continue
-        path = _SECRET_FILES[name]
-        value = value.strip()
-        if not value:
-            path.unlink(missing_ok=True)
-            continue
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(value + "\n")
-        os.chmod(path, 0o600)
+        if value is not None:
+            secrets.write(name, value)
     return _secrets_status()
 
 
@@ -136,9 +116,7 @@ class OllamaOut(BaseModel):
 @router.get("/ollama", response_model=OllamaOut)
 def check_ollama(_admin: dict = Depends(require_admin)):
     """Is Ollama running, and which models does it have?"""
-    url = (
-        load_config().get("settings", {}).get("ollama_base_url") or DEFAULT_OLLAMA_URL
-    ).rstrip("/")
+    url = (setting(load_config()["settings"], "ollama_base_url")).rstrip("/")
     try:
         resp = httpx.get(f"{url}/api/tags", timeout=3.0)
         resp.raise_for_status()
@@ -216,8 +194,8 @@ class NetworkIn(BaseModel):
 
 def read_server_env() -> dict:
     values = {}
-    if SERVER_ENV.exists():
-        for line in SERVER_ENV.read_text(encoding="utf-8").splitlines():
+    if paths.server_env().exists():
+        for line in paths.server_env().read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 key, value = line.split("=", 1)
@@ -226,10 +204,10 @@ def read_server_env() -> dict:
 
 
 def write_server_env(values: dict):
-    SERVER_ENV.parent.mkdir(parents=True, exist_ok=True)
+    paths.config_dir().mkdir(parents=True, exist_ok=True)
     lines = ["# Read by bin/p3-serve. Changed from P3's Settings or setup wizard."]
     lines += [f"{key}={value}" for key, value in values.items()]
-    SERVER_ENV.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    paths.server_env().write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _port(values: dict) -> int:

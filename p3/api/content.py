@@ -4,7 +4,8 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from p3.api.deps import content_dir, get_db
+from p3.api.deps import get_db
+from p3.paths import content_dir
 from p3.writer import FRENCH_HEADING
 
 _ENGLISH_HEADING = "## English"
@@ -17,7 +18,7 @@ def post_files(base: str, username: str) -> List[Path]:
     gets the files from before users existed, kept at the top of ``base``."""
     folders = [content_dir(base, username)]
     if username == get_db().get_owner():
-        folders.append(Path(base))
+        folders.append(content_dir(base))
     paths = [p for folder in folders if folder.exists() for p in folder.glob("*.md")]
     return sorted(paths, key=lambda p: p.name, reverse=True)
 

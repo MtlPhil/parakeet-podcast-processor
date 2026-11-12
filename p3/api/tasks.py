@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Optional
 
-from p3.api.deps import content_dir, get_db, load_config, user_settings
+from p3.api.deps import get_db, load_config, user_settings
 from p3.api.job_queue import job_runner
 from p3.database import INTERRUPTED_ERROR
 from p3.llm import (
@@ -21,6 +21,8 @@ from p3.llm import (
     release_ollama_models,
     resolve_provider_and_model,
 )
+from p3.paths import content_dir
+from p3.settings import setting
 
 logger = logging.getLogger(__name__)
 
@@ -41,18 +43,18 @@ def _make_transcriber(db, settings: dict):
 
     return AudioTranscriber(
         db=db,
-        whisper_model=settings.get("whisper_model", DEFAULT_WHISPER_MODEL),
-        use_parakeet=settings.get("parakeet_enabled", False),
-        parakeet_model=settings.get("parakeet_model", DEFAULT_PARAKEET_MODEL),
-        parakeet_languages=settings.get("parakeet_languages"),
+        whisper_model=setting(settings, "whisper_model"),
+        use_parakeet=setting(settings, "parakeet_enabled"),
+        parakeet_model=setting(settings, "parakeet_model"),
+        parakeet_languages=setting(settings, "parakeet_languages"),
     )
 
 
 def _release_ollama(settings: dict) -> None:
     """Free Ollama's memory before transcription models load, unless an admin
     turned it off."""
-    if settings.get("release_ollama_before_transcription", True):
-        release_ollama_models(settings.get("ollama_base_url", DEFAULT_OLLAMA_URL))
+    if setting(settings, "release_ollama_before_transcription"):
+        release_ollama_models(setting(settings, "ollama_base_url"))
 
 
 def _make_cleaner(
@@ -65,7 +67,7 @@ def _make_cleaner(
         db=db,
         llm_provider=llm_provider,
         llm_model=llm_model,
-        ollama_base_url=settings.get("ollama_base_url", DEFAULT_OLLAMA_URL),
+        ollama_base_url=setting(settings, "ollama_base_url"),
     )
 
 
@@ -85,7 +87,7 @@ def _make_writer(
         db=db,
         llm_provider=llm_provider,
         llm_model=llm_model,
-        ollama_base_url=settings.get("ollama_base_url", DEFAULT_OLLAMA_URL),
+        ollama_base_url=setting(settings, "ollama_base_url"),
         tone=settings.get("tone") or "",
         language=settings.get("language") or "en",
         **kwargs,
@@ -144,7 +146,7 @@ def task_fetch(
         from p3.downloader import PodcastDownloader
 
         settings = user_settings(username)
-        max_eps = max_episodes or settings.get("max_episodes_per_feed", 10)
+        max_eps = max_episodes or setting(settings, "max_episodes_per_feed")
 
         podcast = db.get_podcast_by_id(podcast_id)
         if not podcast:
@@ -161,7 +163,7 @@ def task_fetch(
         downloader = PodcastDownloader(
             db=db,
             max_episodes=max_eps,
-            audio_format=settings.get("audio_format", "wav"),
+            audio_format=setting(settings, "audio_format"),
             progress_callback=on_progress,
             username=username,
         )
@@ -215,7 +217,7 @@ def task_import_playlist(
 
         downloader = PodcastDownloader(
             db=db,
-            audio_format=settings.get("audio_format", "wav"),
+            audio_format=setting(settings, "audio_format"),
             progress_callback=on_progress,
             username=username,
         )
@@ -351,8 +353,8 @@ def task_import_feeds(job_id: str, feeds: list[dict]):
         settings = _get_settings()
         downloader = PodcastDownloader(
             db=db,
-            max_episodes=settings.get("max_episodes_per_feed", 10),
-            audio_format=settings.get("audio_format", "wav"),
+            max_episodes=setting(settings, "max_episodes_per_feed"),
+            audio_format=setting(settings, "audio_format"),
             username=db.get_owner(),
         )
         results = downloader.fetch_all_feeds(feeds)
@@ -657,7 +659,7 @@ def task_refresh_digests(job_id: str, stop_at: Optional[str] = None):
         db.update_job(job_id, status="running", message="Finding show notes...")
         settings = _get_settings()
         downloader = PodcastDownloader(
-            db=db, audio_format=settings.get("audio_format", "wav")
+            db=db, audio_format=setting(settings, "audio_format")
         )
         notes = downloader.fill_missing_show_notes()
         logger.info("Found show notes for %d episode(s)", notes)

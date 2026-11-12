@@ -13,6 +13,7 @@ from rich.logging import RichHandler
 from rich.progress import track
 from rich.table import Table
 
+from . import paths
 from .api.deps import read_config
 from .cleaner import DigestError, TranscriptCleaner
 from .database import P3Database
@@ -28,6 +29,7 @@ from .llm import (
     release_ollama_models,
     resolve_provider_and_model,
 )
+from .settings import setting
 from .transcriber import (
     DEFAULT_PARAKEET_MODEL,
     DEFAULT_WHISPER_MODEL,
@@ -64,7 +66,7 @@ def _setup_logging(verbosity: int):
             logging.getLogger(name).setLevel(logging.WARNING)
 
 
-def load_config(config_path: str = "config/feeds.yaml"):
+def load_config(config_path: str):
     """Load configuration from YAML file."""
     config_file = Path(config_path)
 
@@ -92,8 +94,12 @@ def _check_prerequisite(name: str, cmd: list) -> bool:
 
 
 @click.group()
-@click.option("--config", default="config/feeds.yaml", help="Configuration file path")
-@click.option("--db", default="data/p3.duckdb", help="Database file path")
+@click.option(
+    "--config",
+    default=None,
+    help="Configuration file path [default: config/feeds.yaml]",
+)
+@click.option("--db", default=None, help="Database file path [default: data/p3.duckdb]")
 @click.option("-v", "--verbose", count=True, help="Enable debug logging")
 @click.option(
     "-q", "--quiet", is_flag=True, help="Suppress all output except warnings/errors"
@@ -111,9 +117,9 @@ def main(ctx, config, db, verbose, quiet):
 
     _setup_logging(verbosity)
 
-    ctx.obj["config_path"] = config
-    ctx.obj["db_path"] = db
-    ctx.obj["db"] = P3Database(db)
+    ctx.obj["config_path"] = config or str(paths.config_file())
+    ctx.obj["db_path"] = db or str(paths.database())
+    ctx.obj["db"] = P3Database(ctx.obj["db_path"])
 
 
 @main.command()
@@ -134,7 +140,7 @@ def fetch(ctx, max_episodes, dry_run):
     db = ctx.obj["db"]
 
     settings = config.get("settings", {})
-    max_eps = max_episodes or settings.get("max_episodes_per_feed", 10)
+    max_eps = max_episodes or setting(settings, "max_episodes_per_feed")
 
     new_feeds = new_config_feeds(db, config.get("feeds") or [])
     library = db.get_all_podcasts()
@@ -146,7 +152,7 @@ def fetch(ctx, max_episodes, dry_run):
         return PodcastDownloader(
             db=db,
             max_episodes=max_eps,
-            audio_format=settings.get("audio_format", "wav"),
+            audio_format=setting(settings, "audio_format"),
             username=username,
         )
 
@@ -220,17 +226,17 @@ def transcribe(ctx, model, episode_id):
     db = ctx.obj["db"]
 
     settings = config.get("settings", {})
-    whisper_model = model or settings.get("whisper_model", DEFAULT_WHISPER_MODEL)
-    use_parakeet = settings.get("parakeet_enabled", False)
+    whisper_model = model or setting(settings, "whisper_model")
+    use_parakeet = setting(settings, "parakeet_enabled")
 
-    if settings.get("release_ollama_before_transcription", True):
-        release_ollama_models(settings.get("ollama_base_url", DEFAULT_OLLAMA_URL))
+    if setting(settings, "release_ollama_before_transcription"):
+        release_ollama_models(setting(settings, "ollama_base_url"))
     transcriber = AudioTranscriber(
         db=db,
         whisper_model=whisper_model,
         use_parakeet=use_parakeet,
-        parakeet_model=settings.get("parakeet_model", DEFAULT_PARAKEET_MODEL),
-        parakeet_languages=settings.get("parakeet_languages"),
+        parakeet_model=setting(settings, "parakeet_model"),
+        parakeet_languages=setting(settings, "parakeet_languages"),
     )
 
     if episode_id:
@@ -277,7 +283,7 @@ def digest(ctx, provider, model, episode_id):
         db=db,
         llm_provider=llm_provider,
         llm_model=llm_model,
-        ollama_base_url=settings.get("ollama_base_url", DEFAULT_OLLAMA_URL),
+        ollama_base_url=setting(settings, "ollama_base_url"),
     )
 
     if episode_id:
@@ -398,13 +404,12 @@ def _write_transcript_file(
     type=click.Choice(["txt", "markdown"]),
     help="Export format",
 )
-@click.option(
-    "--output-dir", default="exports", help="Output directory for transcripts"
-)
+@click.option("--output-dir", default=None, help="Output directory [default: exports]")
 @click.pass_context
 def export_transcript(ctx, date, fmt, output_dir):
     """Export transcript(s) for one episode, or for every episode on a date."""
     db = ctx.obj["db"]
+    output_dir = output_dir or str(paths.content_dir("exports"))
 
     if date:
         try:
@@ -525,7 +530,7 @@ def write(ctx, topic, date, target_grade, dry_run):
         llm_provider=llm_provider,
         llm_model=llm_model,
         target_grade=target_grade,
-        ollama_base_url=settings.get("ollama_base_url", DEFAULT_OLLAMA_URL),
+        ollama_base_url=setting(settings, "ollama_base_url"),
     )
 
     console.print(f"[blue]Generating blog post: '{topic}'[/blue]")
@@ -601,14 +606,12 @@ def init(ctx):
         console.print()
 
     # Create directories
-    dirs = ["data", "config", "data/audio", "exports", "blog_posts", "linkedin_posts"]
-    for dir_name in dirs:
-        Path(dir_name).mkdir(parents=True, exist_ok=True)
-        console.print(f"  Created directory: {dir_name}")
+    paths.ensure()
+    console.print(f"  Created the folders under {paths.home().resolve()}")
 
     # Copy example config if it doesn't exist
     config_path = Path(ctx.obj["config_path"])
-    example_path = Path("config/feeds.yaml.example")
+    example_path = paths.config_dir() / "feeds.yaml.example"
 
     if not config_path.exists() and example_path.exists():
         config_path.parent.mkdir(parents=True, exist_ok=True)

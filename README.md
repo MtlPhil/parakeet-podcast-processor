@@ -365,13 +365,18 @@ the working directory.
 
 ### Users and sign-in
 
-The `P3_AUTH` environment variable picks one of two modes.
+The `P3_AUTH` environment variable picks one of three modes.
 
 **`P3_AUTH=local`: P³'s own accounts.** The mode the Mac installer sets up,
 for a machine on a home network. The setup wizard creates the first account,
 an admin; admins create the others on the Admin page. Passwords are stored
 as scrypt hashes and a sign-in lasts 30 days. The `Remote-User` header and
 `P3_DEV_USER` are ignored in this mode.
+
+**`P3_AUTH=single`: one person, no sign-in.** For P³ running on your own
+computer for you alone. Every request acts as the library's owner (created
+as `me` on first use, or the existing first admin). Nothing is asked, so only
+requests from the same computer are answered; anything else gets a 403.
 
 **Proxy mode (the default): Authelia.** P³ handles no passwords. It expects
 a reverse proxy in front of it that signs users in with
@@ -384,7 +389,7 @@ without that header are refused.
   proxy overwrite any copy a client sends; Traefik's `authResponseHeaders`
   does.
 
-In both modes:
+In every mode:
 
 - **Roles.** The first user is an admin and takes over everything already in
   the library. Admins see the shared settings and the Admin page, where they
@@ -428,7 +433,8 @@ on a server others can reach.
 
 | Variable | Effect |
 |---|---|
-| `P3_AUTH` | `local` for P³'s own accounts; anything else, or unset, is proxy mode |
+| `P3_HOME` | The folder holding `data/`, `config/` and the generated files. Unset, it is the folder P³ is started from |
+| `P3_AUTH` | `local` for P³'s own accounts, `single` for one person with no sign-in; anything else, or unset, is proxy mode |
 | `P3_DEV_USER` | Proxy mode only: the user to act as when no `Remote-User` header arrives |
 | `P3_LOG_LEVEL` | Log level of the web server's own messages (default `INFO`) |
 | `OPENAI_API_KEY`, `GEMINI_API_KEY`, `SMTP_PASSWORD` | Secrets; each takes precedence over its file in `config/` |
@@ -512,10 +518,15 @@ p3/
 ├── exporter.py       Markdown / JSON / HTML formatting
 ├── mailer.py         The daily run's emailed report (SMTP)
 ├── llm.py            Ollama / OpenAI / Gemini chat client and provider resolution
-├── database.py       DuckDB storage layer
+├── paths.py          Where every file lives: under P3_HOME, or the current folder
+├── secrets.py        API keys and the mail password: environment, else a file
+├── settings.py       The shared settings and their defaults
+├── database.py       The storage layer, assembled from db/
+├── db/               DuckDB storage by subject: connection, schema (numbered
+│                     migrations), library, digests, jobs, users, search
 └── api/
     ├── main.py       FastAPI app, lifespan, cross-site write check, static frontend
-    ├── auth.py       Who is making a request: local accounts or the proxy's header
+    ├── auth.py       Who is making a request: an account, the proxy's header, or the owner
     ├── deps.py       Shared database instance, config I/O, per-user settings
     ├── job_queue.py  Single-threaded serial job runner with a priority lane
     ├── tasks.py      Job wrappers around the pipeline modules; the daily run's steps
@@ -554,10 +565,11 @@ DuckDB file at `data/p3.duckdb`:
   podcast, who has which episode, and which episodes a user deleted
   (remembered by URL, so a deleted episode's data can go)
 - `app_state`: small key-value store (daily run dates, imported config feeds)
+- `schema_migrations`: which numbered migrations this database has had
 
-Rows are returned as dicts keyed by column name. Schema changes are applied
-with idempotent `CREATE … IF NOT EXISTS` / `ADD COLUMN IF NOT EXISTS`
-statements on startup. Writes that belong together (a transcript with its
+Rows are returned as dicts keyed by column name. Schema changes are numbered
+migrations (`p3/db/schema.py`): each runs once per database, in order, when
+it is opened. A database last opened by a newer P³ is refused. Writes that belong together (a transcript with its
 episode's new status, a replaced summary) run in one transaction. Deleting a
 podcast with its episodes does not: DuckDB refuses to delete a row and the
 rows referencing it in the same transaction.

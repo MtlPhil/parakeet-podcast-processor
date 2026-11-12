@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from . import paths
 from .database import P3Database
 from .exporter import localized
 from .llm import DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_URL, LLMClient
@@ -426,10 +427,10 @@ Style Guidelines:
     # ------------------------------------------------------------------
 
     def save_blog_post(
-        self, blog_result: Dict[str, Any], output_dir: str = "blog_posts"
+        self, blog_result: Dict[str, Any], output_dir: Optional[str] = None
     ) -> str:
         """Save generated blog post to file."""
-        output_path = Path(output_dir)
+        output_path = Path(output_dir or paths.content_dir("blog_posts"))
         output_path.mkdir(parents=True, exist_ok=True)
 
         date_str = datetime.now().strftime("%Y-%m-%d")
@@ -547,10 +548,10 @@ model: {blog_result['metadata']['model_used']}
         }
 
     def save_linkedin_post(
-        self, result: Dict[str, Any], output_dir: str = "linkedin_posts"
+        self, result: Dict[str, Any], output_dir: Optional[str] = None
     ) -> str:
         """Save a generated LinkedIn post (both languages) to file."""
-        output_path = Path(output_dir)
+        output_path = Path(output_dir or paths.content_dir("linkedin_posts"))
         output_path.mkdir(parents=True, exist_ok=True)
 
         date_str = datetime.now().strftime("%Y-%m-%d")

@@ -28,9 +28,7 @@ def env(tmp_path, monkeypatch):
     from p3.api.routers import auth as auth_routes
 
     monkeypatch.setattr(auth_routes, "_FAILED_LOGIN_DELAY", 0)
-    secrets = {name: tmp_path / f"{name}.txt" for name in setup_routes._SECRET_FILES}
-    monkeypatch.setattr(setup_routes, "_SECRET_FILES", secrets)
-    monkeypatch.setattr(setup_routes, "SERVER_ENV", tmp_path / "server.env")
+    monkeypatch.setenv("P3_HOME", str(tmp_path))
     yield tmp_path
     deps.close_db()
 
@@ -287,7 +285,7 @@ class TestWizardEndpoints:
             "openai_api_key": False,
             "smtp_password": False,
         }
-        path = env / "gemini_api_key.txt"
+        path = env / "config" / "gemini_api_key.txt"
         assert path.read_text().strip() == "abc123"
         assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
         assert "abc123" not in admin.get("/api/setup/secrets").text
@@ -304,7 +302,7 @@ class TestWizardEndpoints:
         assert admin.put("/api/setup/network", json={"lan": True}).status_code == 409
         resp = admin.put("/api/setup/network", json={"lan": True, "force": True})
         assert resp.json()["lan"] is True
-        assert "P3_HOST=0.0.0.0" in (env / "server.env").read_text()
+        assert "P3_HOST=0.0.0.0" in (env / "config" / "server.env").read_text()
 
     def test_wizard_admin_endpoints_need_an_admin(self, env):
         admin = _client()
@@ -335,3 +333,35 @@ class TestEmailProblems:
         )
         assert "smtp.example.com on port 587" in problem(ConnectionRefusedError(), s)
         assert problem(ValueError("odd"), s) == "Could not send: odd"
+
+
+class TestSingleUserMode:
+    """P3_AUTH=single: one person on this computer, nothing to sign in to."""
+
+    @pytest.fixture
+    def single(self, env, monkeypatch):
+        monkeypatch.setenv("P3_AUTH", "single")
+        return TestClient(app, client=("127.0.0.1", 50000))
+
+    def test_the_first_request_creates_the_owner(self, single):
+        assert single.get("/api/auth/status").json()["mode"] == "single"
+        me = single.get("/api/me").json()
+        assert (me["username"], me["role"]) == ("me", "admin")
+        assert single.get("/api/settings").status_code == 200  # admins only
+
+    def test_an_existing_library_keeps_its_owner(self, single):
+        deps.get_db().ensure_user("alex")
+        assert single.get("/api/me").json()["username"] == "alex"
+        assert deps.get_db().count_users() == 1
+
+    def test_another_computer_is_refused(self, single):
+        remote = TestClient(app, client=("192.168.1.20", 50000))
+        resp = remote.get("/api/me", headers={"Remote-User": "admin"})
+        assert resp.status_code == 403
+        assert remote.get("/api/podcasts").status_code == 403
+
+    def test_accounts_cannot_be_created(self, single):
+        resp = single.post(
+            "/api/admin/users", json={"username": "bob", "password": "long enough"}
+        )
+        assert resp.status_code == 400
