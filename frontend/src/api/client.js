@@ -2,26 +2,58 @@ const BASE = '/api';
 
 // Reads the server-chosen filename from a Content-Disposition header. Blob
 // URLs ignore that header, so it is applied via the <a download> attribute.
+// The real name comes percent-encoded in filename*; filename is its ASCII
+// approximation.
 function filenameFromResponse(res, fallback) {
-  const match = /filename="?([^";]+)"?/.exec(res.headers.get('Content-Disposition') || '');
-  return match ? match[1] : fallback;
+  const header = res.headers.get('Content-Disposition') || '';
+  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(header);
+  if (encoded) {
+    try {
+      return decodeURIComponent(encoded[1]);
+    } catch {
+      // Malformed: fall through to the plain name.
+    }
+  }
+  const plain = /filename="?([^";]+)"?/.exec(header);
+  return plain ? plain[1] : fallback;
+}
+
+// The error for a failed response, carrying its HTTP status. FastAPI sends
+// `detail` as a string, or for a rejected field as a list of problems.
+async function errorFrom(res) {
+  const { detail } = await res.json().catch(() => ({}));
+  const message = Array.isArray(detail)
+    ? detail.map((d) => [d.loc?.at(-1), d.msg].filter(Boolean).join(': ')).join('; ')
+    : detail;
+  const error = new Error(message || `API error ${res.status}`);
+  error.status = res.status;
+  return error;
 }
 
 async function request(path, options = {}) {
   const res = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...options.headers },
     ...options,
+    headers: { 'Content-Type': 'application/json', ...options.headers },
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.detail || `API error ${res.status}`);
-  }
+  if (!res.ok) throw await errorFrom(res);
   // Handle 204 No Content
   if (res.status === 204) return null;
   return res.json();
 }
 
-// The signed-in user (from the reverse proxy's Remote-User header)
+// Saves a file the API returns, under the name the server gives it.
+async function download(path, options, fallback) {
+  const res = await fetch(`${BASE}${path}`, options);
+  if (!res.ok) throw await errorFrom(res);
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filenameFromResponse(res, fallback);
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// The signed-in user (a local account, or the reverse proxy's Remote-User)
 export const getMe = () => request('/me');
 export const deleteMyAccount = () => request('/me', { method: 'DELETE' });
 export const updateMySettings = (settings) =>
@@ -95,38 +127,17 @@ export const processLibrary = (step) =>
 export const getTranscript = (episodeId) =>
   request(`/episodes/${episodeId}/transcript`);
 
-// Downloads an episode transcript as Markdown. Uses fetch directly because
-// the response is a file, not JSON.
-export const downloadTranscript = async (episodeId) => {
-  const res = await fetch(`${BASE}/episodes/${episodeId}/transcript/export`);
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.detail || `API error ${res.status}`);
-  }
-  const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filenameFromResponse(res, `transcript_${episodeId}.md`);
-  a.click();
-  URL.revokeObjectURL(url);
-};
+// An episode's transcript as Markdown.
+export const downloadTranscript = (episodeId) =>
+  download(`/episodes/${episodeId}/transcript/export`, {}, `transcript_${episodeId}.md`);
 
-// Downloads a zip with one Markdown transcript per episode of a podcast.
-export const exportPodcastTranscripts = async (podcastId) => {
-  const res = await fetch(`${BASE}/podcasts/${podcastId}/transcripts/export`, { method: 'POST' });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.detail || `API error ${res.status}`);
-  }
-  const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filenameFromResponse(res, `podcast_${podcastId}_transcripts.zip`);
-  a.click();
-  URL.revokeObjectURL(url);
-};
+// A zip with one Markdown transcript per episode of a podcast.
+export const exportPodcastTranscripts = (podcastId) =>
+  download(
+    `/podcasts/${podcastId}/transcripts/export`,
+    { method: 'POST' },
+    `podcast_${podcastId}_transcripts.zip`
+  );
 
 // Summaries
 export const getSummary = (episodeId) =>
@@ -150,13 +161,13 @@ export const generateExport = (date, formats = 'markdown,json') =>
 
 // Blogs
 export const getBlogs = () => request('/blogs');
-export const getBlog = (slug) => request(`/blogs/${slug}`);
+export const getBlog = (name) => request(`/blogs/${encodeURIComponent(name)}`);
 export const createBlog = (data) =>
   request('/blogs', { method: 'POST', body: JSON.stringify(data) });
 
 // LinkedIn posts
 export const getLinkedInPosts = () => request('/linkedin');
-export const getLinkedInPost = (slug) => request(`/linkedin/${slug}`);
+export const getLinkedInPost = (name) => request(`/linkedin/${encodeURIComponent(name)}`);
 export const createLinkedInPost = (data) =>
   request('/linkedin', { method: 'POST', body: JSON.stringify(data) });
 

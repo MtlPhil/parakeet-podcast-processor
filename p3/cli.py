@@ -8,13 +8,13 @@ from datetime import datetime
 from pathlib import Path
 
 import click
-import yaml
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.progress import track
 from rich.table import Table
 
-from .cleaner import TranscriptCleaner
+from .api.deps import read_config
+from .cleaner import DigestError, TranscriptCleaner
 from .database import P3Database
 from .downloader import (
     PodcastDownloader,
@@ -32,6 +32,7 @@ from .transcriber import (
     DEFAULT_PARAKEET_MODEL,
     DEFAULT_WHISPER_MODEL,
     AudioTranscriber,
+    TranscriptionError,
 )
 from .writer import BlogWriter
 from .youtube import YouTubeError
@@ -75,8 +76,7 @@ def load_config(config_path: str = "config/feeds.yaml"):
         sys.exit(1)
 
     try:
-        with open(config_file, "r") as f:
-            return yaml.safe_load(f)
+        return read_config(config_file)
     except Exception as e:
         console.print(f"[red]Error loading config: {e}[/red]")
         sys.exit(1)
@@ -234,26 +234,23 @@ def transcribe(ctx, model, episode_id):
     )
 
     if episode_id:
-        console.print(f"[blue]Transcribing episode {episode_id}...[/blue]")
-        success = transcriber.transcribe_episode(episode_id)
-        if success:
-            console.print(f"[green]Episode {episode_id} transcribed[/green]")
-        else:
-            console.print(f"[red]Failed to transcribe episode {episode_id}[/red]")
+        episodes = [db.get_episode_by_id(episode_id) or {"id": episode_id}]
     else:
-        console.print("[blue]Transcribing all pending episodes...[/blue]")
         episodes = db.get_episodes_by_status("downloaded")
+    if not episodes:
+        console.print("[yellow]No episodes to transcribe[/yellow]")
+        return
 
-        if not episodes:
-            console.print("[yellow]No episodes to transcribe[/yellow]")
-            return
+    transcribed = 0
+    for episode in track(episodes, description="Transcribing..."):
+        try:
+            transcriber.transcribe_episode(episode["id"])
+            transcribed += 1
+        except TranscriptionError as e:
+            name = episode.get("title") or f"episode {episode['id']}"
+            console.print(f"[red]{name}: {e}[/red]")
 
-        transcribed = 0
-        for episode in track(episodes, description="Transcribing..."):
-            if transcriber.transcribe_episode(episode["id"]):
-                transcribed += 1
-
-        console.print(f"[green]Transcribed {transcribed} episodes[/green]")
+    console.print(f"[green]Transcribed {transcribed} of {len(episodes)}[/green]")
 
     transcriber.unload_models()
 
@@ -284,16 +281,23 @@ def digest(ctx, provider, model, episode_id):
     )
 
     if episode_id:
-        console.print(f"[blue]Processing episode {episode_id}...[/blue]")
-        result = cleaner.generate_summary(episode_id)
-        if result:
-            console.print(f"[green]Episode {episode_id} processed[/green]")
-        else:
-            console.print(f"[red]Failed to process episode {episode_id}[/red]")
+        episodes = [db.get_episode_by_id(episode_id) or {"id": episode_id}]
     else:
-        console.print("[blue]Processing all transcribed episodes...[/blue]")
-        processed = cleaner.process_all_transcribed()
-        console.print(f"[green]Processed {processed} episodes[/green]")
+        episodes = db.get_episodes_by_status("transcribed")
+    if not episodes:
+        console.print("[yellow]No episodes to digest[/yellow]")
+        return
+
+    processed = 0
+    for episode in track(episodes, description="Summarizing..."):
+        try:
+            cleaner.generate_summary(episode["id"])
+            processed += 1
+        except DigestError as e:
+            name = episode.get("title") or f"episode {episode['id']}"
+            console.print(f"[red]{name}: {e}[/red]")
+
+    console.print(f"[green]Processed {processed} of {len(episodes)}[/green]")
 
 
 @main.command()
@@ -359,7 +363,7 @@ def export(ctx, date, format, output):
             console.print(f"[red]Unsupported format: {fmt}[/red]")
             continue
 
-        with open(filename, "w") as f:
+        with open(filename, "w", encoding="utf-8") as f:
             f.write(content)
 
         console.print(f"[green]Exported {fmt}: {filename}[/green]")
@@ -377,7 +381,7 @@ def _write_transcript_file(
         filename = f"transcript_{episode_id}.txt"
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     file_path = Path(output_dir) / filename
-    file_path.write_text(content)
+    file_path.write_text(content, encoding="utf-8")
     return file_path
 
 

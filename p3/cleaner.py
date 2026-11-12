@@ -1,4 +1,8 @@
-"""LLM-based transcript cleaning and summarization."""
+"""LLM-based summaries of transcripts: digest, synopsis and translation.
+
+A digest is stored complete or not at all: a step that fails raises
+DigestError and leaves the episode as it was, so it can be retried.
+"""
 
 import html
 import json
@@ -16,23 +20,6 @@ logger = logging.getLogger(__name__)
 # characters per token this is ~25k tokens, which fits most context windows
 # with room left for the prompt.
 _MAX_TRANSCRIPT_CHARS = 100_000
-
-_CLEAN_PROMPT = """Clean this podcast transcript by:
-1. Removing filler words (um, uh, like, you know)
-2. Fixing grammar and punctuation
-3. Preserving technical terms and proper nouns exactly
-4. Maintaining the speaker's voice and meaning
-5. Breaking into clear paragraphs
-6. Removing advertisements and sponsor reads — cut ad content entirely
-   rather than summarizing it. This includes lines like "this episode is
-   brought to you by...", promo codes, discount offers, and "visit
-   [url]/[podcast name]" calls to action. Only remove clearly promotional
-   material; leave the hosts' actual discussion untouched.
-
-Return only the cleaned text, no additional commentary.
-
-Transcript:
-"""
 
 # Summaries read the transcript as transcribed (fillers removed by regex,
 # no LLM rewrite: rewriting cost two thirds of each episode's LLM time and
@@ -236,201 +223,17 @@ def _split_into_sections(text: str, num_sections: int) -> List[str]:
     return [s.strip() for s in sections if s.strip()]
 
 
-_SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+")
-
-# Target chunk size for LLM-based transcript cleaning (see clean_transcript).
-_CLEAN_CHUNK_CHARS = 6000
-
-# Preamble/epilogue lines some models add around a cleaned chunk despite
-# being told to return only the text (e.g. "Here's the cleaned transcript:").
-_LLM_META_LINE_RE = re.compile(
-    r"^(here('s| is) the cleaned( podcast)? transcript:?|note: .*rephrasing.*)$",
-    re.IGNORECASE,
-)
-
-
-def _split_into_chunks(text: str, max_chars: int = _CLEAN_CHUNK_CHARS) -> List[str]:
-    """Split text into chunks of at most ~max_chars, breaking only at
-    sentence boundaries.
-
-    A chunk that starts or ends mid-sentence invites the LLM to "repair"
-    the fragment by dropping it or inventing a transition, so whole
-    sentences are packed into each chunk instead. A single sentence longer
-    than max_chars is kept whole rather than cut.
-    """
-    text = text.strip()
-    if not text:
-        return []
-
-    sentences = _SENTENCE_BOUNDARY.split(text)
-
-    chunks = []
-    current = ""
-    for sentence in sentences:
-        sentence = sentence.strip()
-        if not sentence:
-            continue
-        candidate = f"{current} {sentence}".strip() if current else sentence
-        if len(candidate) > max_chars and current:
-            chunks.append(current)
-            current = sentence
-        else:
-            current = candidate
-    if current:
-        chunks.append(current)
-    return chunks
-
-
-# Heuristic: a silence at least this long between consecutive segments is
-# treated as a likely editing seam (an ad insertion, a music sting, a segment
-# change) rather than a pause within continuous speech.
-_TOPIC_GAP_SECONDS = 0.5
-
-# Gap-delimited chunks shorter than this are merged into a neighbor so a
-# one-line aside does not become its own LLM request.
-_MIN_CHUNK_CHARS = 500
-
-
-def _split_segments_by_gaps(
-    segments: List[Dict[str, Any]],
-    min_gap: float = _TOPIC_GAP_SECONDS,
-    max_chars: int = _CLEAN_CHUNK_CHARS,
-    min_chars: int = _MIN_CHUNK_CHARS,
-    pack_chars: int = _CLEAN_CHUNK_CHARS,
-) -> List[str]:
-    """Split transcript segments into chunks at natural conversation
-    breaks, using the gap between one segment's end and the next's start.
-
-    Ads and segment transitions are spliced in at discrete edit points,
-    which show up as pauses outside normal conversational rhythm. Splitting
-    there tends to keep each chunk to roughly one topic, so an ad block
-    usually reaches the LLM as a self-contained unit it can drop entirely.
-
-    Any chunk still over max_chars (a long uninterrupted stretch with no
-    qualifying gap) is further split on sentence boundaries; any chunk
-    under min_chars is merged into a neighbor so a one-line aside doesn't
-    become its own LLM call.
-
-    Consecutive chunks are then packed together up to pack_chars (0 turns
-    this off). Each LLM call has a fixed cost, and Whisper leaves a pause
-    of min_gap or more after most sentences (Parakeet's segments run back
-    to back), so without packing a Whisper transcript became ~110 calls of
-    ~600 characters where a Parakeet one of the same length takes ~15.
-    """
-    if not segments:
-        return []
-
-    raw_chunks = []
-    current: List[str] = []
-    prev_end = segments[0]["timestamp_end"]
-    for seg in segments:
-        gap = seg["timestamp_start"] - prev_end
-        if gap >= min_gap and current:
-            raw_chunks.append(" ".join(current))
-            current = []
-        if seg["text"]:
-            current.append(seg["text"])
-        prev_end = seg["timestamp_end"]
-    if current:
-        raw_chunks.append(" ".join(current))
-
-    merged: List[str] = []
-    for chunk in raw_chunks:
-        if merged and len(merged[-1]) < min_chars:
-            merged[-1] = f"{merged[-1]} {chunk}"
-        else:
-            merged.append(chunk)
-    if len(merged) > 1 and len(merged[0]) < min_chars:
-        merged[1] = f"{merged[0]} {merged[1]}"
-        merged = merged[1:]
-
-    if pack_chars:
-        packed: List[str] = []
-        for chunk in merged:
-            if packed and len(packed[-1]) + 1 + len(chunk) <= pack_chars:
-                packed[-1] = f"{packed[-1]} {chunk}"
-            else:
-                packed.append(chunk)
-        merged = packed
-
-    final_chunks = []
-    for chunk in merged:
-        if len(chunk) > max_chars:
-            final_chunks.extend(_split_into_chunks(chunk, max_chars))
-        else:
-            final_chunks.append(chunk)
-    return final_chunks
-
-
-def _truncate_chunks(
-    chunks: List[str], max_chars: int = _MAX_TRANSCRIPT_CHARS
-) -> List[str]:
-    """Cap total chunk length by keeping chunks from the start and end and
-    dropping the middle. Like _truncate_transcript, but cuts on chunk (topic)
-    boundaries instead of an arbitrary character offset."""
-    total = sum(len(c) for c in chunks)
-    if total <= max_chars:
-        return chunks
-
-    half = max_chars // 2
-    head, head_chars = [], 0
-    for chunk in chunks:
-        if head_chars and head_chars + len(chunk) > half:
-            break
-        head.append(chunk)
-        head_chars += len(chunk)
-
-    tail, tail_chars = [], 0
-    for chunk in reversed(chunks):
-        if tail_chars and tail_chars + len(chunk) > half:
-            break
-        tail.append(chunk)
-        tail_chars += len(chunk)
-    tail.reverse()
-
-    logger.warning(
-        "Transcript too long (%d chars across %d chunks), truncating to head+tail",
-        total,
-        len(chunks),
-    )
-    return head + ["[... transcript truncated for length ...]"] + tail
-
-
-def _strip_llm_meta_lines(text: str) -> str:
-    """Remove lines the LLM prepends/appends about its own output rather
-    than the requested content (see _LLM_META_LINE_RE)."""
-    lines = [ln for ln in text.split("\n") if not _LLM_META_LINE_RE.match(ln.strip())]
-    return "\n".join(lines).strip()
-
-
 def _extract_json(text: str) -> Optional[Dict[str, Any]]:
-    """Robustly extract a JSON object from LLM output.
-
-    Handles markdown code fences and finds the outermost balanced braces.
-    """
-    # Strip markdown code fences if present
-    text = re.sub(r"```(?:json)?\s*", "", text)
-    text = text.replace("```", "")
-
-    # Find the first '{' and then find its matching '}'
+    """The JSON object in LLM output, or None. Text around it (a preamble,
+    code fences, a closing remark) is ignored."""
     start = text.find("{")
     if start == -1:
         return None
-
-    depth = 0
-    for i in range(start, len(text)):
-        if text[i] == "{":
-            depth += 1
-        elif text[i] == "}":
-            depth -= 1
-            if depth == 0:
-                try:
-                    return json.loads(text[start : i + 1])
-                except json.JSONDecodeError:
-                    logger.warning("Found balanced braces but JSON decode failed")
-                    return None
-
-    return None
+    try:
+        value, _ = json.JSONDecoder().raw_decode(text, start)
+    except json.JSONDecodeError:
+        return None
+    return value if isinstance(value, dict) else None
 
 
 def _coerce_str_list(items: Any) -> List[str]:
@@ -463,8 +266,12 @@ def _coerce_str_list(items: Any) -> List[str]:
     return result
 
 
+class DigestError(RuntimeError):
+    """A digest or synopsis could not be produced; the message says why."""
+
+
 class TranscriptCleaner:
-    """Cleans transcripts and produces per-episode summaries with an LLM."""
+    """Produces per-episode digests, synopses and translations with an LLM."""
 
     def __init__(
         self,
@@ -493,133 +300,73 @@ class TranscriptCleaner:
         text = re.sub(fillers, "", text, flags=re.IGNORECASE)
         return re.sub(r"\s+", " ", text).strip()
 
-    def clean_transcript(
-        self, raw_text: str, segments: Optional[List[Dict[str, Any]]] = None
-    ) -> str:
-        """Remove filler words, ads and disfluencies from a transcript.
-
-        Filler words are always stripped with a regex. When an LLM is
-        configured, the text is then polished chunk by chunk: a single
-        request over a whole transcript tends to come back heavily
-        truncated. With timestamped segments, chunks follow natural
-        conversation breaks (see _split_segments_by_gaps); otherwise they
-        follow sentence boundaries. A chunk that fails keeps its
-        regex-cleaned text so one bad response never loses the transcript.
-        """
-        text = self._basic_clean_text(raw_text)
-
-        if self.llm.is_configured:
-            try:
-                if segments:
-                    cleaned_segments = [
-                        {**seg, "text": self._basic_clean_text(seg["text"])}
-                        for seg in segments
-                    ]
-                    chunks = _truncate_chunks(_split_segments_by_gaps(cleaned_segments))
-                else:
-                    chunks = _split_into_chunks(_truncate_transcript(text))
-
-                cleaned_chunks = []
-                for i, chunk in enumerate(chunks, 1):
-                    try:
-                        cleaned = self._chat(
-                            "You are an expert transcript editor.",
-                            _CLEAN_PROMPT + chunk,
-                            max_tokens=3000,
-                        ).strip()
-                        cleaned = _strip_llm_meta_lines(cleaned)
-                        cleaned_chunks.append(cleaned if cleaned else chunk)
-                    except Exception as e:
-                        logger.warning(
-                            "Chunk %d/%d cleaning failed, keeping original text for that chunk: %s",
-                            i,
-                            len(chunks),
-                            e,
-                        )
-                        cleaned_chunks.append(chunk)
-                if cleaned_chunks:
-                    text = "\n\n".join(cleaned_chunks)
-            except Exception as e:
-                logger.warning("LLM cleaning failed, using basic cleaning: %s", e)
-
-        return text
-
-    def generate_summary(self, episode_id: int) -> Optional[Dict[str, Any]]:
-        """Generate and store the digest for one episode.
-
-        Produces the short summary plus structured topics, themes, quotes
-        and companies. The long-form synopsis is generated separately on
-        demand (see generate_synopsis) to keep the pipeline step fast.
-        """
+    def _transcript(self, episode_id: int) -> str:
+        """An episode's transcript as the prompts read it: fillers removed by
+        regex, nothing rewritten (the prompts skip ads themselves, see
+        _AD_RULE). Empty if the episode has no transcript."""
         segments = self.db.get_transcripts_for_episode(episode_id)
-        full_text = "\n".join(segment["text"] for segment in segments)
+        return self._basic_clean_text(" ".join(s["text"] for s in segments))
 
-        if not full_text.strip():
-            return None
+    def _require_llm(self):
+        if not self.llm.is_configured:
+            raise DigestError(f"No API key is set for {self.llm.provider}")
 
-        # Fillers removed by regex only. An LLM rewrite of the whole transcript
-        # (clean_transcript) took most of this step's time; the prompts skip
-        # ads themselves (_AD_RULE).
-        cleaned_text = self._basic_clean_text(full_text)
+    def generate_summary(self, episode_id: int) -> None:
+        """Generate and store the digest for one episode: the short summary
+        plus structured topics, themes, quotes and companies, then their
+        Quebec French versions. The long-form synopsis is generated
+        separately on demand (see generate_synopsis) to keep this step fast.
+
+        Raises DigestError, storing nothing, if there is no transcript, no
+        LLM, or an LLM step fails. Only the translation may fail without
+        failing the digest: it can be redone on its own (translate_digest).
+        """
+        text = self._transcript(episode_id)
+        if not text:
+            raise DigestError("The episode has no transcript")
+        self._require_llm()
+
         context = _episode_context(self.db.get_episode_by_id(episode_id))
+        data = self._generate_structured_summary(text, context)
+        summary = self._generate_short_summary(text, context)
 
-        # Generate structured summary using LLM
-        summary_data = self._generate_structured_summary(cleaned_text, context)
-
-        if summary_data and self.llm.is_configured:
-            short_summary = self._generate_short_summary(cleaned_text, context)
-            if short_summary:
-                summary_data["summary"] = short_summary
-
-        if summary_data:
-            # add_summary replaces the whole row; carry over any synopsis
-            # generated earlier so a re-digest does not discard it.
-            existing = self.db.get_summary_by_episode(episode_id)
-            existing_long_summary = existing.get("long_summary") if existing else None
-
+        # add_summary replaces the whole row; carry over any synopsis
+        # generated earlier so a re-digest does not discard it.
+        existing = self.db.get_summary_by_episode(episode_id) or {}
+        with self.db.transaction():
             self.db.add_summary(
                 episode_id=episode_id,
-                key_topics=summary_data.get("key_topics", []),
-                themes=summary_data.get("themes", []),
-                quotes=summary_data.get("quotes", []),
-                startups=summary_data.get("startups", []),
-                full_summary=summary_data.get("summary", ""),
-                long_summary=existing_long_summary,
-                long_summary_fr=existing.get("long_summary_fr") if existing else None,
+                key_topics=data.get("key_topics", []),
+                themes=data.get("themes", []),
+                quotes=data.get("quotes", []),
+                startups=data.get("startups", []),
+                full_summary=summary,
+                long_summary=existing.get("long_summary"),
+                long_summary_fr=existing.get("long_summary_fr"),
                 digest_date=datetime.now(),
             )
-            if self.llm.is_configured:
-                self.translate_digest(episode_id)
             self.db.update_episode_status(episode_id, "processed")
-            # The transcript and summary are all later steps need, so the
-            # audio, by far the largest part of an episode, can go.
-            self.db.remove_audio(episode_id)
-
-        return summary_data
+        self.translate_digest(episode_id)
+        # The transcript and summary are all later steps need, so the
+        # audio, by far the largest part of an episode, can go.
+        self.db.remove_audio(episode_id)
 
     def refresh_digest(self, episode_id: int) -> bool:
         """Redo an episode's digest, with the show's title and notes
         (_episode_context), keeping its date, and its synopsis too if it has
         one. Returns whether there was a synopsis.
 
-        All or nothing: an LLM step that fails (where generate_summary would
-        fall back to word counts) raises RuntimeError and leaves the stored
-        digest as it was."""
-        segments = self.db.get_transcripts_for_episode(episode_id)
-        full_text = "\n".join(segment["text"] for segment in segments)
+        All or nothing, French included: a step that fails raises
+        DigestError and leaves the stored digest as it was."""
+        text = self._transcript(episode_id)
         existing = self.db.get_summary_by_episode(episode_id)
-        if not full_text.strip() or not existing:
-            raise RuntimeError("No transcript or no digest to refresh")
-        if not self.llm.is_configured:
-            raise RuntimeError("No LLM is configured")
+        if not text or not existing:
+            raise DigestError("No transcript or no digest to refresh")
+        self._require_llm()
 
-        cleaned_text = self._basic_clean_text(full_text)
         context = _episode_context(self.db.get_episode_by_id(episode_id))
-        data = self._generate_structured_summary(cleaned_text, context, strict=True)
-        assert data is not None
-        summary = self._generate_short_summary(cleaned_text, context)
-        if not summary:
-            raise RuntimeError("The summary failed")
+        data = self._generate_structured_summary(text, context)
+        summary = self._generate_short_summary(text, context)
         french: Dict[str, Any] = {
             "full_summary_fr": self.translate_text(summary),
             "key_topics_fr": self.translate_list(data.get("key_topics") or []),
@@ -627,46 +374,48 @@ class TranscriptCleaner:
         }
         synopsis = existing.get("long_summary")
         if synopsis:
-            synopsis = self._generate_long_summary(cleaned_text, context)
+            synopsis = self._generate_long_summary(text, context)
             french["long_summary_fr"] = self.translate_text(synopsis)
         failed = [field for field, value in french.items() if value is None]
         if failed:
-            raise RuntimeError(f"Translating {', '.join(failed)} failed")
+            raise DigestError(f"Translating {', '.join(failed)} failed")
 
-        self.db.add_summary(
-            episode_id=episode_id,
-            key_topics=data.get("key_topics", []),
-            themes=data.get("themes", []),
-            quotes=data.get("quotes", []),
-            startups=data.get("startups", []),
-            full_summary=summary,
-            long_summary=synopsis,
-            digest_date=existing.get("digest_date"),
-        )
-        self.db.update_summary_fields(episode_id, **french)
+        with self.db.transaction():
+            self.db.add_summary(
+                episode_id=episode_id,
+                key_topics=data.get("key_topics", []),
+                themes=data.get("themes", []),
+                quotes=data.get("quotes", []),
+                startups=data.get("startups", []),
+                full_summary=summary,
+                long_summary=synopsis,
+                digest_date=existing.get("digest_date"),
+            )
+            self.db.update_summary_fields(episode_id, **french)
         return bool(synopsis)
 
-    def generate_synopsis(self, episode_id: int) -> Optional[str]:
+    def generate_synopsis(self, episode_id: int) -> str:
         """Generate and store the long-form study-notes synopsis for one
         episode, in English and Quebec French. Requested on demand; not part
-        of the digest pipeline. Returns None if there is no transcript.
+        of the digest pipeline. Returns the English synopsis.
 
-        All or nothing: if a section or the translation fails, nothing is
-        stored and RuntimeError says what failed."""
-        segments = self.db.get_transcripts_for_episode(episode_id)
-        full_text = "\n".join(segment["text"] for segment in segments)
+        All or nothing: without a transcript or a digest, or if a section or
+        the translation fails, nothing is stored and DigestError says why."""
+        text = self._transcript(episode_id)
+        if not text:
+            raise DigestError("The episode has no transcript")
+        # The synopsis is stored on the digest's row.
+        if not self.db.get_summary_by_episode(episode_id):
+            raise DigestError("The episode has no digest yet")
 
-        if not full_text.strip():
-            return None
-
-        cleaned_text = self._basic_clean_text(full_text)
         context = _episode_context(self.db.get_episode_by_id(episode_id))
-        synopsis = self._generate_long_summary(cleaned_text, context)
+        synopsis = self._generate_long_summary(text, context)
         synopsis_fr = self.translate_text(synopsis)
         if not synopsis_fr:
-            raise RuntimeError("Translating the synopsis to French failed")
-        self.db.update_summary_long_summary(episode_id, synopsis)
-        self.db.update_summary_fields(episode_id, long_summary_fr=synopsis_fr)
+            raise DigestError("Translating the synopsis to French failed")
+        with self.db.transaction():
+            self.db.update_summary_long_summary(episode_id, synopsis)
+            self.db.update_summary_fields(episode_id, long_summary_fr=synopsis_fr)
         return synopsis
 
     def translate_digest(self, episode_id: int, synopsis: bool = False) -> bool:
@@ -741,66 +490,54 @@ class TranscriptCleaner:
             return [single[0] for single in singles if single]
         return translated
 
-    def _generate_short_summary(self, text: str, context: str = "") -> Optional[str]:
-        """Generate the short (~300 word) summary as its own call — see
-        _SHORT_SUMMARY_PROMPT. ``context`` is _episode_context's."""
-        truncated = _truncate_transcript(text)
+    def _generate_short_summary(self, text: str, context: str = "") -> str:
+        """The short (~300 word) summary, as its own request (see
+        _SHORT_SUMMARY_PROMPT). ``context`` is _episode_context's."""
         try:
-            return self._chat(
+            summary = self._chat(
                 "You are an expert podcast analyst who writes concise, substantive summaries.",
-                context + _SHORT_SUMMARY_PROMPT + truncated,
+                context + _SHORT_SUMMARY_PROMPT + _truncate_transcript(text),
                 max_tokens=600,
             ).strip()
         except Exception as e:
-            logger.warning("Short summary generation failed: %s", e)
-            return None
+            raise DigestError(f"The summary failed: {e}") from e
+        if not summary:
+            raise DigestError("The summary came back empty")
+        return summary
 
     def _generate_structured_summary(
-        self, text: str, context: str = "", strict: bool = False
-    ) -> Optional[Dict[str, Any]]:
-        """Generate structured summary using LLM. ``context`` is
-        _episode_context's. Falls back to _basic_extraction when the LLM
-        fails, unless ``strict``: then it raises RuntimeError."""
-        if not self.llm.is_configured:
-            return self._basic_extraction(text)
-
-        truncated = _truncate_transcript(text)
-
-        try:
-            # Small models sometimes emit broken JSON; a second sample usually parses.
-            result = None
-            for _ in range(2):
+        self, text: str, context: str = ""
+    ) -> Dict[str, Any]:
+        """Topics, themes, quotes and companies, as lists of strings.
+        ``context`` is _episode_context's."""
+        prompt = context + _SUMMARY_PROMPT + _truncate_transcript(text)
+        result = None
+        # Small models sometimes emit broken JSON; a second sample usually parses.
+        for _ in range(2):
+            try:
                 response = self._chat(
                     "You are an expert at analyzing podcast content. Return valid JSON only.",
-                    context + _SUMMARY_PROMPT + truncated,
+                    prompt,
                     max_tokens=1000,
                 )
-                result = _extract_json(response)
-                if result is not None:
-                    break
-            if result is None:
-                if strict:
-                    raise RuntimeError("The topics and themes reply wasn't JSON")
-                logger.warning(
-                    "Could not parse JSON from LLM response, falling back to basic extraction"
-                )
-                return self._basic_extraction(text)
-            for field in ("key_topics", "themes", "quotes", "startups"):
-                if field in result:
-                    result[field] = _coerce_str_list(result[field])
-            return result
-        except Exception as e:
-            if strict:
-                raise RuntimeError(f"Topics and themes failed: {e}") from e
-            logger.error("LLM summarization failed: %s", e)
-            return self._basic_extraction(text)
+            except Exception as e:
+                raise DigestError(f"Topics and themes failed: {e}") from e
+            result = _extract_json(response)
+            if result is not None:
+                break
+        if result is None:
+            raise DigestError("The topics and themes reply wasn't JSON")
+        for field in ("key_topics", "themes", "quotes", "startups"):
+            if field in result:
+                result[field] = _coerce_str_list(result[field])
+        return result
 
     def _generate_long_summary(self, text: str, context: str = "") -> str:
         """Generate long-form study notes, one transcript section at a time.
 
         Per-section requests keep the notes proportional to the episode: a
         longer episode gets more sections and therefore longer notes. Raises
-        RuntimeError if any section fails, rather than return notes with a
+        DigestError if any section fails, rather than return notes with a
         part of the episode missing. ``context`` (_episode_context's) goes
         with every section.
         """
@@ -817,58 +554,11 @@ class TranscriptCleaner:
                     max_tokens=1000,
                 ).strip()
             except Exception as e:
-                raise RuntimeError(
+                raise DigestError(
                     f"Section {i}/{len(sections)} notes failed: {e}"
                 ) from e
             if not note:
-                raise RuntimeError(f"Section {i}/{len(sections)} notes came back empty")
+                raise DigestError(f"Section {i}/{len(sections)} notes came back empty")
             notes.append(note)
 
         return "\n\n".join(notes)
-
-    def _basic_extraction(self, text: str) -> Dict[str, Any]:
-        """Basic keyword extraction as fallback."""
-        words = text.lower().split()
-        word_freq: Dict[str, int] = {}
-        for word in words:
-            if len(word) > 4 and word.isalpha():
-                word_freq[word] = word_freq.get(word, 0) + 1
-
-        key_topics = [
-            word
-            for word, _ in sorted(word_freq.items(), key=lambda x: x[1], reverse=True)[
-                :5
-            ]
-        ]
-
-        # Simple company extraction (words ending in common suffixes)
-        potential_companies = set()
-        for word in text.split():
-            if any(
-                word.lower().endswith(suffix)
-                for suffix in ["inc", "corp", "llc", "labs"]
-            ):
-                potential_companies.add(word)
-
-        return {
-            "key_topics": key_topics,
-            "themes": ["general discussion"],
-            "quotes": [],
-            "startups": list(potential_companies),
-            "summary": "Podcast episode discussion covering various topics.",
-        }
-
-    def process_all_transcribed(self) -> int:
-        """Process all episodes with 'transcribed' status."""
-        episodes = self.db.get_episodes_by_status("transcribed")
-        processed_count = 0
-
-        for episode in episodes:
-            logger.info("Processing summary for: %s", episode["title"])
-            if self.generate_summary(episode["id"]):
-                processed_count += 1
-                logger.info("Processed: %s", episode["title"])
-            else:
-                logger.warning("Failed to process: %s", episode["title"])
-
-        return processed_count

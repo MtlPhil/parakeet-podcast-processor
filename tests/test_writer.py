@@ -1,5 +1,7 @@
 """Tests for writer utilities (non-LLM paths)."""
 
+from pathlib import Path
+
 from p3.writer import BlogWriter
 
 
@@ -271,3 +273,53 @@ class TestFrenchWriter:
         result = writer.generate_linkedin_post(self.summary)
         assert result["french_quebec"] == FRENCH_TEXT
         assert result["english"] == ENGLISH_TEXT
+
+
+class TestBestDraft:
+    def _writer(self, scores):
+        writer = BlogWriter(db=None)
+        drafts = iter(f"Draft {n}" for n in range(1, 10))
+        grades = iter(scores)
+        writer._generate_in_language = lambda prompt, language, **kw: (
+            next(drafts) if "Traduis" not in prompt else "Traduction"
+        )
+        writer._grade_blog_post = lambda post: {
+            "grade": "B",
+            "score": next(grades),
+            "feedback": "Tighten it.",
+        }
+        return writer
+
+    def test_a_revision_that_scores_lower_is_not_the_result(self):
+        result = self._writer([88.0, 85.0, 84.0]).generate_blog_post_from_digest(
+            "Topic", [{"episode_title": "Ep", "podcast_title": "Pod"}]
+        )
+        assert result["final_post"] == "Draft 1"
+        assert result["final_score"] == 88.0
+        assert len(result["iterations"]) == 3
+
+    def test_among_equal_scores_the_latest_draft_wins(self):
+        result = self._writer([0.0, 0.0, 0.0]).generate_blog_post_from_digest(
+            "Topic", [{"episode_title": "Ep", "podcast_title": "Pod"}]
+        )
+        assert result["final_post"] == "Draft 3"
+
+
+class TestSaveCreatesFolders:
+    def test_a_users_folder_is_created_with_its_parent(self, tmp_path):
+        """`blog_posts/<user>` when `blog_posts` itself doesn't exist yet."""
+        writer = BlogWriter(db=None)
+        result = {
+            "english": "Post.",
+            "french_quebec": "Billet.",
+            "slug": "pod-ep",
+            "metadata": {
+                "episode_title": "Ep",
+                "podcast_title": "Pod",
+                "generated_at": "2026-11-11T12:00:00",
+                "model_used": "m",
+            },
+        }
+        folder = tmp_path / "linkedin_posts" / "alice"
+        path = writer.save_linkedin_post(result, output_dir=str(folder))
+        assert Path(path).parent == folder and Path(path).exists()

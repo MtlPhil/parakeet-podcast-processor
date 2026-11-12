@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 
 from p3.api.auth import current_username, require_admin
-from p3.api.deps import get_db
+from p3.api.deps import attachment, get_db
 from p3.api.models import TranscriptSegment
 from p3.api.routers.episodes import user_episode
 from p3.exporter import DigestExporter
@@ -50,5 +50,5 @@ def export_transcript(episode_id: int, username: str = Depends(current_username)
     return Response(
         content=content,
         media_type="text/markdown",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers=attachment(filename),
     )

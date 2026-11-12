@@ -7,27 +7,31 @@ on:
 
 jobs:
   python:
-    # Apple Silicon runner: matches the target platform and installs
-    # parakeet-mlx plus a CPU-only PyTorch for Whisper.
-    runs-on: macos-latest
+    # macOS on Apple Silicon is the platform P3 transcribes on (it installs
+    # the MLX speech engines). Linux has no speech engine yet, but everything
+    # else must keep working there. Neither job loads a model.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-          cache: pip
-      - name: Install
-        run: pip install -e ".[dev,web]"
+      - name: Install the locked dependencies
+        run: |
+          pip install uv
+          uv sync --frozen --extra dev --extra web
       - name: black
-        run: black --check .
+        run: uv run --no-sync black --check .
       - name: isort
-        run: isort --check-only .
+        run: uv run --no-sync isort --check-only .
       - name: mypy
-        run: mypy p3/
+        run: uv run --no-sync mypy p3/
       - name: pytest
-        run: pytest tests/ -q
-        env:
-          PYTHONPATH: .
+        run: uv run --no-sync pytest tests/ -q
 
   frontend:
     runs-on: ubuntu-latest

@@ -5,7 +5,8 @@ import tailwindcss from '@tailwindcss/vite'
 // Dev-server exposure is opt-in via frontend/.env.local (gitignored):
 //   P3_DEV_HOST=0.0.0.0                  listen on all interfaces (LAN access)
 //   P3_ALLOWED_HOSTS=p3.example.com      comma-separated extra hostnames
-// The API has no authentication, so only expose it on networks you trust.
+// Only expose it on networks you trust: in proxy mode with P3_DEV_USER set,
+// the API treats every request as that user.
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), 'P3_')
   const allowedHosts = env.P3_ALLOWED_HOSTS

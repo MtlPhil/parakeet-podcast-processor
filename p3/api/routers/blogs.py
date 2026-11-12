@@ -1,13 +1,11 @@
 """Blog post routes."""
 
-import re
 from datetime import datetime
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 
 from p3.api.auth import current_username
-from p3.api.content import post_files, split_languages
+from p3.api.content import find_post, list_posts
 from p3.api.deps import get_db
 from p3.api.job_queue import job_runner
 from p3.api.models import BlogCreate, BlogOut
@@ -18,61 +16,30 @@ router = APIRouter(prefix="/api/blogs", tags=["blogs"])
 POSTS_DIR = "blog_posts"
 
 
-def _parse_blog_file(path: Path) -> dict:
-    """Parse a blog post markdown file to extract frontmatter and content."""
-    text = path.read_text()
-    meta = {}
-
-    # Parse YAML frontmatter
-    if text.startswith("---"):
-        parts = text.split("---", 2)
-        if len(parts) >= 3:
-            for line in parts[1].strip().splitlines():
-                if ":" in line:
-                    key, val = line.split(":", 1)
-                    meta[key.strip()] = val.strip().strip('"')
-            text = parts[2]
-
-    # Derive slug from filename: YYYY-MM-DD-slug.md
-    stem = path.stem
-    date_match = re.match(r"(\d{4}-\d{2}-\d{2})-(.*)", stem)
-    if date_match:
-        date_str = date_match.group(1)
-        slug = date_match.group(2)
-    else:
-        date_str = ""
-        slug = stem
-
+def _blog(post: dict) -> dict:
+    """A saved post with the grade its front matter records."""
+    meta = post["meta"]
     return {
-        "slug": slug,
-        "title": meta.get("title", slug.replace("-", " ").title()),
-        "date": date_str,
-        "filename": path.name,
+        **post,
         "final_grade": meta.get("final_grade"),
         "final_score": float(meta["final_score"]) if "final_score" in meta else None,
-        **dict(zip(("content", "content_fr"), split_languages(text))),
     }
 
 
 @router.get("", response_model=list[BlogOut])
 def list_blogs(username: str = Depends(current_username)):
     """List the user's blog posts (without full content)."""
-    blogs = []
-    for path in post_files(POSTS_DIR, username):
-        info = _parse_blog_file(path)
-        info["content"] = info["content_fr"] = None  # omitted in list view
-        blogs.append(info)
-    return blogs
+    return [_blog(post) for post in list_posts(POSTS_DIR, username)]
 
 
-@router.get("/{slug}", response_model=BlogOut)
-def get_blog(slug: str, username: str = Depends(current_username)):
-    """Get one of the user's blog posts by slug."""
-    for path in post_files(POSTS_DIR, username):
-        info = _parse_blog_file(path)
-        if info["slug"] == slug:
-            return info
-    raise HTTPException(404, f"Blog post '{slug}' not found")
+@router.get("/{name}", response_model=BlogOut)
+def get_blog(name: str, username: str = Depends(current_username)):
+    """Get one of the user's blog posts, by file name without ``.md`` (or by
+    slug, for the newest post with it)."""
+    post = find_post(POSTS_DIR, username, name)
+    if not post:
+        raise HTTPException(404, f"Blog post '{name}' not found")
+    return _blog(post)
 
 
 @router.post("", response_model=dict)

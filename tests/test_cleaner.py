@@ -6,21 +6,18 @@ from datetime import datetime
 import pytest
 
 from p3.cleaner import (
+    DigestError,
     TranscriptCleaner,
     _coerce_str_list,
     _extract_json,
-    _split_into_chunks,
     _split_into_sections,
-    _split_segments_by_gaps,
-    _strip_llm_meta_lines,
-    _truncate_chunks,
     _truncate_transcript,
 )
 from p3.database import P3Database
 
 
 def _seg(text, start, end):
-    return {"text": text, "timestamp_start": start, "timestamp_end": end}
+    return {"text": text, "start": start, "end": end}
 
 
 class TestTruncateTranscript:
@@ -65,55 +62,26 @@ class TestExtractJson:
     def test_invalid_json(self):
         assert _extract_json("{invalid json}") is None
 
+    def test_braces_inside_a_string(self):
+        text = '{"quotes": ["Use {curly} braces", "or just one }"]}'
+        assert _extract_json(text) == {
+            "quotes": ["Use {curly} braces", "or just one }"]
+        }
 
-class TestBasicExtraction:
-    def test_returns_expected_keys(self):
-        cleaner = TranscriptCleaner(db=None, llm_provider="ollama")
-        result = cleaner._basic_extraction(
-            "This is a test with some words about technology and innovation"
-        )
-        assert "key_topics" in result
-        assert "themes" in result
-        assert "quotes" in result
-        assert "startups" in result
-        assert "summary" in result
-
-    def test_extracts_frequent_words(self):
-        text = "technology " * 20 + "innovation " * 15 + "startup " * 10
-        cleaner = TranscriptCleaner(db=None, llm_provider="ollama")
-        result = cleaner._basic_extraction(text)
-        assert "technology" in result["key_topics"]
-
-    def test_extracts_company_suffixes(self):
-        text = "We spoke with representatives from AcmeCorp and InnovateLabs about their products."
-        cleaner = TranscriptCleaner(db=None, llm_provider="ollama")
-        result = cleaner._basic_extraction(text)
-        assert any("AcmeCorp" in s for s in result["startups"]) or any(
-            "InnovateLabs" in s for s in result["startups"]
-        )
+    def test_only_an_object_counts(self):
+        assert _extract_json("[1, 2]") is None
 
 
-class TestCleanTranscript:
-    @pytest.fixture(autouse=True)
-    def _no_llm(self, monkeypatch):
-        # An OpenAI provider without a key has no usable LLM, so only the
-        # regex cleaning runs and no network calls are made.
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-
+class TestFillerWords:
     def test_removes_filler_words(self):
-        cleaner = TranscriptCleaner(db=None, llm_provider="openai")
         text = "So um we uh talked about er the technology hmm today"
-        result = cleaner.clean_transcript(text)
-        assert "um" not in result.split()
-        assert "uh" not in result.split()
-        assert "er" not in result.split()
-        assert "hmm" not in result.split()
+        words = TranscriptCleaner._basic_clean_text(text).split()
+        assert not {"um", "uh", "er", "hmm"} & set(words)
 
     def test_preserves_meaningful_words(self):
         """Words like 'actually', 'basically' should be preserved."""
-        cleaner = TranscriptCleaner(db=None, llm_provider="openai")
         text = "This actually works and is basically correct"
-        result = cleaner.clean_transcript(text)
+        result = TranscriptCleaner._basic_clean_text(text)
         assert "actually" in result
         assert "basically" in result
 
@@ -174,146 +142,113 @@ class TestCoerceStrList:
         assert _coerce_str_list([1, 2.5]) == ["1", "2.5"]
 
 
-class TestSplitIntoChunks:
-    def test_never_splits_mid_sentence(self):
-        text = "First sentence here. Second sentence here. Third sentence here."
-        chunks = _split_into_chunks(text, max_chars=30)
-        for chunk in chunks:
-            assert chunk.strip().endswith((".", "!", "?"))
-
-    def test_packs_sentences_up_to_max_chars(self):
-        text = "One. Two. Three. Four. Five."
-        chunks = _split_into_chunks(text, max_chars=1000)
-        assert chunks == ["One. Two. Three. Four. Five."]
-
-    def test_reconstructs_full_content(self):
-        text = "Alpha bravo charlie. Delta echo foxtrot. Golf hotel india. Juliet kilo lima."
-        chunks = _split_into_chunks(text, max_chars=25)
-        rejoined = " ".join(chunks)
-        for word in text.replace(".", "").split():
-            assert word in rejoined
-
-    def test_single_sentence_longer_than_max_chars_kept_whole(self):
-        sentence = (
-            "This is one very long sentence with no other punctuation in it at all"
-        )
-        chunks = _split_into_chunks(sentence, max_chars=10)
-        assert chunks == [sentence]
-
-    def test_empty_text_returns_empty_list(self):
-        assert _split_into_chunks("") == []
-        assert _split_into_chunks("   ") == []
+def _digest_replies(system, user, max_tokens=2000):
+    """A stand-in LLM that answers every digest request."""
+    if "JSON" in system:
+        return '{"key_topics": ["soil"], "themes": ["farming"], "quotes": [], "startups": []}'
+    return "Une ligne" if "translator" in system else "A summary."
 
 
-class TestStripLlmMetaLines:
-    def test_strips_here_is_preamble(self):
-        text = "Here is the cleaned transcript:\n\nActual content here."
-        assert _strip_llm_meta_lines(text) == "Actual content here."
+class TestDigestIsAllOrNothing:
+    """A digest that can't be written fails, with the reason, instead of
+    storing a placeholder and marking the episode processed."""
 
-    def test_strips_heres_the_cleaned_podcast_transcript(self):
-        text = "Here's the cleaned podcast transcript:\nSome content."
-        assert _strip_llm_meta_lines(text) == "Some content."
+    @pytest.fixture
+    def library(self, tmp_path):
+        db = P3Database(str(tmp_path / "test.duckdb"))
+        audio = tmp_path / "ep.wav"
+        audio.write_bytes(b"audio")
+        pid = db.add_podcast("Pod", "http://example.com/rss")
+        eid = db.add_episode(pid, "Ep", None, "http://example.com/ep.mp3", str(audio))
+        db.store_transcript(eid, [_seg("We talk about soil.", 0, 5)], "en")
+        yield db, eid, audio
+        db.close()
 
-    def test_strips_rephrasing_note(self):
-        text = "Some content.\nNote: some minor rephrasing was done for clarity."
-        assert _strip_llm_meta_lines(text) == "Some content."
+    def _assert_untouched(self, db, eid, audio):
+        assert db.get_episode_by_id(eid)["status"] == "transcribed"
+        assert db.get_summary_by_episode(eid) is None
+        assert audio.exists()
 
-    def test_leaves_normal_content_untouched(self):
-        text = "This is just normal transcript content, nothing to strip."
-        assert _strip_llm_meta_lines(text) == text
+    def test_success_stores_the_digest_and_drops_the_audio(self, library, monkeypatch):
+        db, eid, audio = library
+        cleaner = TranscriptCleaner(db=db, llm_provider="ollama")
+        monkeypatch.setattr(cleaner, "_chat", _digest_replies)
+        cleaner.generate_summary(eid)
+        summary = db.get_summary_by_episode(eid)
+        assert summary["full_summary"] == "A summary."
+        assert summary["key_topics"] == ["soil"]
+        assert summary["full_summary_fr"] == "Une ligne"
+        assert db.get_episode_by_id(eid)["status"] == "processed"
+        assert not audio.exists()
 
+    def test_an_unreachable_llm_fails_the_digest(self, library, monkeypatch):
+        db, eid, audio = library
+        cleaner = TranscriptCleaner(db=db, llm_provider="ollama")
 
-class TestSplitSegmentsByGaps:
-    def test_splits_on_large_gap(self):
-        segments = [
-            _seg("Talking about topic one here.", 0.0, 2.0),
-            _seg("Still on topic one.", 2.1, 4.0),
-            _seg("Now an ad break starts.", 10.0, 12.0),
-            _seg("End of the ad break.", 12.1, 14.0),
-        ]
-        chunks = _split_segments_by_gaps(
-            segments, min_gap=0.5, min_chars=0, pack_chars=0
-        )
-        assert len(chunks) == 2
-        assert "topic one" in chunks[0]
-        assert "ad break" in chunks[1]
+        def down(system, user, max_tokens=2000):
+            raise ConnectionError("connection refused")
 
-    def test_no_gaps_produces_single_chunk(self):
-        segments = [
-            _seg("First part.", 0.0, 2.0),
-            _seg("Second part.", 2.05, 4.0),
-            _seg("Third part.", 4.05, 6.0),
-        ]
-        chunks = _split_segments_by_gaps(
-            segments, min_gap=0.5, min_chars=0, pack_chars=0
-        )
-        assert len(chunks) == 1
-        assert "First part" in chunks[0]
-        assert "Third part" in chunks[0]
+        monkeypatch.setattr(cleaner, "_chat", down)
+        with pytest.raises(DigestError, match="connection refused"):
+            cleaner.generate_summary(eid)
+        self._assert_untouched(db, eid, audio)
 
-    def test_small_fragments_merged_into_neighbor(self):
-        segments = [
-            _seg(
-                "A fairly long opening segment about the main topic being discussed.",
-                0.0,
-                2.0,
-            ),
-            _seg("Hi.", 10.0, 10.5),
-            _seg(
-                "Another fairly long segment continuing the conversation afterward.",
-                20.0,
-                22.0,
-            ),
-        ]
-        chunks = _split_segments_by_gaps(
-            segments, min_gap=0.5, min_chars=20, pack_chars=0
-        )
-        assert len(chunks) == 2
-        assert "Hi." in chunks[0] or "Hi." in chunks[1]
+    def test_a_failed_summary_fails_the_digest(self, library, monkeypatch):
+        db, eid, audio = library
+        cleaner = TranscriptCleaner(db=db, llm_provider="ollama")
 
-    def test_long_gap_free_run_still_splits_on_max_chars(self):
-        long_text = "Sentence number one. " * 500
-        segments = [_seg(long_text, 0.0, 100.0)]
-        chunks = _split_segments_by_gaps(
-            segments, max_chars=1000, min_chars=0, pack_chars=0
-        )
-        assert len(chunks) > 1
-        assert all(len(c) <= 1000 or " " not in c for c in chunks)
+        def reply(system, user, max_tokens=2000):
+            return _digest_replies(system, user) if "JSON" in system else "  "
 
-    def test_empty_segments_returns_empty_list(self):
-        assert _split_segments_by_gaps([]) == []
+        monkeypatch.setattr(cleaner, "_chat", reply)
+        with pytest.raises(DigestError, match="summary came back empty"):
+            cleaner.generate_summary(eid)
+        self._assert_untouched(db, eid, audio)
 
-    def test_whisper_style_pauses_are_packed_into_few_chunks(self):
-        """Whisper leaves a pause after most sentences; those pieces are
-        packed up to pack_chars instead of each becoming an LLM call."""
-        sentence = "Voici une phrase complète au sujet du diabète de type un. "
-        segments = [_seg(sentence * 10, i * 10.0, i * 10.0 + 9.0) for i in range(60)]
-        chunks = _split_segments_by_gaps(segments, min_gap=0.5, max_chars=6000)
-        unpacked = _split_segments_by_gaps(
-            segments, min_gap=0.5, max_chars=6000, pack_chars=0
-        )
-        assert len(unpacked) == 60
-        assert len(chunks) <= 7
-        assert all(len(c) <= 6000 for c in chunks)
-        assert " ".join(chunks).split() == " ".join(unpacked).split()
+    def test_a_missing_api_key_fails_the_digest(self, library, monkeypatch):
+        db, eid, audio = library
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.chdir(audio.parent)  # no config/openai_api_key.txt here
+        cleaner = TranscriptCleaner(db=db, llm_provider="openai")
+        with pytest.raises(DigestError, match="No API key is set for openai"):
+            cleaner.generate_summary(eid)
+        self._assert_untouched(db, eid, audio)
 
-    def test_packing_never_exceeds_pack_chars(self):
-        segments = [_seg("x" * 900 + ".", i * 5.0, i * 5.0 + 4.0) for i in range(10)]
-        chunks = _split_segments_by_gaps(segments, min_gap=0.5, pack_chars=2000)
-        assert [len(c) for c in chunks] == [1803, 1803, 1803, 1803, 1803]
+    def test_a_failed_translation_keeps_the_english_digest(self, library, monkeypatch):
+        db, eid, _ = library
+        cleaner = TranscriptCleaner(db=db, llm_provider="ollama")
 
+        def reply(system, user, max_tokens=2000):
+            if "translator" in system:
+                raise TimeoutError("timed out")
+            return _digest_replies(system, user)
 
-class TestTruncateChunks:
-    def test_short_total_unchanged(self):
-        chunks = ["one", "two", "three"]
-        assert _truncate_chunks(chunks, max_chars=1000) == chunks
+        monkeypatch.setattr(cleaner, "_chat", reply)
+        cleaner.generate_summary(eid)
+        summary = db.get_summary_by_episode(eid)
+        assert summary["full_summary"] == "A summary."
+        assert summary["full_summary_fr"] is None
+        assert db.get_episode_by_id(eid)["status"] == "processed"
 
-    def test_long_total_keeps_head_and_tail(self):
-        chunks = ["a" * 100, "b" * 100, "c" * 100, "d" * 100, "e" * 100]
-        result = _truncate_chunks(chunks, max_chars=250)
-        assert result[0] == "a" * 100
-        assert result[-1] == "e" * 100
-        assert "[... transcript truncated for length ...]" in result
+    def test_no_transcript_fails(self, tmp_path):
+        db = P3Database(str(tmp_path / "empty.duckdb"))
+        try:
+            pid = db.add_podcast("Pod", "http://example.com/rss")
+            eid = db.add_episode(pid, "Ep", None, "http://example.com/ep.mp3")
+            cleaner = TranscriptCleaner(db=db, llm_provider="ollama")
+            with pytest.raises(DigestError, match="no transcript"):
+                cleaner.generate_summary(eid)
+        finally:
+            db.close()
+
+    def test_a_synopsis_needs_a_digest_to_be_stored_on(self, library, monkeypatch):
+        db, eid, _ = library
+        cleaner = TranscriptCleaner(db=db, llm_provider="ollama")
+        calls = []
+        monkeypatch.setattr(cleaner, "_chat", lambda *a, **k: calls.append(a) or "x")
+        with pytest.raises(DigestError, match="no digest yet"):
+            cleaner.generate_synopsis(eid)
+        assert calls == []  # refused before any LLM work
 
 
 class TestGenerateSummaryPreservesSynopsis:
@@ -350,10 +285,8 @@ class TestGenerateSummaryPreservesSynopsis:
                 digest_date=now,
             )
 
-            # llm_provider="openai" with no api_key falls back to
-            # _basic_extraction — deterministic, no network/LLM calls.
-            monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-            cleaner = TranscriptCleaner(db=db, llm_provider="openai")
+            cleaner = TranscriptCleaner(db=db, llm_provider="ollama")
+            monkeypatch.setattr(cleaner, "_chat", _digest_replies)
             cleaner.generate_summary(eid)
 
             summary = db.get_summary_by_episode(eid)
@@ -494,9 +427,8 @@ class TestDigestWithoutRewrite:
                 return "Une ligne"
 
             c._chat = fake_chat
-            assert c.generate_summary(eid) is not None
+            c.generate_summary(eid)
 
-            assert not any(p.startswith(cleaner_module._CLEAN_PROMPT) for p in prompts)
             readers = [p for p in prompts if "Transcript:" in p]
             assert len(readers) == 2  # structured + short summary
             for p in readers:
@@ -637,6 +569,7 @@ class TestShowNotesInPrompts:
 
     def test_every_synopsis_section_gets_the_notes(self, monkeypatch):
         cleaner, calls = self._cleaner(monkeypatch)
+        cleaner.db.get_summary_by_episode.return_value = {"full_summary": "s"}
         cleaner.generate_synopsis(1)
         sections = [c for c in calls if "Quebec French" not in c]
         assert len(sections) >= 3

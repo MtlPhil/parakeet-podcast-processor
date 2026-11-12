@@ -1,18 +1,50 @@
 # Roadmap
 
-Planned and proposed work that is not implemented yet. Items are grouped by
-area, not ordered by priority.
+What is planned and not built yet. The first section is the agreed direction,
+in order; the rest is a backlog grouped by area, not ordered by priority.
+
+## Direction
+
+The goal is a P³ that people other than its author can install and use,
+on more than Apple Silicon, with a desktop app in place of a browser tab.
+It stays a Python project: what ties it to the Mac is two speech libraries
+and the installer, not the language.
+
+1. **Restructure, with no change in behaviour.**
+   - One per-OS application data folder. Today every path (`data/`,
+     `config/`, `frontend/dist`) is relative to the working directory, which
+     no packaged app can rely on.
+   - One typed settings object in place of dictionaries read with defaults
+     repeated at each use; secrets in the OS keychain or the environment
+     rather than plain files in `config/`.
+   - `database.py` split by subject, with numbered migrations instead of
+     `ADD COLUMN IF NOT EXISTS` on every start. `api/tasks.py` split into
+     pipeline jobs, the daily run and content jobs.
+   - Single-user by default, with no sign-in; accounts and proxy mode become
+     an optional server mode.
+2. **Transcription beyond Apple Silicon.** A backend interface with MLX behind
+   it on Apple Silicon and a CPU/CUDA engine elsewhere, chosen after
+   benchmarking the candidates on real episodes. Then a Docker image and
+   tagged releases for self-hosters.
+3. **A wider LLM layer, and Ask.** An Anthropic provider, a configurable
+   OpenAI-compatible endpoint (for local servers other than Ollama),
+   streaming and tool calls. On top of it, natural-language questions over
+   the library with cited answers, as designed in
+   [docs/ask-plan.md](docs/ask-plan.md), plus the web as a second source:
+   a hosted model's built-in search where there is one, a search API for
+   local models, with web and podcast citations kept apart.
+4. **A desktop app.** A shell around the existing React app with the Python
+   engine bundled, with signed installers for macOS, Windows and Linux; the
+   web app made installable on a phone. A native iPhone app
+   ([docs/ios-app-plan.md](docs/ios-app-plan.md)) is deferred until after.
 
 ## Web app
 
 - **Push-based job progress.** Replace polling of `/api/jobs/{id}` with
   Server-Sent Events or WebSockets.
-- **Full-text search.** Search across transcripts, summaries and generated
-  posts. This becomes essential once a library has more than a few dozen
-  episodes.
-- **Authentication.** Token or session auth for the API and a login page, so
-  the app can be exposed beyond `localhost` without a separate proxy.
-- **Multi-user support.** Per-user data isolation on top of authentication.
+- **Full-text search.** Search today is a case-insensitive substring match
+  over titles, summaries and transcripts. Ranked full-text search comes with
+  Ask (direction, item 3).
 - **Podcast discovery.** Browse and search a podcast directory by category
   instead of pasting feed URLs.
 - **Blog post tab on the episode page.** Show posts generated from an episode,
@@ -21,18 +53,20 @@ area, not ordered by priority.
 
 ## Pipeline
 
-- **Anthropic LLM provider.** Add it alongside Ollama, OpenAI and
-  Gemini in `p3/llm.py`.
-- **Automatic audio cleanup.** Delete normalized audio older than a configurable
-  number of days once an episode is processed.
-- **Email delivery.** Send the HTML digest (`p3 export --format html`) by email
-  on a schedule.
-- **Reuse the cleaned transcript.** Store the LLM-cleaned transcript from the
-  digest step so the on-demand synopsis does not clean it again.
+- **Stop retrying episodes that cannot succeed.** After each daily run the
+  backlog queues every unprocessed episode again, including one that fails
+  the same way every time (a broken audio file, say).
+- **Recognize an episode whose audio URL changed.** Episodes are identified by
+  audio URL; a feed that changes its tracking URLs gets its episodes
+  downloaded again. The feed's own episode id (`guid`) is read but not
+  stored.
 - **Retry for writing jobs.** Extend job retry to blog, LinkedIn and synopsis
   jobs.
 - **Speaker diarization.** Fill the `speaker` field on transcript segments,
   which is currently always empty.
+- **Use the installer with the pinned dependencies.** `install.sh` still
+  installs the newest versions that satisfy `pyproject.toml`; CI and manual
+  installs use `uv.lock`.
 
 ## Content and analysis
 
@@ -43,8 +77,8 @@ area, not ordered by priority.
 
 ## Testing
 
-- Integration coverage for the CLI commands, RSS parsing and download,
-  transcription backends and LLM request paths, using recorded fixtures rather
-  than live services.
+- Integration coverage for the CLI commands, transcription backends and LLM
+  request paths, using recorded fixtures rather than live services.
 - An end-to-end smoke test of fetch → transcribe → digest → export on a short
   sample feed.
+- A CI job that runs `install.sh` on a macOS runner.

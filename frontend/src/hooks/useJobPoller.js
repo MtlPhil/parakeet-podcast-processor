@@ -2,8 +2,8 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { getJob } from '../api/client';
 
 /**
- * Poll a job until it completes or fails.
- * Returns { job, isPolling, startPolling }.
+ * Poll a job until it completes or fails, or no longer exists.
+ * Returns { job, isPolling, startPolling, stopPolling }.
  */
 export function useJobPoller(intervalMs = 2000) {
   const [job, setJob] = useState(null);
@@ -32,8 +32,11 @@ export function useJobPoller(intervalMs = 2000) {
         if (data.status === 'completed' || data.status === 'failed') {
           stopPolling();
         }
-      } catch {
-        stopPolling();
+      } catch (e) {
+        // A job that is gone (its records were cleared) will not come back.
+        // Anything else, such as the server restarting or the network
+        // dropping, is tried again at the next tick.
+        if (e.status === 404) stopPolling();
       }
     };
 

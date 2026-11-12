@@ -3,6 +3,8 @@
 import time
 from unittest.mock import MagicMock
 
+import pytest
+
 from p3.api.tasks import _start_heartbeat
 
 
@@ -283,3 +285,103 @@ class TestRefreshDigests:
         assert tasks._refresh_deadline("03:40") == datetime(2026, 11, 1, 3, 40)
         assert tasks._refresh_deadline("23:30") == datetime(2026, 10, 31, 23, 30)
         assert tasks._refresh_deadline(None) is None
+
+
+class TestPipeline:
+    """task_transcribe, task_digest and task_full_pipeline with the speech
+    engine and the LLM replaced by stand-ins, on a real temp database."""
+
+    @pytest.fixture
+    def env(self, monkeypatch, tmp_path):
+        import p3.api.tasks as tasks
+        from p3.database import P3Database
+
+        db = P3Database(str(tmp_path / "test.duckdb"))
+        _stub_task_env(monkeypatch, db)
+        monkeypatch.setattr(tasks, "_release_ollama", lambda settings: None)
+        pid = db.add_podcast("Pod", "http://example.com/rss")
+        eid = db.add_episode(pid, "Ep", None, "http://example.com/ep.mp3")
+        events = []
+
+        class Transcriber:
+            def transcribe_episode(self, episode_id):
+                events.append("transcribe")
+                db.store_transcript(episode_id, [{"text": "Hi", "start": 0}], "en")
+
+            def unload_models(self):
+                events.append("unload")
+
+        class Cleaner:
+            def generate_summary(self, episode_id):
+                events.append("digest")
+                db.update_episode_status(episode_id, "processed")
+
+        monkeypatch.setattr(tasks, "_make_transcriber", lambda db, s: Transcriber())
+        monkeypatch.setattr(tasks, "_make_cleaner", lambda db, s: Cleaner())
+        yield tasks, db, eid, events, Transcriber, Cleaner
+        db.close()
+
+    def _run(self, db, task, eid, job_type="full_pipeline"):
+        job_id = db.create_job(job_type, episode_id=eid)
+        task(job_id, eid)
+        return db.get_job(job_id)
+
+    def test_full_pipeline_transcribes_then_digests(self, env):
+        tasks, db, eid, events, *_ = env
+        job = self._run(db, tasks.task_full_pipeline, eid)
+        assert job["status"] == "completed"
+        assert events == ["transcribe", "unload", "digest"]
+        assert db.get_episode_by_id(eid)["status"] == "processed"
+
+    def test_transcribe_stops_before_the_digest(self, env):
+        tasks, db, eid, events, *_ = env
+        job = self._run(db, tasks.task_transcribe, eid, "transcribe")
+        assert (job["status"], job["message"]) == ("completed", "Transcribed: Ep")
+        assert events == ["transcribe", "unload"]
+
+    def test_steps_already_done_are_skipped(self, env):
+        tasks, db, eid, events, *_ = env
+        db.update_episode_status(eid, "transcribed")
+        assert self._run(db, tasks.task_full_pipeline, eid)["status"] == "completed"
+        assert events == ["digest"]
+
+    def test_a_failed_transcription_gives_its_reason_and_unloads_the_models(
+        self, env, monkeypatch
+    ):
+        from p3.transcriber import TranscriptionError
+
+        tasks, db, eid, events, Transcriber, _ = env
+
+        def fail(self, episode_id):
+            raise TranscriptionError("Whisper failed: out of memory")
+
+        monkeypatch.setattr(Transcriber, "transcribe_episode", fail)
+        job = self._run(db, tasks.task_full_pipeline, eid)
+        assert (job["status"], job["error"]) == (
+            "failed",
+            "Whisper failed: out of memory",
+        )
+        assert events == ["unload"]  # no digest, and the memory is freed
+
+    def test_a_failed_digest_gives_its_reason(self, env, monkeypatch):
+        from p3.cleaner import DigestError
+
+        tasks, db, eid, events, _, Cleaner = env
+        db.update_episode_status(eid, "transcribed")
+
+        def fail(self, episode_id):
+            raise DigestError("The summary failed: connection refused")
+
+        monkeypatch.setattr(Cleaner, "generate_summary", fail)
+        for task, kind in (
+            (tasks.task_digest, "digest"),
+            (tasks.task_full_pipeline, "full_pipeline"),
+        ):
+            job = self._run(db, task, eid, kind)
+            assert job["status"] == "failed"
+            assert job["error"] == "The summary failed: connection refused"
+
+    def test_a_missing_episode_fails(self, env):
+        tasks, db, *_ = env
+        job = self._run(db, tasks.task_full_pipeline, 999)
+        assert (job["status"], job["error"]) == ("failed", "Episode 999 not found")

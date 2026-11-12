@@ -377,45 +377,25 @@ def task_import_feeds(job_id: str, feeds: list[dict]):
 # ------------------------------------------------------------------
 
 
-def task_transcribe(job_id: str, episode_id: int):
-    """Transcribe a single episode."""
-    db = get_db()
+def _transcribe(db, job_id: str, episode: dict, settings: dict):
+    """Transcribe ``episode`` as part of job ``job_id``, whose message shows
+    the time elapsed meanwhile. The models are unloaded afterwards, whether
+    or not it worked. Raises TranscriptionError if it didn't."""
+    label = f"Transcribing: {episode['title']}"
+    db.update_job(job_id, message=label)
+    _release_ollama(settings)
+    transcriber = _make_transcriber(db, settings)
+    stop_heartbeat = _start_heartbeat(db, job_id, label)
     try:
-        episode = db.get_episode_by_id(episode_id)
-        title = episode["title"] if episode else f"episode {episode_id}"
-
-        db.update_job(
-            job_id,
-            status="running",
-            message=f"Loading transcription model for: {title}",
-        )
-
-        settings = _get_settings()
-        _release_ollama(settings)
-        transcriber = _make_transcriber(db, settings)
-
-        db.update_job(job_id, progress=0.2, message=f"Transcribing: {title}")
-        stop_heartbeat = _start_heartbeat(db, job_id, f"Transcribing: {title}")
-        try:
-            success = transcriber.transcribe_episode(episode_id)
-        finally:
-            stop_heartbeat()
+        transcriber.transcribe_episode(episode["id"])
+    finally:
+        stop_heartbeat()
         transcriber.unload_models()
 
-        if success:
-            db.update_job(
-                job_id,
-                status="completed",
-                progress=1.0,
-                message=f"Transcribed: {title}",
-            )
-        else:
-            db.update_job(
-                job_id, status="failed", error="Transcription returned no result"
-            )
-    except Exception as e:
-        logger.exception("Transcribe task failed")
-        db.update_job(job_id, status="failed", error=str(e))
+
+def task_transcribe(job_id: str, episode_id: int):
+    """Transcribe a single episode."""
+    task_full_pipeline(job_id, episode_id, digest=False)
 
 
 # ------------------------------------------------------------------
@@ -428,20 +408,10 @@ def task_digest(job_id: str, episode_id: int):
     db = get_db()
     try:
         db.update_job(job_id, status="running", message="Generating summary...")
-
-        cleaner = _make_cleaner(db, _get_settings())
-
-        db.update_job(job_id, progress=0.3, message="Cleaning transcript...")
-        result = cleaner.generate_summary(episode_id)
-
-        if result:
-            db.update_job(
-                job_id, status="completed", progress=1.0, message="Summary complete"
-            )
-        else:
-            db.update_job(
-                job_id, status="failed", error="Summary generation returned no result"
-            )
+        _make_cleaner(db, _get_settings()).generate_summary(episode_id)
+        db.update_job(
+            job_id, status="completed", progress=1.0, message="Summary complete"
+        )
     except Exception as e:
         logger.exception("Digest task failed")
         db.update_job(job_id, status="failed", error=str(e))
@@ -491,7 +461,7 @@ def task_export(
                 path = exporter.get_export_path(f"digest_{target_date}.json")
             else:
                 continue
-            with open(path, "w") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 f.write(content)
             files.append(str(path))
 
@@ -622,14 +592,7 @@ def task_generate_synopsis(
         db.update_job(job_id, status="running", message="Generating synopsis...")
 
         cleaner = _make_cleaner(db, user_settings(username), provider, model)
-
-        synopsis = cleaner.generate_synopsis(episode_id)
-        if not synopsis:
-            db.update_job(
-                job_id, status="failed", error="Synopsis generation returned no content"
-            )
-            return
-
+        cleaner.generate_synopsis(episode_id)
         db.update_job(
             job_id, status="completed", progress=1.0, message="Synopsis generated"
         )
@@ -1123,52 +1086,33 @@ def _email_run_report(db, run_id: str, username: str) -> bool:
         return False
 
 
-def task_full_pipeline(job_id: str, episode_id: int):
-    """Run transcribe → digest for a single episode."""
+def task_full_pipeline(job_id: str, episode_id: int, digest: bool = True):
+    """Run the steps an episode still needs: transcribe, then digest
+    (transcribe only, with ``digest`` off). A step already done is skipped,
+    so the job is safe to repeat."""
     db = get_db()
     try:
-        db.update_job(job_id, status="running", message="Starting full pipeline...")
-
+        db.update_job(job_id, status="running", message="Starting...")
         episode = db.get_episode_by_id(episode_id)
         if not episode:
-            db.update_job(
-                job_id, status="failed", error=f"Episode {episode_id} not found"
-            )
-            return
-
+            raise RuntimeError(f"Episode {episode_id} not found")
         settings = _get_settings()
 
-        # Step 1: Transcribe (if needed)
         if episode["status"] == "downloaded":
-            db.update_job(job_id, progress=0.1, message="Transcribing...")
-            _release_ollama(settings)
-            transcriber = _make_transcriber(db, settings)
-            success = transcriber.transcribe_episode(episode_id)
-            transcriber.unload_models()
-            if not success:
-                db.update_job(job_id, status="failed", error="Transcription failed")
-                return
-
-        # Step 2: Digest (if needed)
-        episode = db.get_episode_by_id(episode_id)
-        if not episode:
-            db.update_job(
-                job_id, status="failed", error=f"Episode {episode_id} not found"
-            )
-            return
-        if episode["status"] == "transcribed":
+            db.update_job(job_id, progress=0.1)
+            _transcribe(db, job_id, episode, settings)
+        if digest and episode["status"] != "processed":
             db.update_job(job_id, progress=0.5, message="Generating summary...")
-            cleaner = _make_cleaner(db, settings)
-            result = cleaner.generate_summary(episode_id)
-            if not result:
-                db.update_job(
-                    job_id, status="failed", error="Summary generation failed"
-                )
-                return
+            _make_cleaner(db, settings).generate_summary(episode_id)
 
         db.update_job(
-            job_id, status="completed", progress=1.0, message="Pipeline complete"
+            job_id,
+            status="completed",
+            progress=1.0,
+            message=(
+                "Pipeline complete" if digest else f"Transcribed: {episode['title']}"
+            ),
         )
     except Exception as e:
-        logger.exception("Full pipeline task failed")
+        logger.exception("Pipeline task failed")
         db.update_job(job_id, status="failed", error=str(e))

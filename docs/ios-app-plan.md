@@ -1,6 +1,6 @@
 # iOS app plan
 
-**Status: shelved (2026-10-27).** Nothing has been built yet: there is no `ios/` folder, no branch and no workflow. This document records the plan and the decisions made so far, so work can pick up where it stopped.
+**Status: deferred (2026-11-11).** Nothing has been built: there is no `ios/` folder, no branch and no workflow. The phone comes after the desktop app ([ROADMAP.md](../ROADMAP.md), direction, item 4), and first as the web app made installable from the browser. This document, written 2026-10-27, records the native-app plan and the decisions made then, so work can pick up where it stopped. It predates the plan to make single-user installs the default: its sign-in phase assumes the Authelia proxy mode.
 
 ## Goal
 

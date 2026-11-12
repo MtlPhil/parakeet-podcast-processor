@@ -1,7 +1,7 @@
 """Shared settings (config/feeds.yaml): admins only.
 
 These cover work done once per episode for everyone: transcription, audio
-format, the LLM that cleans and summarizes. Each user's own settings are
+format, the LLM that summarizes. Each user's own settings are
 under /api/me/settings.
 """
 

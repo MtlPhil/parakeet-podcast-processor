@@ -716,3 +716,56 @@ class TestShowNotes:
             eid, [{"start": 0, "end": 1, "text": "hi", "speaker": "", "confidence": 1}]
         )
         assert db.set_missing_description("http://example.com/ep.mp3", "Notes")
+
+
+class TestTransactions:
+    _SEGMENT = {"start": 0.0, "end": 1.0, "text": "Hello", "confidence": 0.9}
+
+    @pytest.fixture
+    def episode_id(self, db):
+        pid = db.add_podcast("Pod", "http://example.com/rss")
+        return db.add_episode(pid, "Ep", None, "http://example.com/ep.mp3")
+
+    def test_a_failed_block_changes_nothing(self, db, episode_id):
+        db.add_transcript_segments(episode_id, [self._SEGMENT])
+        with pytest.raises(RuntimeError):
+            with db.transaction():
+                db.add_transcript_segments(episode_id, [])
+                db.update_episode_status(episode_id, "transcribed")
+                raise RuntimeError("interrupted")
+        assert len(db.get_transcripts_for_episode(episode_id)) == 1
+        assert db.get_episode_by_id(episode_id)["status"] == "downloaded"
+
+    def test_the_connection_is_usable_after_a_failed_block(self, db, episode_id):
+        with pytest.raises(RuntimeError):
+            with db.transaction():
+                raise RuntimeError("interrupted")
+        with db.transaction():
+            db.update_episode_status(episode_id, "transcribed")
+        assert db.get_episode_by_id(episode_id)["status"] == "transcribed"
+
+    def test_store_transcript_sets_segments_language_and_status(self, db, episode_id):
+        db.store_transcript(episode_id, [self._SEGMENT, self._SEGMENT], "fr")
+        episode = db.get_episode_by_id(episode_id)
+        assert (episode["status"], episode["language"]) == ("transcribed", "fr")
+        assert len(db.get_transcripts_for_episode(episode_id)) == 2
+
+    def test_a_summary_that_fails_to_store_keeps_the_previous_one(self, db, episode_id):
+        db.add_summary(episode_id, ["a"], [], [], [], "old")
+        with pytest.raises(Exception):
+            # A set can't be stored as JSON: the insert fails after the delete.
+            db.add_summary(episode_id, {"a"}, [], [], [], "new")
+        assert db.get_summary_by_episode(episode_id)["full_summary"] == "old"
+
+
+class TestSessions:
+    def test_signing_in_clears_out_expired_sessions(self, db):
+        from datetime import datetime, timedelta
+
+        db.ensure_user("alice")
+        now = datetime.now()
+        db.create_session("old", "alice", now - timedelta(days=1))
+        db.create_session("current", "alice", now + timedelta(days=1))
+        db.create_session("new", "alice", now + timedelta(days=30))
+        rows = db.conn.execute("SELECT token_hash FROM sessions ORDER BY 1").fetchall()
+        assert [r[0] for r in rows] == ["current", "new"]

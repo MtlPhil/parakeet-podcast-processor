@@ -11,6 +11,12 @@ the GPU through MLX and the default LLM backend is a local
 [Ollama](https://ollama.com) model, so no audio or transcript has to leave the
 machine. OpenAI and Gemini are supported as optional hosted backends.
 
+**Other platforms.** Transcription currently works only on Apple Silicon:
+both speech engines are MLX builds. Everything else (fetching, digests,
+writing, the web app) runs on Linux, where the test suite also runs, but
+without a speech engine an episode cannot get past the download step. A
+cross-platform engine is the next item on the [roadmap](ROADMAP.md).
+
 P³ ships as both a command-line tool (`p3`) and a web app (FastAPI + React).
 
 ---
@@ -48,15 +54,15 @@ P³ ships as both a command-line tool (`p3`) and a web app (FastAPI + React).
   (MLX, large-v3-turbo by default), which is told the language. Parakeet has
   no language input and drifts into English on spontaneous non-English speech,
   so it is only used for the languages listed in `parakeet_languages`. Long
-  Parakeet episodes are transcribed in 10-minute chunks to keep memory use
-  bounded.
+  Parakeet episodes are transcribed in 10-minute chunks that overlap by 15
+  seconds, to keep memory use bounded without cutting a sentence at a chunk
+  boundary. If Parakeet fails, Whisper transcribes the whole episode.
 - **Transcript cleaning.** Filler words are stripped with a regex. The summary
   prompts then tell the LLM to ignore ads and sponsor reads. The transcript is
   not rewritten by the LLM first: that took most of each episode's processing
   time and let sponsors through more often than the prompt rule does.
 - **Structured digests.** Each episode gets a ~300-word summary plus lists of
-  key topics, themes, notable quotes and companies mentioned. If no LLM is
-  available, a keyword-frequency fallback fills them in.
+  key topics, themes, notable quotes and companies mentioned.
 - **Long-form synopsis.** On demand, P³ writes detailed study notes for an
   episode, one section of the transcript at a time.
 - **Writing tools.**
@@ -72,12 +78,15 @@ P³ ships as both a command-line tool (`p3`) and a web app (FastAPI + React).
 - **Web app.** Dashboard, podcast and episode pages, transcript and summary
   views, search across transcripts and summaries, bulk add (paste URLs or
   import an OPML file), content generation, settings, and live job progress.
-- **Several users.** Sign-in through Authelia behind a reverse proxy. Each
+- **Several users.** Sign-in with P³'s own accounts, or through Authelia
+  behind a reverse proxy (see [Users and sign-in](#users-and-sign-in)). Each
   user has their own podcasts, episodes, posts, writing tone and settings;
   an episode two users follow is downloaded and processed once.
 - **Daily run.** Every day at 4:00 (each user can change the time or turn it
   off), the user's podcasts are fetched and new episodes transcribed and
-  summarized, optionally followed by LinkedIn drafts and a digest export.
+  summarized, optionally followed by LinkedIn drafts, a digest export and an
+  emailed report. A run that could read no feed (no network) is tried again
+  every 15 minutes, a few times.
 - **Disk cleanup.** An episode's audio is deleted once it is digested; the
   transcript and summary are kept.
 - **Safe background processing.** Heavy work runs through a single serial job
@@ -110,12 +119,20 @@ Every step is idempotent. Re-transcribing or re-digesting an episode replaces
 its rows instead of duplicating them, and re-digesting keeps any synopsis that
 was already generated.
 
+Every step is also all or nothing. If transcription fails part-way, or the LLM
+cannot be reached or returns something unusable, nothing is stored, the
+episode keeps its status, and the job fails with the reason. Failed jobs can
+be retried from the dashboard, and the daily run picks up unprocessed
+episodes again the next day. The one exception is the French translation of
+a digest: if it fails, the English digest is kept and the translation can be
+redone from the Admin page.
+
 ## Requirements
 
 | Requirement | Notes |
 |---|---|
-| macOS on Apple Silicon (M1 or later) | Needed for Parakeet MLX, which is only installed on that platform. Elsewhere Whisper is used (untested). |
-| Python 3.10+ | |
+| macOS on Apple Silicon (M1 or later) | Needed to transcribe: Parakeet MLX and Whisper MLX are only installed on that platform. Elsewhere transcription fails with a message saying so. |
+| Python 3.11+ | |
 | [ffmpeg](https://ffmpeg.org) | Audio normalization and chunking: `brew install ffmpeg` |
 | [Ollama](https://ollama.com) | Default local LLM backend. Optional if you use OpenAI or Gemini. |
 | [Deno](https://deno.com) | Only for YouTube sources: yt-dlp's default JavaScript runtime for YouTube's player challenges. `brew install deno` |
@@ -158,16 +175,20 @@ brew install ffmpeg
 brew install ollama          # or download the app from https://ollama.com
 ollama pull gemma4:12b       # any chat model works; set it in config
 
-# 2. Python package
-git clone https://github.com/<your-account>/parakeet-podcast-processor.git
+# 2. Python package, at the dependency versions pinned in uv.lock
+git clone https://github.com/MtlPhil/parakeet-podcast-processor.git
 cd parakeet-podcast-processor
-python3 -m venv .venv
+pip install uv               # or: brew install uv
+uv sync --frozen --extra web # creates .venv; leave out --extra web for the CLI only
 source .venv/bin/activate
-pip install -e ".[web]"      # CLI + web API; use -e . for the CLI only
 
 # 3. Initialize directories, config and the database
 p3 init
 ```
+
+Without uv, `python3 -m venv .venv && source .venv/bin/activate &&
+pip install -e ".[web]"` installs the newest versions that satisfy
+`pyproject.toml` instead of the pinned ones.
 
 `p3 init` checks for `ffmpeg`, `ollama` and `deno` and creates `data/`, `exports/`,
 `blog_posts/` and `linkedin_posts/`. It also copies
@@ -231,14 +252,35 @@ settings:
 | Provider | Credentials | Notes |
 |---|---|---|
 | `ollama` | none | Runs locally. Models are unloaded shortly after use to free memory. |
-| `openai` | `OPENAI_API_KEY` environment variable | Any chat-completions model, e.g. `gpt-4o-mini`. |
+| `openai` | `OPENAI_API_KEY` environment variable, or the key alone in `config/openai_api_key.txt` (gitignored) | Any chat-completions model, e.g. `gpt-4o-mini`. |
 | `gemini` | `GEMINI_API_KEY` environment variable, or the key alone in `config/gemini_api_key.txt` (gitignored) | Uses `gemini_model`. |
 
 In the web app, the synopsis, blog and LinkedIn actions can also switch to
 Gemini for a single request without changing the default.
 
-If a hosted provider is selected but no key is found, digests fall back to
-basic keyword extraction instead of failing.
+If a hosted provider is selected but no key is found, digests fail with a
+message naming the missing key.
+
+Admins can also enter both keys in the web app's setup wizard, which writes
+those files.
+
+### Emailed reports
+
+The daily run can email each user its report. The mail server is a shared
+setting; each user turns the email on and sets their address on the Settings
+page.
+
+```yaml
+settings:
+  smtp_host: "smtp.gmail.com"
+  smtp_port: 587                    # 587 uses STARTTLS, 465 implicit TLS
+  smtp_user: "you@example.com"
+  smtp_from: "you@example.com"
+```
+
+The password is read from the `SMTP_PASSWORD` environment variable or
+`config/smtp_password.txt` (gitignored). A report that fails to send is tried
+again every 15 minutes, a few times.
 
 ## Using the CLI
 
@@ -250,7 +292,7 @@ Global options: `--config PATH`, `--db PATH`, `-v` (debug logging), `-q`
 | `p3 init` | Create directories, config and database; check prerequisites |
 | `p3 fetch [--max-episodes N] [--dry-run]` | Import new feeds from `config/feeds.yaml`, then download new episodes for every podcast in the library (each user's, for that user) |
 | `p3 transcribe [--episode-id ID] [--model NAME]` | Transcribe all `downloaded` episodes, or one |
-| `p3 digest [--episode-id ID] [--provider P] [--model M]` | Clean and summarize all `transcribed` episodes, or one |
+| `p3 digest [--episode-id ID] [--provider P] [--model M]` | Summarize all `transcribed` episodes, or one |
 | `p3 export [--date YYYY-MM-DD] [--format markdown\|json\|html] [--output PATH]` | Export the digest for a date (default: today) to `exports/` |
 | `p3 export-transcript [--date YYYY-MM-DD] [--format txt\|markdown]` | Export transcripts for a date, or for one episode (prompted) |
 | `p3 write --topic "…" [--date …] [--target-grade 91] [--dry-run]` | Write a graded blog post from a day's digests, plus social snippets |
@@ -280,9 +322,10 @@ P3_DEV_USER=me uvicorn p3.api.main:app --reload   # API on http://127.0.0.1:8000
 cd frontend && npm run dev                        # UI on http://localhost:5173 (proxies /api)
 ```
 
-Without a reverse proxy there is no signed-in user, so `P3_DEV_USER` names the
-user to act as (see [Deployment](#deployment)). The first user ever is an
-admin and takes over everything already in the library.
+In the default sign-in mode there is no signed-in user without a reverse
+proxy, so `P3_DEV_USER` names the user to act as (see
+[Users and sign-in](#users-and-sign-in)). The first user ever is an admin
+and takes over everything already in the library.
 
 The app's pages:
 
@@ -320,20 +363,33 @@ uvicorn p3.api.main:app --host 127.0.0.1 --port 8000
 Run it from the repository root. Data, config and output paths are relative to
 the working directory.
 
-### Users and sign-in (Authelia)
+### Users and sign-in
 
-P³ does not handle passwords. It expects a reverse proxy in front of it that
-signs users in with [Authelia](https://www.authelia.com/)'s forward-auth and
-passes the user in the `Remote-User` header (plus `Remote-Name` and
-`Remote-Email`). Requests without that header are refused.
+The `P3_AUTH` environment variable picks one of two modes.
+
+**`P3_AUTH=local`: P³'s own accounts.** The mode the Mac installer sets up,
+for a machine on a home network. The setup wizard creates the first account,
+an admin; admins create the others on the Admin page. Passwords are stored
+as scrypt hashes and a sign-in lasts 30 days. The `Remote-User` header and
+`P3_DEV_USER` are ignored in this mode.
+
+**Proxy mode (the default): Authelia.** P³ handles no passwords. It expects
+a reverse proxy in front of it that signs users in with
+[Authelia](https://www.authelia.com/)'s forward-auth and passes the user in
+the `Remote-User` header (plus `Remote-Name` and `Remote-Email`). Requests
+without that header are refused.
 
 - **The header is trusted.** Keep P³ bound to `127.0.0.1` (or a network only
   the proxy can reach) so nobody can send the header themselves, and make the
   proxy overwrite any copy a client sends; Traefik's `authResponseHeaders`
   does.
-- **Roles.** The first user to sign in is an admin and takes over everything
-  already in the library. Admins see the shared settings and the Admin page,
-  where they can make other users admins.
+
+In both modes:
+
+- **Roles.** The first user is an admin and takes over everything already in
+  the library. Admins see the shared settings and the Admin page, where they
+  can make other users admins and delete users. Users can delete their own
+  account.
 - **Separate libraries, shared processing.** Each user sees only the podcasts
   they follow and the episodes they have. Deleting an episode removes it from
   that user's library only; their fetches won't bring it back unless they
@@ -364,9 +420,22 @@ http:
           - url: "http://host.docker.internal:8000"
 ```
 
-For local development without a proxy, set `P3_DEV_USER` to the username to
-act as; it is used only when the header is absent. Never set it on a server
-others can reach.
+For local development in proxy mode without a proxy, set `P3_DEV_USER` to the
+username to act as; it is used only when the header is absent. Never set it
+on a server others can reach.
+
+### Environment variables
+
+| Variable | Effect |
+|---|---|
+| `P3_AUTH` | `local` for P³'s own accounts; anything else, or unset, is proxy mode |
+| `P3_DEV_USER` | Proxy mode only: the user to act as when no `Remote-User` header arrives |
+| `P3_LOG_LEVEL` | Log level of the web server's own messages (default `INFO`) |
+| `OPENAI_API_KEY`, `GEMINI_API_KEY`, `SMTP_PASSWORD` | Secrets; each takes precedence over its file in `config/` |
+
+`P3_HOST`, `P3_PORT` and `P3_MANAGED` belong to the Mac installer's launcher
+(`bin/p3-serve`), and the other `P3_*` variables to `install.sh`, which
+documents them at its top.
 
 ### Running as a background service (launchd)
 
@@ -437,22 +506,30 @@ p3/
 ├── downloader.py     RSS and YouTube fetching, download with retry, ffmpeg normalization
 ├── youtube.py        YouTube URL parsing, listing and audio download via yt-dlp
 ├── url_resolver.py   Source URL resolution: RSS, Apple Podcasts (iTunes Lookup API), YouTube
-├── transcriber.py    Parakeet MLX (chunked) with Whisper fallback
-├── cleaner.py        Transcript cleaning, digests, long-form synopsis
+├── transcriber.py    Language detection, Parakeet MLX (chunked) and Whisper MLX
+├── cleaner.py        Digests, long-form synopsis, Quebec French translation
 ├── writer.py         Graded blog posts, LinkedIn posts, social snippets
 ├── exporter.py       Markdown / JSON / HTML formatting
+├── mailer.py         The daily run's emailed report (SMTP)
 ├── llm.py            Ollama / OpenAI / Gemini chat client and provider resolution
 ├── database.py       DuckDB storage layer
 └── api/
-    ├── main.py       FastAPI app, lifespan, static frontend
-    ├── deps.py       Shared database instance and config I/O
-    ├── job_queue.py  Single-threaded serial job runner
-    ├── tasks.py      Job wrappers around the pipeline modules
+    ├── main.py       FastAPI app, lifespan, cross-site write check, static frontend
+    ├── auth.py       Who is making a request: local accounts or the proxy's header
+    ├── deps.py       Shared database instance, config I/O, per-user settings
+    ├── job_queue.py  Single-threaded serial job runner with a priority lane
+    ├── tasks.py      Job wrappers around the pipeline modules; the daily run's steps
+    ├── scheduler.py  Starts each user's daily run when its time comes
+    ├── content.py    Reading generated posts back from disk
     ├── models.py     Pydantic request/response schemas
-    └── routers/      podcasts, episodes, jobs, transcripts, summaries,
-                      exports, blogs, linkedin, settings
+    └── routers/      podcasts, episodes, jobs, transcripts, summaries, exports,
+                      blogs, linkedin, search, settings, daily_run, users,
+                      auth, setup
 frontend/             React + Vite + Tailwind single-page app
 tests/                pytest suite (no external services required)
+bin/                  Launcher and uninstaller used by the Mac installer
+install.sh            One-command Mac installer and updater
+docs/                 Plans for work not built yet
 ```
 
 ### Data model
@@ -470,20 +547,28 @@ DuckDB file at `data/p3.duckdb`:
   French versions (`*_fr`) of the summary, synopsis, topics and themes
 - `jobs`: background job type, status, progress, message, error, timestamps,
   the user who started it, and the daily run it belongs to
-- `users`: username, name, email, role (`admin` or `user`) and own settings
-- `user_podcasts`, `user_episodes`, `user_hidden_episodes`: who follows which
+- `users`: username, name, email, role (`admin` or `user`), own settings, and
+  in local sign-in mode a password hash
+- `sessions`: local sign-in sessions, keyed by the hash of their cookie token
+- `user_podcasts`, `user_episodes`, `user_deleted_episodes`: who follows which
   podcast, who has which episode, and which episodes a user deleted
+  (remembered by URL, so a deleted episode's data can go)
 - `app_state`: small key-value store (daily run dates, imported config feeds)
 
 Rows are returned as dicts keyed by column name. Schema changes are applied
 with idempotent `CREATE … IF NOT EXISTS` / `ADD COLUMN IF NOT EXISTS`
-statements on startup.
+statements on startup. Writes that belong together (a transcript with its
+episode's new status, a replaced summary) run in one transaction. Deleting a
+podcast with its episodes does not: DuckDB refuses to delete a row and the
+rows referencing it in the same transaction.
 
 ### Background jobs
 
 API endpoints never do heavy work inline. They create a `jobs` row and enqueue
 a task on a single worker thread (`job_queue.py`). Tasks run strictly one at a
 time, because loading several ML models at once can exhaust memory on a laptop.
+The queue has two lanes: a daily run's jobs go ahead of everything else, and
+the backlog and work started from the web app wait until it is done.
 The frontend polls `/api/jobs/{id}` for progress. Jobs left pending or running
 by a previous process are marked as failed on startup, and they can be retried.
 
@@ -498,8 +583,10 @@ bounded in two ways:
 - **Output.** Every request sets a token cap, and Ollama gets a mild repeat
   penalty, so a model caught in a repetition loop cannot run away.
 
-Structured JSON is extracted from model output with code-fence stripping and
-balanced-brace matching. List fields are coerced to plain strings.
+Structured JSON is read from model output starting at its first `{`, so a
+preamble or code fences around it don't matter; a reply with no JSON object is
+asked for once more, then fails the digest. List fields are coerced to plain
+strings.
 
 ### Output locations
 
@@ -517,23 +604,27 @@ owner.
 ## Development
 
 ```bash
-pip install -e ".[dev,web]"
-PYTHONPATH=. pytest tests/ -v        # full suite, no network or models needed
-black . && isort .                   # formatting
-mypy p3/                             # type checking
+uv sync --frozen --extra dev --extra web   # the versions CI uses, into .venv
+uv run pytest tests/ -v              # full suite, no network or models needed
+uv run black . && uv run isort .     # formatting
+uv run mypy p3/                      # type checking
 cd frontend && npm run lint          # frontend lint
 ```
 
+After changing dependencies in `pyproject.toml`, run `uv lock` and commit
+`uv.lock`.
+
 GitHub Actions runs all of these on every push to `main` and on pull requests
-(`.github/workflows/ci.yml`): formatting checks, mypy and the test suite on an
-Apple Silicon macOS runner, and ESLint plus a production build for the
-frontend.
+(`.github/workflows/ci.yml`): formatting checks, mypy and the test suite on
+both an Apple Silicon macOS runner and Linux, and ESLint plus a production
+build for the frontend.
 
 Tests cover the database layer, API endpoints (through `TestClient` against a
 temporary database), the job queue and task wrappers, text-processing helpers
 in the cleaner and writer, the exporters, the LLM client's configuration logic,
-and the RSS and YouTube download paths with the network mocked out. Model
-inference, LLM requests and the CLI are not exercised.
+and the RSS and YouTube download paths with the network mocked out. The speech
+engines and the LLM are replaced by stand-ins: model inference, real LLM
+requests, the CLI and the Mac installer are not exercised.
 
 See [ROADMAP.md](ROADMAP.md) for planned work.
 

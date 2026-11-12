@@ -10,6 +10,10 @@ import ProviderSelect from '../components/ProviderSelect';
 import LanguageToggle from '../components/LanguageToggle';
 import { languageOf, useMe } from '../hooks/useMe';
 
+// What identifies a post: its file name without ".md". Two posts on the same
+// episode or topic share their slug, so the slug alone would open the newest.
+const postName = (post) => post.filename.replace(/\.md$/, '');
+
 // A post's text in the chosen language, with a note when a post made
 // before French versions existed has only English.
 function PostBody({ post, language, onLanguage }) {
@@ -95,17 +99,17 @@ export default function BlogPosts() {
     setEpisodeId('');
   };
 
-  const handleViewLinkedin = async (slug) => {
+  const handleViewLinkedin = async (name) => {
     try {
-      setSelectedLinkedin(await getLinkedInPost(slug));
+      setSelectedLinkedin(await getLinkedInPost(name));
     } catch (e) {
       setError(e.message);
     }
   };
 
-  const handleViewBlog = async (slug) => {
+  const handleViewBlog = async (name) => {
     try {
-      setSelectedBlog(await getBlog(slug));
+      setSelectedBlog(await getBlog(name));
     } catch (e) {
       setError(e.message);
     }
@@ -317,9 +321,9 @@ export default function BlogPosts() {
           <div className="space-y-3">
             {linkedinPosts.map((p) => (
               <div
-                key={p.slug}
+                key={p.filename}
                 className="bg-white border rounded-lg p-4 hover:bg-gray-50 cursor-pointer"
-                onClick={() => handleViewLinkedin(p.slug)}
+                onClick={() => handleViewLinkedin(postName(p))}
               >
                 <h3 className="font-medium text-gray-900">{p.title}</h3>
                 <p className="text-sm text-gray-500 mt-1">
@@ -339,9 +343,9 @@ export default function BlogPosts() {
           <div className="space-y-3">
             {blogs.map((b) => (
               <div
-                key={b.slug}
+                key={b.filename}
                 className="bg-white border rounded-lg p-4 hover:bg-gray-50 cursor-pointer"
-                onClick={() => handleViewBlog(b.slug)}
+                onClick={() => handleViewBlog(postName(b))}
               >
                 <h3 className="font-medium text-gray-900">{b.title}</h3>
                 <p className="text-sm text-gray-500 mt-1">

@@ -117,3 +117,12 @@ def test_synopsis_email_escapes_html():
     assert "<h2>A &lt;b&gt; title</h2>" in html
     assert 'href="https://e.com/?a=1&amp;b=2"' in html
     assert "<p>Two &amp; three.</p>" in html
+
+
+def test_send_requires_a_sender():
+    """Without smtp_from or smtp_user there is no From address; the mail
+    library's own error for that says nothing useful."""
+    with pytest.raises(RuntimeError, match="smtp_from"):
+        mailer.send_email(
+            {"smtp_host": "mail.example.com"}, "a@b.c", "s", "t", "<p>t</p>"
+        )
