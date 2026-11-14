@@ -259,6 +259,46 @@ class TestNaming:
         assert "[6:40] J'ai passé huit ans chez Meta" in prompt
         assert "(nothing after the opening)" in prompt  # A's "Merci." is too short
 
+    def test_a_voice_first_heard_later_gets_its_introduction(self, db):
+        episode = _episode(db)
+        _stored(
+            episode,
+            db,
+            [
+                (0, 10, "A", "Bienvenue, Étienne Crevier à l'animation."),
+                (10, 20, "B", "Et moi, Joëlle Pineau."),
+                (600, 610, "A", "On parlait de régulation tantôt."),
+                (1150, 1170, "A", "Je reçois maintenant Marie Tremblay, avocate."),
+                (1170, 1180, "C", "Merci de m'accueillir, Étienne."),
+                (1180, 1190, "C", "La loi date de 2019."),
+                (1250, 1260, "C", "Plus tard, une autre idée."),
+            ],
+        )
+        llm = FakeLLM({"C": {"name": "Marie Tremblay", "role": "guest"}})
+        stored = name_speakers(db, episode, llm)
+        prompt = llm.prompts[0]
+        assert (
+            "C is first heard after the opening. Around its first turn:\n<<<\n"
+            "[19:10] A: Je reçois maintenant Marie Tremblay, avocate.\n"
+            "[19:30] C: Merci de m'accueillir, Étienne. La loi date de 2019.\n>>>"
+        ) in prompt  # a minute before, its first half minute, not 10:00
+        assert prompt.count("is first heard after the opening") == 1  # A, B: opening
+        assert stored["C"]["name"] == "Marie Tremblay"
+
+    def test_a_late_voice_keeps_the_lines_nearest_its_first_turn(self, db):
+        episode = _episode(db)
+        rows = [(0, 5, "A", "Bonjour.")]
+        rows += [
+            (1000 + i, 1001 + i, "A", f"phrase{i} " + "x" * 200) for i in range(59)
+        ]
+        rows += [(1060, 1065, "B", "Ma première phrase.")]
+        _stored(episode, db, rows)
+        llm = FakeLLM({})
+        name_speakers(db, episode, llm)
+        turn = llm.prompts[0].split("Around its first turn:\n")[1]
+        assert "phrase58" in turn and "Ma première phrase." in turn
+        assert "phrase0 " not in turn  # the earliest lines went over the budget
+
     def test_without_an_llm_speakers_are_numbered_by_talk_time(self, db):
         episode = _episode(db)
         _stored(episode, db, [(0, 5, "A", "Hi."), (5, 50, "B", "Long answer.")])

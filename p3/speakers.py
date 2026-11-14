@@ -274,7 +274,9 @@ _NAME_SYSTEM = """You identify the speakers of a podcast episode. Its \
 transcript was split by voice into anonymous speakers. You get the show \
 notes, the episode's opening minutes as a conversation (where people are \
 introduced; it may start with a teaser of clips from later in the \
-episode), and a few later lines of each speaker. Reply with one JSON object \
+episode), a few later lines of each speaker and, for a speaker who first \
+speaks after the opening, the conversation around their first turn (where \
+a host often introduces them). Reply with one JSON object \
 and nothing else, with one entry per speaker label:
 {"SPEAKER_00": {"name": the person's full name, or null, "role": "host", \
 "guest", "ad" (a sponsor read or advertisement), "intro" (the show's \
@@ -298,6 +300,13 @@ _LINES_PER_SPEAKER = 3
 # "abbatiello" and "abattiello" are 0.9; "ash" and "ask" 0.67.
 _NAME_WORD_SIMILARITY = 0.85
 _LINE_CHARS = 200
+# A voice first heard after the opening also gets the conversation around
+# its first turn: the minute before (a host introducing them) and its first
+# half minute, within a character budget, for the voices that talk most.
+_FIRST_TURN_BEFORE = 60
+_FIRST_TURN_AFTER = 30
+_FIRST_TURN_CHARS = 1500
+_LATE_SPEAKERS = 5
 
 
 def _clock(seconds: Optional[float]) -> str:
@@ -317,7 +326,7 @@ def speaker_stats(segments: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
         entry["seconds"] += (s.get("timestamp_end") or 0) - (
             s.get("timestamp_start") or 0
         )
-        text = " ".join(str(s.get("text") or "").split())
+        text = _text(s)
         if (
             len(text) > 40
             and (s.get("timestamp_start") or 0) >= OPENING_SECONDS
@@ -329,15 +338,20 @@ def speaker_stats(segments: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     return stats
 
 
-def opening(segments: List[Dict[str, Any]]) -> str:
-    """The first ``OPENING_SECONDS`` as a conversation, one line a turn."""
+def _text(segment: Dict[str, Any]) -> str:
+    return " ".join(str(segment.get("text") or "").split())
+
+
+def _conversation(segments: List[Dict[str, Any]], max_chars: int) -> str:
+    """Segments as a conversation, one line a turn, stopping once past
+    ``max_chars``."""
     lines: List[str] = []
     previous = None
     used = 0
     for s in segments:
-        if (s.get("timestamp_start") or 0) >= OPENING_SECONDS or used > _OPENING_CHARS:
+        if used > max_chars:
             break
-        text = " ".join(str(s.get("text") or "").split())
+        text = _text(s)
         if not text:
             continue
         label = s.get("speaker") or "?"
@@ -348,6 +362,57 @@ def opening(segments: List[Dict[str, Any]]) -> str:
             previous = label
         used += len(text)
     return "\n".join(lines)
+
+
+def _opening_segments(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The segments ``opening`` shows."""
+    shown: List[Dict[str, Any]] = []
+    used = 0
+    for s in segments:
+        if (s.get("timestamp_start") or 0) >= OPENING_SECONDS or used > _OPENING_CHARS:
+            break
+        shown.append(s)
+        used += len(_text(s))
+    return shown
+
+
+def opening(segments: List[Dict[str, Any]]) -> str:
+    """The first ``OPENING_SECONDS`` as a conversation, one line a turn."""
+    return _conversation(_opening_segments(segments), _OPENING_CHARS)
+
+
+def first_turns(
+    segments: List[Dict[str, Any]], stats: Dict[str, Dict[str, Any]]
+) -> Dict[str, str]:
+    """For each voice not heard in the opening (the ``_LATE_SPEAKERS`` that
+    talk most), the conversation around its first turn: up to
+    ``_FIRST_TURN_BEFORE`` seconds before it, where it is usually introduced,
+    and its first ``_FIRST_TURN_AFTER`` seconds, keeping the lines nearest
+    the turn within ``_FIRST_TURN_CHARS``."""
+    heard = {s.get("speaker") for s in _opening_segments(segments)}
+    late = [label for label in stats if label not in heard]
+    late = sorted(late, key=lambda label: -stats[label]["seconds"])[:_LATE_SPEAKERS]
+    turns: Dict[str, str] = {}
+    for label in stats:
+        if label not in late:
+            continue
+        first = next(
+            s.get("timestamp_start") or 0 for s in segments if s.get("speaker") == label
+        )
+        before = [
+            s
+            for s in segments
+            if first - _FIRST_TURN_BEFORE <= (s.get("timestamp_start") or 0) < first
+        ]
+        after = [
+            s
+            for s in segments
+            if first <= (s.get("timestamp_start") or 0) < first + _FIRST_TURN_AFTER
+        ]
+        while before and sum(len(_text(s)) for s in before + after) > _FIRST_TURN_CHARS:
+            before.pop(0)
+        turns[label] = _conversation(before + after, _FIRST_TURN_CHARS)
+    return turns
 
 
 def _fold(text: str) -> str:
@@ -374,12 +439,19 @@ def name_prompt(
         f"Show notes:\n{_fence(notes or '(none)')}",
         f"The opening:\n{_fence(opening(segments))}",
     ]
+    turns = first_turns(segments, stats)
     for label, entry in stats.items():
         later = "\n".join(entry["lines"]) or "(nothing after the opening)"
-        parts.append(
+        part = (
             f"{label}: {entry['seconds'] / 60:.0f} min of speech in all. "
             f"Later lines:\n{_fence(later)}"
         )
+        if label in turns:
+            part += (
+                f"\n{label} is first heard after the opening. Around its "
+                f"first turn:\n{_fence(turns[label])}"
+            )
+        parts.append(part)
     return "\n\n".join(parts)
 
 
