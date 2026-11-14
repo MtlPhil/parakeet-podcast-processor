@@ -45,6 +45,20 @@ def test_report_groups_digests_by_theme_in_the_users_language(db):
     assert "Erreurs" not in text
 
 
+def test_original_language_shows_each_digest_in_its_episodes_language(db):
+    _processed_episode(db, "run1", "Quebec", ["Affaires"], ["Affaires"])
+    _processed_episode(db, "run1", "Boston", ["AI"], ["IA"])
+    db.set_episode_language(db.get_episode_id_by_url("https://e.com/Quebec"), "fr")
+    db.set_episode_language(db.get_episode_id_by_url("https://e.com/Boston"), "en")
+
+    report = mailer.collect_run_report(db, "run1", "original")
+    subject, text, html = mailer.build_email(report, "2026-10-18", "original")
+
+    assert "Résumé de Quebec" in text and "Summary of Quebec" not in text
+    assert "Summary of Boston" in text and "Résumé de Boston" not in text
+    assert "new" in subject  # the email's own labels stay in English
+
+
 def test_report_lists_errors_even_on_completed_jobs(db):
     podcast_id = db.add_podcast("Show", "https://example.com/feed.rss")
     job_id = db.create_job("fetch", podcast_id=podcast_id, run_id="run2")

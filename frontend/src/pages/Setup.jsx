@@ -98,6 +98,7 @@ function LanguageStep({ me, reload, ...nav }) {
       <div className="space-y-2">
         <Choice name="language" value="en" current={language} onChange={setLanguage} title="English" />
         <Choice name="language" value="fr" current={language} onChange={setLanguage} title="Français (Québec)" />
+        <Choice name="language" value="original" current={language} onChange={setLanguage} title="Original language (each podcast's own)" />
       </div>
     </StepFrame>
   );

@@ -73,7 +73,9 @@ P³ ships as both a command-line tool (`p3`) and a web app (FastAPI + React).
     draft until it reaches a target score (91/100 by default, up to 3 rounds).
   - *LinkedIn posts* for a single episode in English and in Quebec French.
   - Every digest, synopsis and post exists in English and Quebec French.
-    Each user picks the language shown first and can switch on any page.
+    Each user picks the language shown first (English, French, or each
+    episode's own: French for French episodes, English for the rest) and can
+    switch on any page. Emails and the digest export follow the same choice.
   - *Social snippets* (Twitter/LinkedIn) generated from a finished blog post.
 - **Ask.** Questions in plain language, in English or French, answered from
   your own library with every claim cited to an episode and a transcript

@@ -57,6 +57,7 @@ function MySettings() {
         <select id="language" value={own.language || effective.language} onChange={(e) => set('language', e.target.value)} className={inputClass}>
           <option value="en">English</option>
           <option value="fr">Français (Québec)</option>
+          <option value="original">Original language (each podcast's own)</option>
         </select>
       </Field>
 
