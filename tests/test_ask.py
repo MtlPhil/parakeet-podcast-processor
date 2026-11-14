@@ -577,15 +577,15 @@ class TestAskAPI:
 
     def test_paused_during_transcription(self, api, monkeypatch):
         client, _ = api
-        from p3.api import tasks
+        from p3.api.tasks import pipeline
 
-        tasks.transcribing.set()
+        pipeline.transcribing.set()
         try:
             done = _events(
                 client.post("/api/ask", json={"question": "bank rates"}).text
             )[-1]
         finally:
-            tasks.transcribing.clear()
+            pipeline.transcribing.clear()
         assert done["mode"] == "paused"
         assert client.get("/api/ask/status").json()["models_paused"] is False
 

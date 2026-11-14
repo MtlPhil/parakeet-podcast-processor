@@ -6,9 +6,10 @@ from datetime import datetime, timedelta
 import pytest
 
 import p3.api.deps as deps
-from p3.api import job_queue, tasks
+from p3.api import job_queue
 from p3.api.scheduler import parse_run_time, run_if_due
-from p3.api.tasks import run_key
+from p3.api.tasks import daily_run
+from p3.api.tasks.daily_run import run_key
 from p3.database import INTERRUPTED_ERROR
 
 
@@ -109,11 +110,11 @@ class TestDailyRunSteps:
         feeds = [{"name": "New", "url": "http://example.com/new.rss"}]
         deps.save_config({"feeds": feeds, "settings": {}})
 
-        run_id = tasks.queue_daily_run(db, owner)
+        run_id = daily_run.queue_daily_run(db, owner)
 
         assert _names(enqueued) == ["task_import_feeds", "daily_queue_fetches"]
         assert enqueued[0][1][1] == feeds
-        assert run_id in tasks.active_run_ids
+        assert run_id in daily_run.active_run_ids
         assert db.get_state(run_key("id", owner)) == run_id
 
     def test_other_users_never_import_config_feeds(self, env):
@@ -121,7 +122,7 @@ class TestDailyRunSteps:
         _user(db, "ann")
         bob = _user(db, "bob")
         deps.save_config({"feeds": [{"name": "N", "url": "http://n"}], "settings": {}})
-        tasks.queue_daily_run(db, bob)
+        daily_run.queue_daily_run(db, bob)
         assert _names(enqueued) == ["daily_queue_fetches"]
 
     def test_fetch_step_covers_only_the_users_podcasts(self, env):
@@ -131,7 +132,7 @@ class TestDailyRunSteps:
         db.add_podcast("Theirs", "http://example.com/b.rss")
         db.subscribe(ann, mine)
 
-        tasks.daily_queue_fetches("run-1", ann)
+        daily_run.daily_queue_fetches("run-1", ann)
 
         assert _names(enqueued) == ["task_fetch", "daily_queue_pipelines"]
         assert enqueued[0][1][1:] == (mine, None, None, ann)
@@ -162,7 +163,7 @@ class TestDailyRunSteps:
             db.link_episode(ann, ids[name])
         db.update_episode_status(ids["new_processed"], "processed")
 
-        tasks.daily_queue_pipelines("run-1", ann)
+        daily_run.daily_queue_pipelines("run-1", ann)
 
         assert _names(enqueued) == ["task_full_pipeline", "daily_queue_content"]
         assert enqueued[0][1][1] == ids["new"]
@@ -184,7 +185,7 @@ class TestDailyRunSteps:
         )
         order = []
         monkeypatch.setattr(
-            tasks, "_email_run_report", lambda *a: order.append("email") or None
+            daily_run, "_email_run_report", lambda *a: order.append("email") or None
         )
         ann = _user(db, "ann")
         pid = db.add_podcast("Pod", "http://example.com/rss")
@@ -196,7 +197,7 @@ class TestDailyRunSteps:
         db.link_episode(ann, busy)
         db.create_job("full_pipeline", episode_id=busy, podcast_id=pid, username=ann)
 
-        tasks.daily_finish("run-1", ann)
+        daily_run.daily_finish("run-1", ann)
 
         assert order == ["email"]
         assert lanes == [("normal", "task_full_pipeline")]
@@ -206,14 +207,14 @@ class TestDailyRunSteps:
     def test_content_step_is_opt_in_and_marks_the_run_finished(self, env):
         db, enqueued = env
         ann = _user(db, "ann")
-        tasks.active_run_ids.add("run-1")
+        daily_run.active_run_ids.add("run-1")
 
-        tasks.daily_queue_content("run-1", ann)
+        daily_run.daily_queue_content("run-1", ann)
         assert _names(enqueued) == ["daily_finish"]
 
-        tasks.daily_finish("run-1", ann)
+        daily_run.daily_finish("run-1", ann)
         assert db.get_state(run_key("finished_id", ann)) == "run-1"
-        assert "run-1" not in tasks.active_run_ids
+        assert "run-1" not in daily_run.active_run_ids
 
     def test_finish_emails_the_report_only_when_asked(self, env, monkeypatch):
         from p3 import mailer
@@ -222,11 +223,11 @@ class TestDailyRunSteps:
         sent = []
         monkeypatch.setattr(mailer, "send_email", lambda *a: sent.append(a))
         ann = _user(db, "ann")
-        tasks.daily_finish("run-1", ann)
+        daily_run.daily_finish("run-1", ann)
         assert sent == []
 
         db.update_user_settings(ann, {"daily_run_email": True, "email": "a@b.c"})
-        tasks.daily_finish("run-1", ann)
+        daily_run.daily_finish("run-1", ann)
         assert [call[1] for call in sent] == ["a@b.c"]
 
     def test_episodes_processed_outside_a_run_are_reported_once(self, env, monkeypatch):
@@ -250,8 +251,8 @@ class TestDailyRunSteps:
         job_id = db.create_job("full_pipeline", episode_id=episode_id, username=ann)
         db.update_job(job_id, status="completed")
 
-        tasks.daily_finish("run-1", ann)
-        tasks.daily_finish("run-2", ann)
+        daily_run.daily_finish("run-1", ann)
+        daily_run.daily_finish("run-2", ann)
 
         subjects = [call[2] for call in sent]
         assert "1 more" in subjects[0] and "more" not in subjects[1]
@@ -267,7 +268,7 @@ class TestDailyRunSteps:
         monkeypatch.setattr(mailer, "send_email", boom)
         ann = _user(db, "ann", daily_run_email=True, email="a@b.c")
 
-        tasks.daily_finish("run-1", ann)
+        daily_run.daily_finish("run-1", ann)
 
         assert db.get_state(run_key("finished_id", ann)) == "run-1"
         assert db.get_state(run_key("email_error", ann)) == "smtp down"
@@ -287,7 +288,7 @@ class TestDailyRunSteps:
         other = db.create_job("full_pipeline", episode_id=bad, podcast_id=pid)
         db.update_job(other, status="completed")
 
-        tasks.daily_queue_content("run-1", ann)
+        daily_run.daily_queue_content("run-1", ann)
 
         assert _names(enqueued) == ["task_write_linkedin", "daily_finish"]
         assert enqueued[0][1][1:] == (ok, None, None, ann)
@@ -300,12 +301,12 @@ class TestDailyRunSteps:
         eid = db.add_episode(pid, "Ep", datetime(2026, 10, 1), "http://example.com/1")
         db.add_summary(eid, [], [], [], [], "Summary")
 
-        tasks.daily_queue_content("run-1", ann)
+        daily_run.daily_queue_content("run-1", ann)
         assert _names(enqueued) == ["daily_finish"]  # not ann's episode
 
         enqueued.clear()
         db.link_episode(ann, eid)
-        tasks.daily_queue_content("run-1", ann)
+        daily_run.daily_queue_content("run-1", ann)
 
         assert _names(enqueued) == ["task_export", "daily_finish"]
         # HTML isn't produced by the export task, so the default formats apply.
@@ -320,8 +321,8 @@ class TestResumeInterruptedRun:
         user = _user(db, "alice", daily_run_email=True, email="a@example.com")
         pid = db.add_podcast("Pod", "http://x/feed")
         db.subscribe(user, pid)
-        run_id = tasks.queue_daily_run(db, user)
-        tasks.active_run_ids.discard(run_id)  # the process "died"
+        run_id = daily_run.queue_daily_run(db, user)
+        daily_run.active_run_ids.discard(run_id)  # the process "died"
         fetch = db.create_job("fetch", podcast_id=pid, run_id=run_id, username=user)
         pipe = db.create_job("full_pipeline", run_id=run_id, username=user)
         db.conn.execute(
@@ -333,7 +334,7 @@ class TestResumeInterruptedRun:
 
     def test_resumes_the_run_down_to_the_email(self, env):
         db, enqueued, user, run_id, pid = self._interrupted_run(env)
-        assert tasks.resume_daily_run(db, user) == run_id
+        assert daily_run.resume_daily_run(db, user) == run_id
         names = _names(enqueued)
         assert names == ["task_fetch", "daily_queue_pipelines"]
         # killed jobs are replaced under the same run id, not left as errors
@@ -341,25 +342,25 @@ class TestResumeInterruptedRun:
         assert [j["status"] for j in jobs] == ["pending"]
         assert jobs[0]["job_type"] == "fetch"
         # the chain continues to the finishing step that sends the email
-        tasks.daily_queue_pipelines(run_id, user)
-        tasks.daily_queue_content(run_id, user)
+        daily_run.daily_queue_pipelines(run_id, user)
+        daily_run.daily_queue_content(run_id, user)
         assert _names(enqueued)[-1] == "daily_finish"
 
     def test_nothing_to_resume_when_finished_or_running(self, env):
         db, enqueued, user, run_id, pid = self._interrupted_run(env)
         db.set_state(run_key("finished_id", user), run_id)
-        assert tasks.resume_daily_run(db, user) is None
+        assert daily_run.resume_daily_run(db, user) is None
         db.set_state(run_key("finished_id", user), "")
-        tasks.active_run_ids.add(run_id)
-        assert tasks.resume_daily_run(db, user) is None
-        tasks.active_run_ids.discard(run_id)
+        daily_run.active_run_ids.add(run_id)
+        assert daily_run.resume_daily_run(db, user) is None
+        daily_run.active_run_ids.discard(run_id)
 
     def test_old_runs_are_left_alone(self, env):
         from datetime import timedelta
 
         db, enqueued, user, run_id, pid = self._interrupted_run(env)
         db.set_state(run_key("started_at", user), "2020-01-01T04:00:00")
-        assert tasks.resume_daily_run(db, user, max_age=timedelta(days=2)) is None
+        assert daily_run.resume_daily_run(db, user, max_age=timedelta(days=2)) is None
 
 
 class TestBacklog:
@@ -391,7 +392,7 @@ class TestBacklog:
             self._job(db, broken, "failed", hours, error="bad audio")
         self._job(db, fine, "failed", 2, error="bad audio")
 
-        tasks.queue_backlog(db, ann)
+        daily_run.queue_backlog(db, ann)
         queued = [a[1] for fn, a in enqueued if fn.__name__ == "task_full_pipeline"]
         assert queued == [fine]
 
@@ -407,7 +408,7 @@ class TestBacklog:
             self._job(db, eid, "failed", hours, error=INTERRUPTED_ERROR)
 
         assert db.failed_in_a_row() == {eid: 1}
-        tasks.queue_backlog(db, ann)
+        daily_run.queue_backlog(db, ann)
         assert "task_full_pipeline" in _names(enqueued)
 
     def test_the_catch_up_index_job_is_the_users(self, env):
@@ -416,7 +417,7 @@ class TestBacklog:
         eid = self._episode(db, ann, "http://example.com/done")
         db.update_episode_status(eid, "processed")  # not in the Ask index yet
 
-        tasks.queue_backlog(db, ann)
+        daily_run.queue_backlog(db, ann)
         [args] = [a for fn, a in enqueued if fn.__name__ == "task_index"]
         job_id, username = args
         assert username == ann
@@ -448,7 +449,7 @@ class TestRetries:
             def now(cls, tz=None):
                 return noon
 
-        monkeypatch.setattr(tasks, "datetime", _Noon)
+        monkeypatch.setattr(daily_run, "datetime", _Noon)
         db, enqueued = env
         sent = []
         monkeypatch.setattr(mailer, "send_email", lambda *a: sent.append(a))
@@ -458,7 +459,7 @@ class TestRetries:
         db.set_state(run_key("attempts", ann), f"{today}:1")
         self._failed_fetch_run(db, ann, "run-1")
 
-        tasks.daily_finish("run-1", ann)
+        daily_run.daily_finish("run-1", ann)
 
         assert sent == []
         retry_at = datetime.fromisoformat(db.get_state(run_key("retry_at", ann)))
@@ -483,7 +484,7 @@ class TestRetries:
         ok = db.create_job("fetch", podcast_id=1, run_id="run-1", username=ann)
         db.update_job(ok, status="completed")
 
-        tasks.daily_finish("run-1", ann)
+        daily_run.daily_finish("run-1", ann)
 
         assert not db.get_state(run_key("retry_at", ann))
         assert len(sent) == 1
@@ -505,7 +506,7 @@ class TestRetries:
         ok = db.create_job("fetch", podcast_id=vid, run_id="run-1", username=ann)
         db.update_job(ok, status="completed")
 
-        tasks.daily_finish("run-1", ann)
+        daily_run.daily_finish("run-1", ann)
 
         assert db.get_state(run_key("retry_at", ann))
         assert sent == []
@@ -518,10 +519,10 @@ class TestRetries:
         monkeypatch.setattr(mailer, "send_email", lambda *a: sent.append(a))
         ann = _user(db, "ann", daily_run_email=True, email="a@b.c")
         today = datetime.now().date().isoformat()
-        db.set_state(run_key("attempts", ann), f"{today}:{tasks.MAX_RUN_ATTEMPTS}")
+        db.set_state(run_key("attempts", ann), f"{today}:{daily_run.MAX_RUN_ATTEMPTS}")
         self._failed_fetch_run(db, ann, "run-9")
 
-        tasks.daily_finish("run-9", ann)
+        daily_run.daily_finish("run-9", ann)
 
         assert not db.get_state(run_key("retry_at", ann))
         assert len(sent) == 1  # the report lists the problems
@@ -540,7 +541,7 @@ class TestRetries:
         monkeypatch.setattr(mailer, "send_email", flaky)
         ann = _user(db, "ann", daily_run_email=True, email="a@b.c")
 
-        tasks.daily_finish("run-1", ann)
+        daily_run.daily_finish("run-1", ann)
         assert db.get_state(run_key("email_retry", ann)) == "run-1"
         retry_at = datetime.fromisoformat(db.get_state(run_key("email_retry_at", ann)))
 
@@ -552,7 +553,7 @@ class TestRetries:
         run_if_due(retry_at)  # queued once, not every minute
         assert _names(enqueued).count("retry_report_email") == 1
 
-        tasks.retry_report_email(ann)
+        daily_run.retry_report_email(ann)
         assert len(calls) == 2
         assert db.get_state(run_key("email_retry", ann)) == ""
         assert db.get_state(run_key("email_error", ann)) == ""
@@ -567,9 +568,9 @@ class TestRetries:
 
         monkeypatch.setattr(mailer, "send_email", refused)
         ann = _user(db, "ann", daily_run_email=True, email="a@b.c")
-        tasks.daily_finish("run-1", ann)
-        for _ in range(tasks.MAX_EMAIL_ATTEMPTS):
-            tasks.retry_report_email(ann)
+        daily_run.daily_finish("run-1", ann)
+        for _ in range(daily_run.MAX_EMAIL_ATTEMPTS):
+            daily_run.retry_report_email(ann)
         assert db.get_state(run_key("email_retry", ann)) == ""
 
     def test_without_network_the_report_waits_for_it(self, env, monkeypatch):
@@ -588,13 +589,13 @@ class TestRetries:
 
         monkeypatch.setattr(mailer, "send_email", send)
         ann = _user(db, "ann", daily_run_email=True, email="a@b.c")
-        tasks.daily_finish("run-1", ann)
+        daily_run.daily_finish("run-1", ann)
         # Many more tries than a refused email gets, still pending.
-        for _ in range(tasks.MAX_EMAIL_ATTEMPTS * 2):
-            tasks.retry_report_email(ann)
+        for _ in range(daily_run.MAX_EMAIL_ATTEMPTS * 2):
+            daily_run.retry_report_email(ann)
         assert db.get_state(run_key("email_retry", ann)) == "run-1"
         network["up"] = True
-        tasks.retry_report_email(ann)
+        daily_run.retry_report_email(ann)
         assert len(sent) == 1
         assert db.get_state(run_key("email_retry", ann)) == ""
 
@@ -608,9 +609,9 @@ class TestRetries:
 
         monkeypatch.setattr(mailer, "send_email", down)
         ann = _user(db, "ann", daily_run_email=True, email="a@b.c")
-        tasks.daily_finish("run-1", ann)
+        daily_run.daily_finish("run-1", ann)
         assert db.get_state(run_key("email_retry", ann)) == "run-1"
-        day_ago = datetime.now() - timedelta(hours=tasks.REPORT_RETRY_HOURS)
+        day_ago = datetime.now() - timedelta(hours=daily_run.REPORT_RETRY_HOURS)
         db.set_state(run_key("email_retry_since", ann), day_ago.isoformat())
-        tasks.retry_report_email(ann)
+        daily_run.retry_report_email(ann)
         assert db.get_state(run_key("email_retry", ann)) == ""

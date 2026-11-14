@@ -8,15 +8,17 @@ from p3.api.auth import current_username
 from p3.api.deps import get_db
 from p3.api.job_queue import job_runner
 from p3.api.models import JobOut
-from p3.api.tasks import (
-    resume_daily_run,
+from p3.api.tasks.content import (
+    task_generate_synopsis,
+    task_write_blog,
+    task_write_linkedin,
+)
+from p3.api.tasks.daily_run import resume_daily_run
+from p3.api.tasks.pipeline import (
     task_digest,
     task_fetch,
     task_full_pipeline,
-    task_generate_synopsis,
     task_transcribe,
-    task_write_blog,
-    task_write_linkedin,
 )
 from p3.database import INTERRUPTED_ERROR
 

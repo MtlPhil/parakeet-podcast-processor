@@ -37,7 +37,7 @@ from p3.api.routers import (
     users,
 )
 from p3.api.scheduler import daily_scheduler
-from p3.api.tasks import resume_interrupted_runs
+from p3.api.tasks.daily_run import resume_interrupted_runs
 
 
 class _P3LogHandler(logging.StreamHandler):

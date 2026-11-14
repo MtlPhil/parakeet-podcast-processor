@@ -4,10 +4,10 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends
 
-from p3.api import tasks
 from p3.api.auth import current_username
 from p3.api.deps import get_db
 from p3.api.models import DailyRunOut
+from p3.api.tasks import daily_run
 
 router = APIRouter(prefix="/api/daily-run", tags=["daily-run"])
 
@@ -17,14 +17,14 @@ def get_last_daily_run(username: str = Depends(current_username)):
     """The user's last daily run: progress and results, or null if they
     have not had one."""
     db = get_db()
-    run_id = db.get_state(tasks.run_key("id", username))
+    run_id = db.get_state(daily_run.run_key("id", username))
     if not run_id:
         return None
 
     jobs = db.get_jobs_by_run(run_id)
-    if db.get_state(tasks.run_key("finished_id", username)) == run_id:
+    if db.get_state(daily_run.run_key("finished_id", username)) == run_id:
         state = "finished"
-    elif run_id in tasks.active_run_ids:
+    elif run_id in daily_run.active_run_ids:
         state = "running"
     else:
         state = "interrupted"
@@ -45,7 +45,7 @@ def get_last_daily_run(username: str = Depends(current_username)):
     )
     return {
         "run_id": run_id,
-        "started_at": db.get_state(tasks.run_key("started_at", username)),
+        "started_at": db.get_state(daily_run.run_key("started_at", username)),
         "state": state,
         "new_episodes": (
             db.count_episodes_created_since(min(created), username) if created else 0

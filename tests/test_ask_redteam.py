@@ -71,27 +71,27 @@ class TestTranscriptionGuard:
         followed by the embedder, the torch reranker and the answer LLM
         all loading beside the transcription models."""
         client, db, _ = api
-        from p3.api import tasks
+        from p3.api.tasks import pipeline
 
         calls = []
 
         class TranscriptionStartsNow(FakeLLM):
             def chat(self, system, user, max_tokens=2000):
-                tasks.transcribing.set()  # the job runner starts transcribing
+                pipeline.transcribing.set()  # the job runner starts transcribing
                 return super().chat(system, user, max_tokens)
 
             def chat_stream(self, system, user, max_tokens=2000):
-                calls.append(("answer-llm", tasks.transcribing.is_set()))
+                calls.append(("answer-llm", pipeline.transcribing.is_set()))
                 yield from super().chat_stream(system, user, max_tokens)
 
         class SpyEmbedder(FakeEmbedder):
             def embed(self, texts):
-                calls.append(("embedder", tasks.transcribing.is_set()))
+                calls.append(("embedder", pipeline.transcribing.is_set()))
                 return super().embed(texts)
 
         class SpyReranker(FakeReranker):
             def score(self, question, passages):
-                calls.append(("reranker", tasks.transcribing.is_set()))
+                calls.append(("reranker", pipeline.transcribing.is_set()))
                 return super().score(question, passages)
 
         _use_asker(
@@ -100,7 +100,7 @@ class TestTranscriptionGuard:
         try:
             client.post("/api/ask", json={"question": "What about bank rates?"})
         finally:
-            tasks.transcribing.clear()
+            pipeline.transcribing.clear()
         assert [name for name, during in calls if during] == []
 
     def test_flag_cleared_when_releasing_ollama_fails(self, api, monkeypatch):
@@ -109,7 +109,7 @@ class TestTranscriptionGuard:
         try/finally, so Ask stays in keyword-only mode until some later
         transcription succeeds. Same code in task_full_pipeline."""
         _, db, _ = api
-        from p3.api import tasks
+        from p3.api.tasks import pipeline
 
         def stuck(settings):
             raise RuntimeError("Ollama still holds gemma after 30s")
@@ -117,15 +117,15 @@ class TestTranscriptionGuard:
         def never(*a, **k):
             raise AssertionError("must not load a transcriber in a test")
 
-        monkeypatch.setattr(tasks, "_release_ollama", stuck)
-        monkeypatch.setattr(tasks, "_make_transcriber", never)
+        monkeypatch.setattr(pipeline, "_release_ollama", stuck)
+        monkeypatch.setattr(pipeline, "_make_transcriber", never)
         episode_id = db.get_all_episodes()[0]["id"]
         job_id = db.create_job("transcribe", episode_id=episode_id)
         try:
-            tasks.task_transcribe(job_id, episode_id)
-            stuck_set = tasks.transcribing.is_set()
+            pipeline.task_transcribe(job_id, episode_id)
+            stuck_set = pipeline.transcribing.is_set()
         finally:
-            tasks.transcribing.clear()
+            pipeline.transcribing.clear()
         assert stuck_set is False, "Ask is paused for good after one failed start"
 
 

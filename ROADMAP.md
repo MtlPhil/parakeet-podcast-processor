@@ -13,10 +13,9 @@ and the installer, not the language.
 1. **Restructure, with no change in behaviour.** Done: one home folder for
    every file (`P3_HOME`), one place that reads secrets, one default per
    shared setting, the database layer split by subject with numbered
-   migrations, and a single-user mode with no sign-in (`P3_AUTH=single`).
-   Still to do:
-   - `api/tasks.py` (1,100 lines) split into pipeline jobs, the daily run
-     and content jobs.
+   migrations, the job wrappers split into pipeline, content, Ask and
+   daily-run modules, and a single-user mode with no sign-in
+   (`P3_AUTH=single`). Still to do:
    - Secrets in the OS keychain rather than files in `config/`.
    - Single-user as the default. Today an unset `P3_AUTH` still means proxy
      mode; changing that silently would drop sign-in on a server that

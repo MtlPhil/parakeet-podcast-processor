@@ -23,7 +23,7 @@ from p3.api.models import (
     PodcastUpdate,
     SourcePreview,
 )
-from p3.api.tasks import (
+from p3.api.tasks.pipeline import (
     queue_step_jobs,
     task_bulk_add,
     task_fetch,

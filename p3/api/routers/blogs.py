@@ -9,7 +9,7 @@ from p3.api.content import find_post, list_posts
 from p3.api.deps import get_db
 from p3.api.job_queue import job_runner
 from p3.api.models import BlogCreate, BlogOut
-from p3.api.tasks import task_write_blog
+from p3.api.tasks.content import task_write_blog
 
 router = APIRouter(prefix="/api/blogs", tags=["blogs"])
 
