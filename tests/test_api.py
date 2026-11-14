@@ -1,5 +1,6 @@
 """Tests for the FastAPI API endpoints."""
 
+import json
 import os
 import tempfile
 from datetime import datetime
@@ -578,6 +579,44 @@ class TestJobs:
 
     def test_get_job_not_found(self):
         resp = client.get("/api/jobs/nonexistent")
+        assert resp.status_code == 404
+
+    def test_job_events_follow_the_job_until_it_ends(self):
+        import threading
+        import time
+
+        db = deps.get_db()
+        client.get("/api/me")
+        job_id = db.create_job("fetch", username="tester")
+        db.update_job(job_id, status="running", progress=0.5, message="Halfway")
+
+        def finish():
+            time.sleep(0.3)
+            db.update_job(job_id, progress=0.9)
+            db.update_job(job_id, status="completed", progress=1.0)
+
+        threading.Thread(target=finish).start()
+        started = time.monotonic()
+        with client.stream("GET", f"/api/jobs/{job_id}/events") as resp:
+            assert resp.headers["content-type"].startswith("text/event-stream")
+            events = [
+                json.loads(line[6:])
+                for line in resp.iter_lines()
+                if line.startswith("data: ")
+            ]
+        assert time.monotonic() - started < 5  # pushed, not the 15 s keep-alive
+        assert events[0]["message"] == "Halfway"
+        assert events[-1]["status"] == "completed"
+        assert [e["progress"] for e in events][-1] == 1.0
+
+    def test_job_events_of_someone_elses_job_are_hidden(self):
+        db = deps.get_db()
+        client.get("/api/me")
+        db.ensure_user("other")
+        job_id = db.create_job("fetch", username="other")
+        resp = client.get(
+            f"/api/jobs/{job_id}/events", headers={"Remote-User": "viewer"}
+        )
         assert resp.status_code == 404
 
     def test_job_created_on_podcast_add(self):
