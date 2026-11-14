@@ -11,9 +11,10 @@ item, docs updated with each:
 
 1. Done: Ask ranks sponsor reads and jingles last and skips cold opens;
    "what did X say" searches only X's passages; admins rename a speaker on
-   the episode page; the Search page is ranked by Ask's keyword index.
-2. Next: live job progress (Web app), then the blog posts tab on the
-   episode page, then podcast discovery.
+   the episode page; the Search page is ranked by Ask's keyword index; job
+   progress is pushed to the page.
+2. Next (Web app): the blog posts tab on the episode page, then podcast
+   discovery.
 3. Ask: counting by concept; touch-friendly citation popovers and flagging
    one citation; answers that outlive a restart; measuring subtler
    overstatement; local or Gemini answers (from the plan's measurements);
@@ -98,8 +99,6 @@ and the installer, not the language.
 
 ## Web app
 
-- **Push-based job progress.** Replace polling of `/api/jobs/{id}` with
-  Server-Sent Events or WebSockets.
 - **Podcast discovery.** Browse and search a podcast directory by category
   instead of pasting feed URLs.
 - **Blog post tab on the episode page.** Show posts generated from an episode,

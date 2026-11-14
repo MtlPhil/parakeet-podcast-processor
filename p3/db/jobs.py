@@ -1,6 +1,7 @@
 """Background jobs."""
 
 import json
+import threading
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -9,6 +10,31 @@ from .digests import Digests
 
 # Error recorded on jobs a server restart cut short (see fail_stale_jobs).
 INTERRUPTED_ERROR = "interrupted: server restarted"
+
+# Counted and notified after every job update, so a job's event stream
+# (GET /api/jobs/{id}/events) sends the change at once.
+_JOB_CHANGED = threading.Condition()
+_job_changes = 0
+
+
+def job_changes() -> int:
+    """How many job updates this process has made (read before the job)."""
+    with _JOB_CHANGED:
+        return _job_changes
+
+
+def wait_for_job_change(seen: int, timeout: float) -> bool:
+    """Wait until a job update after ``seen`` (see ``job_changes``); False
+    when ``timeout`` seconds pass first."""
+    with _JOB_CHANGED:
+        return _JOB_CHANGED.wait_for(lambda: _job_changes != seen, timeout)
+
+
+def _job_changed():
+    global _job_changes
+    with _JOB_CHANGED:
+        _job_changes += 1
+        _JOB_CHANGED.notify_all()
 
 
 class Jobs(Digests):
@@ -93,11 +119,13 @@ class Jobs(Digests):
             return
         params.append(job_id)
         self.conn.execute(f"UPDATE jobs SET {', '.join(parts)} WHERE id = ?", params)
+        _job_changed()
 
     def delete_jobs(self, job_ids: List[str]) -> None:
         """Delete jobs by id."""
         for job_id in job_ids:
             self.conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+        _job_changed()
 
     def fail_stale_jobs(self) -> int:
         """Mark jobs left 'pending'/'running' by a previous process as failed.

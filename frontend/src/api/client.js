@@ -155,6 +155,8 @@ export const getSummaries = () => request('/summaries');
 // Jobs
 export const getJobs = (activeOnly = false) =>
   request(`/jobs${activeOnly ? '?active_only=true' : ''}`);
+// A job's Server-Sent Events: its state now and after each change.
+export const jobEventsUrl = (id) => `${BASE}/jobs/${id}/events`;
 export const getJob = (id) => request(`/jobs/${id}`);
 export const retryJob = (id) =>
   request(`/jobs/${id}/retry`, { method: 'POST' });

@@ -1,8 +1,10 @@
 """Job status routes."""
 
 import json
+import time
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 
 from p3.api.auth import current_username
 from p3.api.deps import get_db
@@ -21,8 +23,15 @@ from p3.api.tasks.pipeline import (
     task_transcribe,
 )
 from p3.database import INTERRUPTED_ERROR
+from p3.db.jobs import job_changes, wait_for_job_change
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
+
+# A stream sends a comment this often when nothing changed (the public URL's
+# proxy drops a response silent for about 100 s), and ends after
+# _STREAM_SECONDS: the page reconnects.
+_KEEPALIVE_SECONDS = 15.0
+_STREAM_SECONDS = 1800.0
 
 # Job types whose work can be reconstructed from the job row alone.
 _EPISODE_TASKS = {
@@ -231,6 +240,40 @@ def get_job(job_id: str, username: str = Depends(current_username)):
     if not job or not db.job_visible_to(job_id, username):
         raise HTTPException(404, "Job not found")
     return job
+
+
+@router.get("/{job_id}/events")
+def job_events(job_id: str, username: str = Depends(current_username)):
+    """Server-Sent Events: the job (as ``GET /api/jobs/{id}``) now and after
+    each change, until it completes or fails; ``event: gone`` if it is
+    deleted."""
+    db = get_db()
+    if not db.get_job(job_id) or not db.job_visible_to(job_id, username):
+        raise HTTPException(404, "Job not found")
+
+    def events():
+        sent = None
+        ends = time.monotonic() + _STREAM_SECONDS
+        while time.monotonic() < ends:
+            seen = job_changes()
+            job = db.get_job(job_id)
+            if not job:
+                yield "event: gone\ndata: {}\n\n"
+                return
+            data = JobOut(**job).model_dump_json()
+            if data != sent:
+                sent = data
+                yield f"data: {data}\n\n"
+                if job["status"] in ("completed", "failed"):
+                    return
+            if not wait_for_job_change(seen, _KEEPALIVE_SECONDS):
+                yield ": keep-alive\n\n"
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/{job_id}/retry", response_model=dict)
