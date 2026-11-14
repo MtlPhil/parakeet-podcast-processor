@@ -597,6 +597,21 @@ class TestAskAPI:
         assert client.delete(f"/api/ask/threads/{done['thread_id']}").status_code == 200
         assert client.get("/api/ask/threads").json() == []
 
+    def test_a_flagged_citation_is_kept_and_shown_to_admins(self, api):
+        client, db = api
+        done = _events(client.post("/api/ask", json={"question": "rates?"}).text)[-1]
+        url = f"/api/ask/messages/{done['message_id']}/flags"
+        assert client.post(url, json={"n": 1}).json()["flagged"] == [1]
+        message = db.get_ask_thread(done["thread_id"], "tester")["messages"][1]
+        assert message["flagged"] == [1]
+        (row,) = client.get("/api/ask/feedback").json()
+        assert row["flagged"] == [1] and row["rating"] is None
+        assert client.post(url, json={"n": 99}).status_code == 404  # no such citation
+        bob = client.post(url, json={"n": 1}, headers={"Remote-User": "bob"})
+        assert bob.status_code == 404  # not bob's answer
+        assert client.post(url, json={"n": 1, "flagged": False}).json()["flagged"] == []
+        assert client.get("/api/ask/feedback").json() == []
+
     def test_paused_during_transcription(self, api, monkeypatch):
         client, _ = api
         from p3.api.tasks import pipeline

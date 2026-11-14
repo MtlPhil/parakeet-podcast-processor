@@ -237,6 +237,12 @@ export const getAskStatus = (library = false) =>
 export const getAskThreads = () => request('/ask/threads');
 export const getAskThread = (id) => request(`/ask/threads/${id}`);
 export const deleteAskThread = (id) => request(`/ask/threads/${id}`, { method: 'DELETE' });
+// Flag (or unflag) one citation of an answer as not supporting its sentence.
+export const flagAskCitation = (messageId, n, flagged) =>
+  request(`/ask/messages/${messageId}/flags`, {
+    method: 'POST',
+    body: JSON.stringify({ n, flagged }),
+  });
 export const rateAskAnswer = (messageId, rating) =>
   request(`/ask/messages/${messageId}/rating`, {
     method: 'POST',

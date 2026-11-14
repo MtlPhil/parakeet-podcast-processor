@@ -393,7 +393,21 @@ class Schema(Connection):
             "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS speakers VARCHAR"
         )
 
-    _MIGRATIONS = (_baseline, _ask_index, _job_args, _episode_guid, _episode_speakers)
+    def _citation_flags(self):
+        """Migration 6: the citations of an Ask answer its user flagged as
+        not supporting their sentence, as a JSON list of citation numbers."""
+        self.conn.execute(
+            "ALTER TABLE ask_messages ADD COLUMN IF NOT EXISTS flagged VARCHAR"
+        )
+
+    _MIGRATIONS = (
+        _baseline,
+        _ask_index,
+        _job_args,
+        _episode_guid,
+        _episode_speakers,
+        _citation_flags,
+    )
 
     def _resync_sequences(self):
         """Ensure each id sequence starts past its table's current max id.
