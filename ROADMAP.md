@@ -3,6 +3,31 @@
 What is planned and not built yet. The first section is the agreed direction,
 in order; the rest is a backlog grouped by area, not ordered by priority.
 
+## Where things stand (2026-11-14)
+
+Working through the rest of this file in this order, one pull request per
+item, docs updated with each:
+
+1. Done: Ask ranks sponsor reads and jingles last and skips cold opens;
+   "what did X say" searches only X's passages; admins rename a speaker on
+   the episode page; the Search page is ranked by Ask's keyword index.
+2. Next: live job progress (Web app), then the blog posts tab on the
+   episode page, then podcast discovery.
+3. Ask: counting by concept; touch-friendly citation popovers and flagging
+   one citation; answers that outlive a restart; measuring subtler
+   overstatement; local or Gemini answers (from the plan's measurements);
+   tools for the model; the web as a second source.
+4. Speakers: remembering a show's host voice across episodes.
+5. Content and analysis: the summary's format, companies to a CRM,
+   investment theses.
+6. Testing: recorded-fixture integration tests, an end-to-end smoke test,
+   a CI job for `install.sh`.
+
+On hold: secrets in the keychain and timing transcription on Linux and
+Windows (no machine to test on); real Anthropic and OpenAI requests
+(waiting on someone with a key); downloading the library again so older
+episodes get speakers; the desktop app.
+
 ## Direction
 
 The goal is a P³ that people other than its author can install and use,
@@ -74,9 +99,6 @@ and the installer, not the language.
 
 - **Push-based job progress.** Replace polling of `/api/jobs/{id}` with
   Server-Sent Events or WebSockets.
-- **Ranked search.** The Search page is a case-insensitive substring match
-  over titles, summaries and transcripts. Ask's BM25 index (`chunk_terms`)
-  could rank it.
 - **Podcast discovery.** Browse and search a podcast directory by category
   instead of pasting feed URLs.
 - **Blog post tab on the episode page.** Show posts generated from an episode,
