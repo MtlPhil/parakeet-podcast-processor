@@ -38,7 +38,7 @@ settings:
 
   # Ask's "Also search the web" (asked per question): "" off, gemini (Google
   # Search through Gemini, its own quota on the API key) or searxng (the
-  # SearXNG server at searxng_url, JSON output enabled)
+  # SearXNG server at searxng_url, with json in its search.formats)
   web_search: ""
   searxng_url: ""
 
