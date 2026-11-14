@@ -113,6 +113,8 @@ def test_searxng_results_become_passages(monkeypatch):
     seen = {}
 
     class Response:
+        status_code = 200
+
         def raise_for_status(self):
             pass
 
@@ -128,8 +130,8 @@ def test_searxng_results_become_passages(monkeypatch):
                 ]
             }
 
-    def get(url, params=None, timeout=None):
-        seen.update(url=url, params=params)
+    def get(url, params=None, headers=None, timeout=None):
+        seen.update(url=url, params=params, headers=headers)
         return Response()
 
     monkeypatch.setattr(websearch.httpx, "get", get)
@@ -137,6 +139,18 @@ def test_searxng_results_become_passages(monkeypatch):
     assert seen["url"] == "http://searx.local/search"
     assert seen["params"]["format"] == "json"
     assert (p["site"], p["text"]) == ("lapresse.ca", "Le taux baisse.")
+    assert "text/html" in seen["headers"]["Accept"]  # SearXNG's limiter wants it
+    assert seen["headers"]["Accept-Language"] == "fr"
+
+
+@pytest.mark.parametrize("status,said", [(403, "search.formats"), (429, "limiter")])
+def test_searxng_refusals_say_what_to_change(monkeypatch, status, said):
+    class Refused:
+        status_code = status
+
+    monkeypatch.setattr(websearch.httpx, "get", lambda *a, **k: Refused())
+    with pytest.raises(RuntimeError, match=said):
+        websearch.SearxngWebSearch("http://s").search("q")
 
 
 def test_the_setting_picks_the_searcher(monkeypatch, tmp_path):

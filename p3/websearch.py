@@ -27,6 +27,14 @@ WEB_SEARCHERS = ("gemini", "searxng")
 MAX_WEB_PASSAGES = 6
 _PASSAGE_CHARS = 1200
 _TIMEOUT = 20.0
+# SearXNG's limiter (bot detection) answers 429 to a request whose Accept
+# header lacks text/html, with no Accept-Language, or from a user agent like
+# curl's or python's; these pass it. Nothing in them names the user.
+_SEARXNG_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) P3",
+    "Accept": "text/html,application/json;q=0.9",
+    "Accept-Encoding": "gzip, deflate",
+}
 
 _NOTES_SYSTEM = """Search the web for the user's question and report what \
 reliable, recent sources say, as short factual notes: one or two sentences \
@@ -114,8 +122,21 @@ class SearxngWebSearch:
             response = httpx.get(
                 f"{self.base_url}/search",
                 params={"q": question, "format": "json", "language": language},
+                headers={**_SEARXNG_HEADERS, "Accept-Language": language},
                 timeout=_TIMEOUT,
             )
+        except httpx.HTTPError as e:
+            raise RuntimeError(f"SearXNG didn't answer: {e}") from e
+        if response.status_code == 403:
+            raise RuntimeError(
+                "SearXNG refused JSON: add json to search.formats in its settings.yml"
+            )
+        if response.status_code == 429:
+            raise RuntimeError(
+                "SearXNG's limiter refused the request (429): allow this "
+                "server's address in its limiter settings"
+            )
+        try:
             response.raise_for_status()
             results = response.json().get("results") or []
         except (httpx.HTTPError, ValueError) as e:
