@@ -374,3 +374,178 @@ class TestAnthropic:
         )
         settings = {"llm_provider": "anthropic", "llm_model": "claude-sonnet-5-5"}
         assert resolve_provider_and_model(settings)[1] == "claude-sonnet-5-5"
+
+
+class _Streamer:
+    """Stands in for httpx.Client: a streamed request replies with these
+    Server-Sent Event lines (or ``stream_status``); a plain one, the
+    fallback, with ``body``."""
+
+    def __init__(self, monkeypatch, lines, stream_status=200, body=None):
+        recorder = self
+        self.posts = 0
+
+        class StreamResponse:
+            status_code = stream_status
+
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *exc):
+                return False
+
+            def iter_lines(self_inner):
+                for line in lines:
+                    if isinstance(line, Exception):
+                        raise line
+                    yield line
+
+        class Response:
+            status_code = 200
+            text = ""
+
+            def json(self_inner):
+                return body
+
+        class Client:
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def stream(self, method, url, headers=None, json=None):
+                recorder.url, recorder.headers, recorder.json = url, headers, json
+                return StreamResponse()
+
+            def post(self, url, headers=None, json=None):
+                recorder.posts += 1
+                return Response()
+
+        monkeypatch.setattr(llm.httpx, "Client", Client)
+
+
+def _sse(*events):
+    """Server-Sent Event lines, each event as an ``event:`` and a ``data:``
+    line followed by a blank one, as Anthropic sends them."""
+    import json
+
+    lines = []
+    for event in events:
+        lines += [f"event: {event['type']}", f"data: {json.dumps(event)}", ""]
+    return lines
+
+
+class TestStreaming:
+    def test_openai_compatible_server_streams(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("P3_HOME", str(tmp_path))
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:1234/v1")
+        seen = _Streamer(
+            monkeypatch,
+            [
+                'data: {"choices":[{"delta":{"role":"assistant"}}]}',
+                "",
+                'data: {"choices":[{"delta":{"content":"Bon"}}]}',
+                'data: {"choices":[{"delta":{"content":"jour"},"finish_reason":null}]}',
+                'data: {"choices":[],"usage":{"total_tokens":9}}',
+                "data: [DONE]",
+            ],
+        )
+        pieces = list(LLMClient("openai", "local-model").chat_stream("s", "u", 50))
+        assert pieces == ["Bon", "jour"]
+        assert seen.url == "http://localhost:1234/v1/chat/completions"
+        assert seen.json["stream"] is True and seen.json["max_tokens"] == 50
+        assert seen.posts == 0
+
+    def test_anthropic_streams_text_deltas_only(self, monkeypatch):
+        seen = _Streamer(
+            monkeypatch,
+            _sse(
+                {"type": "message_start", "message": {"content": []}},
+                {"type": "content_block_start", "index": 0},
+                {"type": "ping"},
+                {
+                    "type": "content_block_delta",
+                    "delta": {"type": "thinking_delta", "thinking": "hmm"},
+                },
+                {
+                    "type": "content_block_delta",
+                    "delta": {"type": "text_delta", "text": "Bon"},
+                },
+                {
+                    "type": "content_block_delta",
+                    "delta": {"type": "text_delta", "text": "jour."},
+                },
+                {"type": "message_delta", "delta": {"stop_reason": "end_turn"}},
+                {"type": "message_stop"},
+            ),
+        )
+        client = LLMClient("anthropic", "claude-haiku-5-5", api_key="key")
+        assert list(client.chat_stream("system", "user", 300)) == ["Bon", "jour."]
+        assert seen.url == "https://api.anthropic.com/v1/messages"
+        assert seen.headers == {"x-api-key": "key", "anthropic-version": "2026-10-21"}
+        assert seen.json == {
+            "model": "claude-haiku-5-5",
+            "max_tokens": 300,
+            "system": "system",
+            "messages": [{"role": "user", "content": "user"}],
+            "stream": True,
+        }
+
+    def test_gemini_streams(self, monkeypatch):
+        monkeypatch.setattr(llm, "_gemini_skipped_until", {})
+        seen = _Streamer(
+            monkeypatch,
+            [
+                'data: {"candidates":[{"content":{"parts":[{"text":"Bon"}]}}]}',
+                'data: {"candidates":[{"content":{"parts":[{"text":"jour"}]}}]}',
+            ],
+        )
+        client = LLMClient("gemini", "gemini-x", api_key="key")
+        assert list(client.chat_stream("s", "u")) == ["Bon", "jour"]
+        assert seen.url.endswith("gemini-x:streamGenerateContent?alt=sse")
+
+    def test_a_server_that_cannot_stream_answers_whole(self, monkeypatch):
+        seen = _Streamer(
+            monkeypatch,
+            [],
+            stream_status=400,
+            body={"choices": [{"message": {"content": " whole "}}]},
+        )
+        client = LLMClient("openai", "gpt-x", api_key="sk")
+        assert list(client.chat_stream("s", "u")) == ["whole"]
+        assert seen.posts == 1
+
+    def test_an_error_before_any_text_falls_back(self, monkeypatch):
+        seen = _Streamer(
+            monkeypatch,
+            _sse({"type": "error", "error": {"type": "overloaded_error"}}),
+            body={"content": [{"type": "text", "text": "whole"}]},
+        )
+        client = LLMClient("anthropic", "m", api_key="key")
+        assert list(client.chat_stream("s", "u")) == ["whole"]
+        assert seen.posts == 1
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            {"type": "error", "error": {"type": "overloaded_error"}},
+            llm.httpx.ReadTimeout("slow"),
+        ],
+    )
+    def test_an_error_after_text_is_raised(self, monkeypatch, failure):
+        first = {"type": "content_block_delta", "delta": {"type": "text_delta"}}
+        first["delta"]["text"] = "Bon"
+        lines = _sse(first) + (
+            [failure] if isinstance(failure, Exception) else _sse(failure)
+        )
+        seen = _Streamer(monkeypatch, lines)
+        stream = LLMClient("anthropic", "m", api_key="key").chat_stream("s", "u")
+        assert next(stream) == "Bon"
+        with pytest.raises((RuntimeError, llm.httpx.TransportError)):
+            next(stream)
+        assert seen.posts == 0

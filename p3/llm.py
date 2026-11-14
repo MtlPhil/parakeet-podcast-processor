@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import time
-from typing import Any, Dict, Iterator, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Iterator, Optional, Tuple, Union
 
 import httpx
 
@@ -63,6 +63,27 @@ _OLLAMA_RELEASE_TIMEOUT = 60.0
 
 class _GeminiUnavailable(RuntimeError):
     """Gemini stayed overloaded or unreachable through every retry."""
+
+
+def _gemini_pieces(data: Dict[str, Any]) -> Iterator[str]:
+    for candidate in data.get("candidates", []):
+        for part in candidate.get("content", {}).get("parts", []):
+            yield part.get("text") or ""
+
+
+def _openai_pieces(data: Dict[str, Any]) -> Iterator[str]:
+    for choice in data.get("choices") or []:  # a usage-only event has none
+        yield (choice.get("delta") or {}).get("content") or ""
+
+
+def _anthropic_pieces(data: Dict[str, Any]) -> Iterator[str]:
+    """Text deltas only: thinking deltas are not part of the reply. An error
+    event (overloaded, say) can arrive mid-stream with status 200."""
+    if data.get("type") == "error":
+        raise RuntimeError(f"Anthropic API error: {data.get('error')}")
+    delta = data.get("delta") or {}
+    if data.get("type") == "content_block_delta" and delta.get("type") == "text_delta":
+        yield delta.get("text") or ""
 
 
 def load_api_key(provider: str) -> Optional[str]:
@@ -184,14 +205,34 @@ class LLMClient:
     def chat_stream(
         self, system: str, user: str, max_tokens: int = 2000
     ) -> Iterator[str]:
-        """Like ``chat``, but yields the reply as it is generated. Ollama and
-        Gemini stream; OpenAI yields the whole reply at once. A Gemini stream
-        that fails before its first piece falls back to ``chat`` (with its
-        retries and fallback model)."""
+        """Like ``chat``, but yields the reply as it is generated. A hosted
+        provider's stream (OpenAI or a server that speaks its API, Gemini,
+        Anthropic) that fails before its first piece falls back to ``chat``
+        (for Gemini, with its retries and fallback model), so a server that
+        can't stream still answers whole."""
         if self.provider == "ollama":
             yield from self._stream_ollama(system, user, max_tokens)
         elif self.provider == "gemini":
             yield from self._stream_gemini(system, user, max_tokens)
+        elif self.provider == "openai":
+            url, headers, body = self._openai_request(system, user, max_tokens)
+            body["stream"] = True
+            yield from self._stream_sse(
+                "OpenAI", url, headers, body, _openai_pieces, system, user, max_tokens
+            )
+        elif self.provider == "anthropic":
+            url, headers, body = self._anthropic_request(system, user, max_tokens)
+            body["stream"] = True
+            yield from self._stream_sse(
+                "Anthropic",
+                url,
+                headers,
+                body,
+                _anthropic_pieces,
+                system,
+                user,
+                max_tokens,
+            )
         else:
             yield self.chat(system, user, max_tokens)
 
@@ -248,38 +289,60 @@ class LLMClient:
             "https://generativelanguage.googleapis.com/v1beta/models/"
             f"{self.model}:streamGenerateContent?alt=sse"
         )
+        body = {
+            "systemInstruction": {"parts": [{"text": system}]},
+            "contents": [{"role": "user", "parts": [{"text": user}]}],
+            "generationConfig": {
+                "maxOutputTokens": max_tokens,
+                "temperature": 0.2,
+                "thinkingConfig": {"thinkingBudget": 0},
+            },
+        }
+        yield from self._stream_sse(
+            "Gemini",
+            url,
+            {"x-goog-api-key": self.api_key},
+            body,
+            _gemini_pieces,
+            system,
+            user,
+            max_tokens,
+        )
+
+    def _stream_sse(
+        self,
+        name: str,
+        url: str,
+        headers: Dict[str, str],
+        body: Dict[str, Any],
+        pieces: Callable[[Dict[str, Any]], Iterator[str]],
+        system: str,
+        user: str,
+        max_tokens: int,
+    ) -> Iterator[str]:
+        """POST a streaming request and yield the reply text ``pieces`` finds
+        in each Server-Sent Event's data. Fails over to ``chat`` if nothing
+        has been yielded yet; once text is out, an error is raised."""
         started = False
         try:
             with httpx.Client(timeout=_REQUEST_TIMEOUT) as client:
-                with client.stream(
-                    "POST",
-                    url,
-                    headers={"x-goog-api-key": self.api_key},
-                    json={
-                        "systemInstruction": {"parts": [{"text": system}]},
-                        "contents": [{"role": "user", "parts": [{"text": user}]}],
-                        "generationConfig": {
-                            "maxOutputTokens": max_tokens,
-                            "temperature": 0.2,
-                            "thinkingConfig": {"thinkingBudget": 0},
-                        },
-                    },
-                ) as response:
+                with client.stream("POST", url, headers=headers, json=body) as response:
                     if response.status_code != 200:
-                        raise RuntimeError(f"Gemini API error: {response.status_code}")
+                        raise RuntimeError(f"{name} API error: {response.status_code}")
                     for line in response.iter_lines():
                         if not line.startswith("data:"):
                             continue
-                        data = json.loads(line[5:])
-                        for candidate in data.get("candidates", []):
-                            for piece in candidate.get("content", {}).get("parts", []):
-                                if piece.get("text"):
-                                    started = True
-                                    yield piece["text"]
+                        data = line[5:].strip()
+                        if data == "[DONE]":  # OpenAI's end of stream
+                            break
+                        for text in pieces(json.loads(data)):
+                            if text:
+                                started = True
+                                yield text
         except (httpx.TransportError, RuntimeError, ValueError) as e:
             if started:
                 raise
-            logger.warning("Gemini stream failed (%s); retrying without streaming", e)
+            logger.warning("%s stream failed (%s); retrying without streaming", name, e)
             yield self.chat(system, user, max_tokens)
 
     def _chat_ollama(self, system: str, user: str, max_tokens: int) -> str:
@@ -308,25 +371,27 @@ class LLMClient:
         )
         return response["message"]["content"].strip()
 
-    def _chat_anthropic(self, system: str, user: str, max_tokens: int) -> str:
+    def _anthropic_request(
+        self, system: str, user: str, max_tokens: int
+    ) -> Tuple[str, Dict[str, str], Dict[str, Any]]:
+        """The Messages API's URL, headers and body for one exchange."""
         if not self.api_key:
             raise RuntimeError(
                 f"No Anthropic API key found: {secrets.missing('anthropic_api_key')}"
             )
+        headers = {"x-api-key": self.api_key, "anthropic-version": _ANTHROPIC_VERSION}
+        body = {
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "system": system,
+            "messages": [{"role": "user", "content": user}],
+        }
+        return ANTHROPIC_URL, headers, body
+
+    def _chat_anthropic(self, system: str, user: str, max_tokens: int) -> str:
+        url, headers, body = self._anthropic_request(system, user, max_tokens)
         with httpx.Client(timeout=_REQUEST_TIMEOUT) as client:
-            response = client.post(
-                ANTHROPIC_URL,
-                headers={
-                    "x-api-key": self.api_key,
-                    "anthropic-version": _ANTHROPIC_VERSION,
-                },
-                json={
-                    "model": self.model,
-                    "max_tokens": max_tokens,
-                    "system": system,
-                    "messages": [{"role": "user", "content": user}],
-                },
-            )
+            response = client.post(url, headers=headers, json=body)
         if response.status_code != 200:
             raise RuntimeError(
                 f"Anthropic API error: {response.status_code} - {response.text}"
@@ -338,27 +403,31 @@ class LLMClient:
             if block.get("type") == "text"
         ).strip()
 
-    def _chat_openai(self, system: str, user: str, max_tokens: int) -> str:
+    def _openai_request(
+        self, system: str, user: str, max_tokens: int
+    ) -> Tuple[str, Dict[str, str], Dict[str, Any]]:
+        """The chat completions URL, headers and body for one exchange."""
         base_url = openai_base_url()
         if not self.api_key and base_url == OPENAI_URL:
             raise RuntimeError(
                 f"No OpenAI API key found: {secrets.missing('openai_api_key')}"
             )
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+        body = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": 0.2,
+            "max_tokens": max_tokens,
+        }
+        return f"{base_url}/chat/completions", headers, body
+
+    def _chat_openai(self, system: str, user: str, max_tokens: int) -> str:
+        url, headers, body = self._openai_request(system, user, max_tokens)
         with httpx.Client(timeout=_REQUEST_TIMEOUT) as client:
-            response = client.post(
-                f"{base_url}/chat/completions",
-                headers=headers,
-                json={
-                    "model": self.model,
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                    "temperature": 0.2,
-                    "max_tokens": max_tokens,
-                },
-            )
+            response = client.post(url, headers=headers, json=body)
         if response.status_code != 200:
             raise RuntimeError(
                 f"OpenAI API error: {response.status_code} - {response.text}"

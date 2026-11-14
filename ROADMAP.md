@@ -32,11 +32,11 @@ and the installer, not the language.
    - The web as a second source: a hosted model's built-in search where
      there is one, a search API for local models, with web and podcast
      citations kept apart.
-   - Streaming and tool calls for every provider: OpenAI-compatible servers
-     and Anthropic answer whole today.
-   - Send one real request through the Anthropic provider and through an
-     OpenAI-compatible server (LM Studio, say). Both are tested only with
-     stand-ins.
+   - Tool calls for every provider (every one of them streams).
+   - Send real requests through the Anthropic provider and OpenAI's own API,
+     streamed and whole (the README's "LLM providers" shows how). Both are
+     tested only with stand-ins; an OpenAI-compatible server (Ollama's)
+     answered real ones.
    - Speaker names in transcripts and citations (built, unfinished, on the
      `speakers` branch). The review found host lines credited to guests;
      this is Ask's biggest remaining trust gap.

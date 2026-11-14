@@ -279,7 +279,25 @@ settings:
 The `openai` provider also talks to any server that speaks OpenAI's API
 (LM Studio, llama.cpp, vLLM): set the `OPENAI_BASE_URL` environment variable
 to its address, for example `http://localhost:1234/v1`. Such a server needs
-no key.
+no key. Ollama speaks it too, at `http://localhost:11434/v1`.
+
+Ask's answers stream in from every provider. A server that can't stream
+answers whole instead.
+
+To check a provider before relying on it, send it one request from the
+repository root, streamed and then whole (for `anthropic`, set
+`ANTHROPIC_API_KEY` and use a Claude model; for `openai`, `OPENAI_API_KEY`
+or `OPENAI_BASE_URL`):
+
+```bash
+.venv/bin/python -c 'from p3.llm import LLMClient
+c = LLMClient("anthropic", "claude-haiku-5-5")
+print(list(c.chat_stream("Reply in one sentence.", "Say hello.", 100)))
+print(c.chat("Reply in one sentence.", "Say hello.", 100))'
+```
+
+The first line should print the reply in several pieces; a warning that the
+stream failed means it fell back to a whole reply.
 
 In the web app, the synopsis, blog and LinkedIn actions can also switch to
 Gemini for a single request without changing the default.
