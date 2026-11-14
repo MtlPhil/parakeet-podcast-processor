@@ -16,9 +16,10 @@ item, docs updated with each:
    Podcast can search and browse Apple's directory; Ask's citations open a
    popover on tap, where one can be flagged; Ask can also search the web;
    an answer a restart cut short is written again; counting questions also
-   list episodes that discuss it in other words.
-2. Next, Ask: measuring subtler
-   overstatement; local or Gemini answers (from the plan's measurements);
+   list episodes that discuss it in other words; the answer evaluation
+   judges each cited claim (supported, overstated, misattributed,
+   unsupported).
+2. Next, Ask: local or Gemini answers (from the plan's measurements);
    tools for the model.
 3. Speakers: remembering a show's host voice across episodes.
 4. Content and analysis: the summary's format, companies to a CRM,
@@ -74,8 +75,9 @@ and the installer, not the language.
      - Decide local or hosted answers from the measurements in the plan, or
        try a smaller local answer model, then check the attribution rules
        on a broad question.
-     - Measure subtler overstatement than the support check catches
-       (`python -m p3.eval_ask answers`).
+     - Run the claim judge on real answers once there are some
+       (`python -m p3.eval_ask answers --stored 50 --judge-provider gemini`)
+       and act on what it finds.
      - Tools for the model, beyond the broad-question routing.
 4. **A desktop app.** Done: `p3-app` opens P³ in a native window with the
    server inside it, and the web app can be installed on a phone's home
