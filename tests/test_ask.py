@@ -1309,3 +1309,82 @@ def test_without_a_reranker_counting_stays_with_the_words(db):
     done = asker.ask("How often is inflation discussed?")
     assert done["scope"]["mentions"]["episodes"] == 1
     assert done["scope"]["mentions"]["related"] == []
+
+
+def _cited(n, text, **extra):
+    return {
+        "n": n,
+        "text": text,
+        "podcast_title": "Money Talk",
+        "episode_title": "The Bank of Canada",
+        "cited": True,
+        **extra,
+    }
+
+
+class ClaimJudge:
+    """Answers the claims request with fixed verdicts; the coarse grade
+    request with a plain grade."""
+
+    provider, model, is_configured = "fake", "judge", True
+
+    def __init__(self, verdicts):
+        self.verdicts = verdicts
+        self.prompts = []
+
+    def chat(self, system, user, max_tokens=300):
+        self.prompts.append(user)
+        if "Claim 1:" in user:
+            return json.dumps(
+                {
+                    "claims": [
+                        {"i": i, "verdict": v, "why": f"because {i}"}
+                        for i, v in enumerate(self.verdicts, start=1)
+                    ]
+                }
+            )
+        return '{"correct": 2, "supported": 1.0, "unsupported": []}'
+
+
+def test_each_cited_claim_gets_a_verdict_against_its_passage():
+    from p3.eval_ask import claim_summary, claim_verdicts
+
+    done = {
+        "answer": "The governor says rates will certainly rise next year [1]. "
+        "Cathie Wood says inflation is beaten for good [2].",
+        "sources": [
+            _cited(1, "Rates could rise next year, the governor said."),
+            _cited(2, "The host: inflation may be beaten.", speakers="Host"),
+        ],
+    }
+    judge = ClaimJudge(["overstated", "nonsense"])
+    rows = claim_verdicts(judge, "What about rates?", done)
+    assert [(r["n"], r["verdict"]) for r in rows] == [(1, "overstated"), (2, None)]
+    assert "Its passage [2] (Money Talk: The Bank of Canada, Host)" in judge.prompts[0]
+    summary = claim_summary([{"id": "q1", "claims": rows}])
+    assert summary["claims_judged"] == 1
+    assert summary["claim_verdicts"]["overstated"] == 1.0
+    assert summary["examples"][0]["why"] == "because 1"
+
+
+def test_stored_answers_are_judged_without_asking_again(db):
+    from p3.eval_ask import evaluate_stored
+
+    thread = db.create_ask_thread("u", "q")
+    db.add_ask_message(thread, "user", "Did the bank raise rates?")
+    db.add_ask_message(
+        thread,
+        "assistant",
+        "The Bank of Canada raised interest rates again this fall [1].",
+        citations=[_cited(1, "The Bank of Canada raised interest rates again.")],
+        retrieval={"mode": "answer"},
+    )
+    db.add_ask_message(thread, "user", "And football?")
+    db.add_ask_message(
+        thread, "assistant", "Not covered.", retrieval={"mode": "not_covered"}
+    )
+    judge = ClaimJudge(["supported"])
+    result = evaluate_stored(db, judge, 10)
+    assert result["answers"] == 1  # the declined one isn't judged
+    assert result["claim_verdicts"]["supported"] == 1.0
+    assert "Question: Did the bank raise rates?" in judge.prompts[0]

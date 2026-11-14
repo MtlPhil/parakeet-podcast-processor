@@ -564,6 +564,30 @@ class Ask(Search):
         )
         return stored
 
+    def recent_ask_answers(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """The last ``limit`` written answers (mode answer), newest first,
+        each with its citations and the question asked just before it."""
+        cursor = self.conn.execute(
+            """
+            SELECT m.id, m.content AS answer, m.citations, m.created_at,
+                   (SELECT q.content FROM ask_messages q
+                    WHERE q.thread_id = m.thread_id AND q.role = 'user'
+                      AND q.created_at <= m.created_at
+                    ORDER BY q.created_at DESC LIMIT 1) AS question
+            FROM ask_messages m
+            WHERE m.role = 'assistant'
+              AND json_extract_string(m.retrieval, '$.mode') = 'answer'
+            ORDER BY m.created_at DESC
+            LIMIT ?
+        """,
+            (limit,),
+        )
+        rows = self._fetchall_as_dicts(cursor)
+        for row in rows:
+            if isinstance(row.get("citations"), str):
+                row["citations"] = json.loads(row["citations"])
+        return rows
+
     def rated_ask_message(self, message_id: str) -> Optional[Dict[str, Any]]:
         rows = self.rated_ask_messages(1, message_id)
         return rows[0] if rows else None
