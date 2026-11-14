@@ -28,8 +28,19 @@ const STAGES = {
   understanding: 'Reading the question…',
   searching: 'Searching your library…',
   searching_web: 'Searching the web…',
+  researching: 'Looking further…',
   answering: 'Writing the answer…',
 };
+
+// What a broad question's research is doing (the model's tool calls).
+const TOOL_STAGES = {
+  search_passages: (d) => (d ? `Searching again: “${d}”…` : 'Searching again…'),
+  list_episodes: (d) => (d ? `Listing the episodes of ${d}…` : 'Listing episodes…'),
+  get_summary: () => 'Reading an episode summary…',
+  count_mentions: (d) => (d ? `Counting mentions of ${d}…` : 'Counting mentions…'),
+};
+const stageLabel = (stage, tool) =>
+  (stage === 'researching' && tool && TOOL_STAGES[tool.name]?.(tool.detail)) || STAGES[stage] || 'Working…';
 
 const KIND_LABELS = { summary: 'Episode summary', topics: 'Episode topics', quote: 'Quote', notes: 'Show notes' };
 // Passages written by the digest model, not said in the episode.
@@ -500,7 +511,7 @@ const SLOW_SECONDS = 30;
 
 // While an answer is written: the stage, the time so far, and the passages
 // as soon as the search has found them, so there is something to read.
-function Pending({ stage, sources, startedAt }) {
+function Pending({ stage, tool, sources, startedAt }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);
@@ -510,7 +521,7 @@ function Pending({ stage, sources, startedAt }) {
   return (
     <div className="bg-white border rounded-xl p-4">
       <p className="text-sm text-gray-500">
-        <span className="animate-pulse">{STAGES[stage] || 'Working…'}</span>{' '}
+        <span className="animate-pulse">{stageLabel(stage, tool)}</span>{' '}
         <span className="tabular-nums">{seconds} s</span>
       </p>
       {stage === 'understanding' && seconds >= SLOW_SECONDS && (
@@ -557,6 +568,7 @@ export default function Ask() {
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [stage, setStage] = useState(null);
+  const [tool, setTool] = useState(null);
   const [error, setError] = useState(null);
   const [status, setStatus] = useState(null);
   const [showThreads, setShowThreads] = useState(false);
@@ -659,7 +671,10 @@ export default function Ask() {
             stored = true;
             // Stored already: from here the page can be left and come back.
             if (event.thread_id !== threadId) setParams({ thread: event.thread_id }, { replace: !threadId });
-          } else if (event.event === 'status') setStage(event.stage);
+          } else if (event.event === 'status') {
+            setStage(event.stage);
+            setTool(event.tool ? { name: event.tool, detail: event.detail } : null);
+          }
           else if (event.event === 'sources') update({ sources: event.sources, webSources: event.web_sources });
           else if (event.event === 'token') {
             streamed += event.text;
@@ -826,7 +841,7 @@ export default function Ask() {
             ) : (
               <div key={m.id || i}>
                 {m.streaming && !m.answer ? (
-                  <Pending stage={stage} sources={m.sources} startedAt={m.startedAt} />
+                  <Pending stage={stage} tool={tool} sources={m.sources} startedAt={m.startedAt} />
                 ) : (
                   <AssistantMessage message={m} question={questionFor(i)} />
                 )}

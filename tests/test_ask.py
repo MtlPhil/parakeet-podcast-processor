@@ -1166,6 +1166,7 @@ def test_counting_questions_get_the_full_episode_count(db):
     prompt = llm.prompts[-1]
     assert "Episode count: 2 episodes of the library mention rates, phone" in prompt
     assert prompt.index("Episode count") < prompt.index("Passages:")
+    assert "By podcast: Tech Weekly: 1; Money Talk: 1" in prompt
     assert done["understanding"]["mentions"] == ["rates", "phone", "le"]
     assert done["mode"] == "answer"
 

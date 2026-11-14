@@ -18,6 +18,7 @@ import queue
 import re
 import threading
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Dict, Iterator, List, Optional
@@ -48,7 +49,11 @@ from .writer import _detect_language
 logger = logging.getLogger(__name__)
 
 UNDERSTAND_PROMPT_VERSION = "understand-v5"
-ANSWER_PROMPT_VERSION = "answer-v7"
+ANSWER_PROMPT_VERSION = "answer-v8"
+
+# Research for broad questions (p3/ask_tools.py, which imports this module).
+RESEARCH_PROMPT_VERSION = "research-v1"
+TOOL_PROVIDERS = {"gemini", "openai", "anthropic"}
 
 # Below this reranker score (0 to 1) the best passage is taken as unrelated
 # and the question as not covered by the library. To be calibrated on the
@@ -60,6 +65,9 @@ ABSTAIN_THRESHOLD = 0.05
 # overflows, which is where the instructions are.
 PASSAGES_BUDGET_TOKENS = 5200
 PASSAGE_MAX_CHARS = 1500
+# After research (hosted models only, whose windows are far larger), the
+# passages may take more: the first search's and what the tools added.
+RESEARCH_PASSAGES_BUDGET_TOKENS = 14000
 _CJK_CHAR_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]")
 # Earlier turns of a thread given to the question step.
 _HISTORY_TURNS = 3
@@ -156,10 +164,11 @@ when it matters, and for "how often" or "which episodes" questions list the \
 episodes found and say the list covers only what the search found."""
 
 _COUNT_RULES = """
-- An episode count comes before the passages: every episode whose \
-transcript mentions the words searched for. Take numbers and lists of \
-episodes from it, not from the passages, and say it counts episodes that \
-mention those words. Cite passages only for what was said.
+- Episode counts come before the passages: each lists every episode whose \
+transcript mentions the words it searched for. Take numbers and lists of \
+episodes from them, not from the passages (the number per show from "By \
+podcast"), and say they count episodes that mention those words. Cite \
+passages only for what was said.
 - Episodes listed as "also discussing it without those words" were found by \
 meaning: give their number separately ("and N more discuss it without \
 naming it"), never added to the count."""
@@ -255,6 +264,12 @@ def format_mentions(mentions: Dict[str, Any]) -> str:
     if mentions["episodes"] > len(lines):
         lines.append(f"- and {mentions['episodes'] - len(lines)} more")
     terms = ", ".join(clean_title(t, 60) for t in mentions["terms"])
+    # Counted here: the model adds up a long list wrongly.
+    shows = Counter(e["podcast_title"] for e in episodes)
+    tally = "; ".join(f"{clean_title(t, 80)}: {n}" for t, n in shows.most_common())
+    if mentions["episodes"] > len(episodes):
+        tally += f" (in the newest {len(episodes)})"
+    lines.append(f"By podcast: {tally}")
     body = _FENCE_RE.sub("", "\n".join(lines))
     block = (
         f"Episode count: {mentions['episodes']} episodes of the library mention "
@@ -275,6 +290,15 @@ def format_mentions(mentions: Dict[str, Any]) -> str:
             f"<<<\n{related_body}\n>>>"
         )
     return block
+
+
+def by_episode(passages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The passages with each episode's together, episodes in the order
+    they first appear: research adds passages to episodes found before."""
+    order: Dict[int, List[Dict[str, Any]]] = {}
+    for p in passages:
+        order.setdefault(p["episode_id"], []).append(p)
+    return [p for group in order.values() for p in group]
 
 
 def estimate_tokens(text: str) -> int:
@@ -521,6 +545,15 @@ class Asker:
                 return
             else:
                 raise value
+
+    def _can_research(self) -> bool:
+        """Whether broad questions get the research step (p3/ask_tools.py):
+        a hosted answer model that takes tools."""
+        return (
+            self.llm is not None
+            and self.llm.provider in TOOL_PROVIDERS
+            and hasattr(self.llm, "chat_tools")
+        )
 
     def _language_of(self, question: str) -> str:
         return _detect_language(question) or self.default_language
@@ -842,15 +875,38 @@ class Asker:
         timings.update({f"retrieve_{k}": v for k, v in retrieval.timings.items()})
         # Counted with the filters the search kept (see _retrieve).
         mentions = self.count_mentions(understanding, use_models)
-        count_block = format_mentions(mentions) if mentions else ""
+        counts = [mentions] if mentions else []
         # Episodes that mention it answer a count even when no passage
         # convinces the reranker.
         covered = self.covered(retrieval) or bool(mentions and mentions["episodes"])
         if broad and use_models and covered:
             retrieval = broaden(self.db, retrieval, min_rerank=self.abstain_threshold)
+        research = None
+        if broad and use_models and self._can_research():
+            from .ask_tools import Research
+
+            yield {"event": "status", "stage": "researching"}
+            t = time.monotonic()
+            research = Research(
+                self,
+                understanding,
+                retrieval.passages if covered else [],
+                counts,
+                cancel,
+            )
+            yield from research.run()
+            timings["research"] = time.monotonic() - t
+            # Nothing found either way: the closest passages stay, to show.
+            if covered or research.passages:
+                retrieval.passages = by_episode(research.passages)
+            counts = research.counts
+            covered = (
+                self.covered(retrieval) or covered or any(c["episodes"] for c in counts)
+            )
+        count_block = "\n\n".join(format_mentions(c) for c in counts)
         passages = fit_passages(
             retrieval.passages,
-            PASSAGES_BUDGET_TOKENS
+            (RESEARCH_PASSAGES_BUDGET_TOKENS if research else PASSAGES_BUDGET_TOKENS)
             - (estimate_tokens(count_block) if count_block else 0),
         )
         # The stored record lists exactly the passages the model is given.
@@ -989,13 +1045,24 @@ class Asker:
                 "mentions": understanding.mentions,
                 "filters": understanding.filters,
             },
-            "retrieval": retrieval.summary(),
+            "retrieval": {
+                **retrieval.summary(),
+                **(
+                    {"research": research.calls, "research_error": research.error}
+                    if research
+                    else {}
+                ),
+            },
             "timings": {k: round(v, 3) for k, v in timings.items()},
             "models": {
                 "llm": f"{self.llm.provider}:{self.llm.model}" if self.llm else None,
                 "embedding": getattr(self.retriever.embedder, "model", None),
                 "reranker": getattr(self.retriever.reranker, "model_name", None),
-                "prompts": [UNDERSTAND_PROMPT_VERSION, ANSWER_PROMPT_VERSION],
+                "prompts": [
+                    UNDERSTAND_PROMPT_VERSION,
+                    ANSWER_PROMPT_VERSION,
+                    *([RESEARCH_PROMPT_VERSION] if research else []),
+                ],
                 "abstain_threshold": self.abstain_threshold,
             },
         }
