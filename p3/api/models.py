@@ -113,6 +113,26 @@ class TranscriptSegment(BaseModel):
     confidence: Optional[float] = None
 
 
+class EpisodeSpeaker(BaseModel):
+    label: str
+    name: Optional[str] = None
+    role: Optional[str] = None
+    seconds: Optional[float] = None
+    # How the transcript shows them: the name, "Ad"/"Intro" or "Speaker N".
+    shown: str
+
+
+class SpeakerRename(BaseModel):
+    # Empty or null forgets the name.
+    name: Optional[str] = Field(None, max_length=80)
+
+
+class SpeakerList(BaseModel):
+    speakers: List[EpisodeSpeaker]
+    # The job re-indexing the episode for Ask after a rename.
+    job_id: Optional[str] = None
+
+
 # ------------------------------------------------------------------
 # Summaries
 # ------------------------------------------------------------------

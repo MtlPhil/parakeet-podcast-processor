@@ -662,3 +662,59 @@ class TestWhatDidTheySay:
         done = self._asked(db, "Lenny")
         assert done["scope"]["speakers"] == []
         assert len(done["sources"]) > 1
+
+
+def test_an_admin_renames_a_speaker_and_ask_reindexes(tmp_path, monkeypatch):
+    from p3.api import deps
+    from p3.api.job_queue import job_runner
+
+    monkeypatch.setattr(deps, "_DB_PATH", str(tmp_path / "api.duckdb"))
+    monkeypatch.setattr(deps, "_CONFIG_PATH", str(tmp_path / "feeds.yaml"))
+    monkeypatch.setenv("P3_AUTH", "proxy")
+    monkeypatch.setenv("P3_DEV_USER", "tester")
+    deps.close_db()
+    queued = []
+    monkeypatch.setattr(job_runner, "enqueue", lambda fn, *a: queued.append(a))
+    from fastapi.testclient import TestClient
+
+    from p3.api.main import app
+
+    client = TestClient(app)
+    db = deps.get_db()
+    episode = _episode(db)
+    _stored(episode, db, TestWhereNamesShow.ROWS)
+    db.replace_episode_speakers(
+        episode,
+        {
+            "A": {"name": None, "role": "host", "seconds": 40},
+            "B": {"name": "Joëlle Pineau", "role": "guest", "seconds": 20},
+        },
+    )
+    db.update_episode_status(episode, "processed")
+    client.get("/api/me")  # tester, the first user, is an admin
+    url = f"/api/episodes/{episode}/speakers"
+    assert [s["shown"] for s in client.get(url).json()["speakers"]] == [
+        "Speaker 1",
+        "Joëlle Pineau",
+    ]
+    reply = client.put(f"{url}/A", json={"name": "  Étienne   Crevier "})
+    assert reply.status_code == 200
+    assert reply.json()["speakers"][0]["shown"] == "Étienne Crevier"
+    assert queued == [(reply.json()["job_id"], episode)]
+    segments = client.get(f"/api/episodes/{episode}/transcript").json()
+    assert segments[0]["speaker_name"] == "Étienne Crevier"
+    assert (
+        client.put(f"{url}/B", json={"name": ""}).json()["speakers"][1]["shown"]
+        == "Speaker 1"  # the only unnamed voice now
+    )
+    assert client.put(f"{url}/Z", json={"name": "X"}).status_code == 404
+    db.ensure_user("viewer")
+    db.link_episode("viewer", episode)
+    denied = client.put(
+        f"{url}/A", json={"name": "X"}, headers={"Remote-User": "viewer"}
+    )
+    assert denied.status_code == 403
+    assert client.get(url, headers={"Remote-User": "viewer"}).status_code == 200
+    deps.close_db()
+    if os.path.exists(tmp_path / "api.duckdb"):
+        os.remove(tmp_path / "api.duckdb")

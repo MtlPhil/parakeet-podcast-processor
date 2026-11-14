@@ -69,7 +69,10 @@ P³ ships as both a command-line tool (`p3`) and a web app (FastAPI + React).
   text, never audio. The episode page shows who speaks, digests and Ask read
   "Name:" before each turn, and Ask's citations say who said it. Voices
   nobody named show as "Speaker 1", "Speaker 2"; sponsor reads and the
-  show's jingle as "Ad" and "Intro". Episodes digested before have no audio
+  show's jingle as "Ad" and "Intro". An admin can rename a speaker on the
+  episode's Transcript tab (Ask picks up the name; the digest keeps the one
+  it was written with). Ask can answer "what did X say": it then searches
+  only the passages X speaks in. Episodes digested before have no audio
   left, so they stay without speakers.
 - **Transcript cleaning.** Filler words are stripped with a regex. The summary
   prompts then tell the LLM to ignore ads and sponsor reads. The transcript is

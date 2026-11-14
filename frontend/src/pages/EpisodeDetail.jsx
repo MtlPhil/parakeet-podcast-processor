@@ -22,6 +22,7 @@ import JobProgress from '../components/JobProgress';
 import ProviderSelect from '../components/ProviderSelect';
 import EmailSynopsis from '../components/EmailSynopsis';
 import MarkdownText from '../components/MarkdownText';
+import SpeakerNames from '../components/SpeakerNames';
 
 const TABS = ['overview', 'transcript', 'summary'];
 
@@ -281,6 +282,11 @@ export default function EpisodeDetail() {
                   Download transcript (.md)
                 </button>
               </div>
+              <SpeakerNames
+                episodeId={id}
+                canEdit={me?.role === 'admin'}
+                onRenamed={() => getTranscript(id).then(setTranscript).catch(() => {})}
+              />
               <div className="space-y-2 max-h-[600px] overflow-y-auto">
                 {transcript.map((seg, i) => (
                   <div key={seg.id}>
