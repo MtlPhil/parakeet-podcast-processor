@@ -229,9 +229,10 @@ class Users(Jobs):
         """Add an episode to a user's library, undoing an earlier delete.
         Returns True if it was not there already."""
         self.conn.execute(
-            "DELETE FROM user_deleted_episodes WHERE username = ? AND url IN "
-            "(SELECT url FROM episodes WHERE id = ?)",
-            (username, episode_id),
+            "DELETE FROM user_deleted_episodes WHERE username = ? AND "
+            "(url IN (SELECT url FROM episodes WHERE id = ?) OR (podcast_id, guid) "
+            "IN (SELECT podcast_id, guid FROM episodes WHERE id = ?))",
+            (username, episode_id, episode_id),
         )
         if self.user_has_episode(username, episode_id):
             return False
@@ -256,7 +257,7 @@ class Users(Jobs):
         Once nobody has the episode it is erased with its transcript, summary,
         jobs and audio. Returns how many users still have it."""
         row = self.conn.execute(
-            "SELECT e.url, e.title, p.title FROM episodes e "
+            "SELECT e.url, e.title, p.title, e.podcast_id, e.guid FROM episodes e "
             "LEFT JOIN podcasts p ON p.id = e.podcast_id WHERE e.id = ?",
             (episode_id,),
         ).fetchone()
@@ -267,8 +268,8 @@ class Users(Jobs):
         if row:
             self.conn.execute(
                 "INSERT OR REPLACE INTO user_deleted_episodes "
-                "(username, url, title, podcast_title, deleted_at) "
-                "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                "(username, url, title, podcast_title, podcast_id, guid, deleted_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
                 (username, *row),
             )
         remaining = self.conn.execute(
@@ -298,6 +299,22 @@ class Users(Jobs):
             (username, url),
         )
         return True
+
+    def is_guid_deleted(
+        self, username: str, podcast_id: int, guid: Optional[str]
+    ) -> bool:
+        """True if the user deleted the podcast's episode with this feed
+        ``guid``, under whatever audio URL it had then."""
+        if not guid:
+            return False
+        return (
+            self.conn.execute(
+                "SELECT 1 FROM user_deleted_episodes "
+                "WHERE username = ? AND podcast_id = ? AND guid = ?",
+                (username, podcast_id, guid),
+            ).fetchone()
+            is not None
+        )
 
     def is_url_deleted(self, username: str, url: str) -> bool:
         """True if the user deleted the episode with this URL from their library."""

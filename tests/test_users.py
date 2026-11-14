@@ -195,6 +195,81 @@ class TestDownloaderLinking:
         assert not db.is_subscribed("ann", pid)
 
 
+class TestEpisodeGuid:
+    """A feed that moves an episode to a new audio URL keeps its guid; the
+    episode is recognized by it, not downloaded again."""
+
+    def _fetch(self, monkeypatch, tmp_path, db, username, entries, picked=None):
+        """Fetch "http://x/rss" listing ``entries`` ((url, guid) pairs) for
+        ``username``. Returns (episodes added to their library, downloads)."""
+        downloader = PodcastDownloader(
+            db=db, data_dir=str(tmp_path), max_episodes=5, username=username
+        )
+        listing = [
+            {"title": guid, "url": url, "date": None, "description": "", "guid": guid}
+            for url, guid in entries
+        ]
+        monkeypatch.setattr(downloader, "_rss_episodes", lambda url: listing)
+        downloads = []
+
+        def fake_download(url, filename):
+            downloads.append(url)
+            path = tmp_path / f"{filename}.wav"
+            path.write_bytes(b"audio")
+            return str(path)
+
+        monkeypatch.setattr(downloader, "download_episode", fake_download)
+        downloader.add_feed("Pod", "http://x/rss")
+        return downloader.process_feed("http://x/rss", picked), downloads
+
+    def test_moved_episode_is_not_downloaded_again(self, db, tmp_path, monkeypatch):
+        db.ensure_user("ann")
+        db.ensure_user("bob")
+        old = [("http://x/1.mp3", "g1")]
+        new = [("http://track.example/x/1.mp3", "g1")]
+        assert self._fetch(monkeypatch, tmp_path, db, "ann", old) == (1, [old[0][0]])
+        eid = db.get_episode_id_by_url(old[0][0])
+
+        assert self._fetch(monkeypatch, tmp_path, db, "ann", new) == (0, [])
+        # Someone else following it later gets the stored episode, linked.
+        assert self._fetch(monkeypatch, tmp_path, db, "bob", new) == (1, [])
+        assert [e["id"] for e in db.get_all_episodes("bob")] == [eid]
+        assert db.get_episode_id_by_url(new[0][0]) is None
+
+    def test_episode_stored_before_guids_gets_its_guid(self, db, tmp_path, monkeypatch):
+        db.ensure_user("ann")
+        pid = db.add_podcast("Pod", "http://x/rss")
+        eid = db.add_episode(pid, "Old", None, "http://x/1.mp3")
+        db.link_episode("ann", eid)
+
+        self._fetch(monkeypatch, tmp_path, db, "ann", [("http://x/1.mp3", "g1")])
+        assert db.get_episode_by_id(eid)["guid"] == "g1"
+        moved = [("http://track.example/x/1.mp3", "g1")]
+        assert self._fetch(monkeypatch, tmp_path, db, "ann", moved) == (0, [])
+
+    def test_deleted_episode_stays_deleted_under_a_new_url(
+        self, db, tmp_path, monkeypatch
+    ):
+        db.ensure_user("ann")
+        old = [("http://x/1.mp3", "g1")]
+        new = [("http://track.example/x/1.mp3", "g1")]
+        self._fetch(monkeypatch, tmp_path, db, "ann", old)
+        db.hide_episode("ann", db.get_episode_id_by_url(old[0][0]))
+        assert db.get_all_episodes() == []  # erased: nobody else had it
+
+        assert self._fetch(monkeypatch, tmp_path, db, "ann", new) == (0, [])
+        # Hand-picking it brings it back, from its new URL.
+        added = self._fetch(monkeypatch, tmp_path, db, "ann", new, picked=["g1"])
+        assert added == (1, [new[0][0]])
+        assert db.get_deleted_episodes("ann") == []
+
+    def test_a_guid_listed_twice_matches_nothing(self, db, tmp_path, monkeypatch):
+        db.ensure_user("ann")
+        entries = [("http://x/1.mp3", "dup"), ("http://x/2.mp3", "dup")]
+        added, downloads = self._fetch(monkeypatch, tmp_path, db, "ann", entries)
+        assert added == 2 and len(downloads) == 2
+
+
 class TestDeletedEpisodesList:
     def test_list_records_title_and_can_be_allowed_again(self, db):
         db.ensure_user("ann")

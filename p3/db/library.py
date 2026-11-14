@@ -117,9 +117,9 @@ class Library(Schema):
             (podcast_id, podcast_id),
         )
         self.conn.execute(
-            "DELETE FROM user_deleted_episodes WHERE url IN "
+            "DELETE FROM user_deleted_episodes WHERE podcast_id = ? OR url IN "
             "(SELECT url FROM episodes WHERE podcast_id = ?)",
-            (podcast_id,),
+            (podcast_id, podcast_id),
         )
         self.conn.execute(
             "DELETE FROM user_episodes WHERE episode_id IN "
@@ -140,8 +140,10 @@ class Library(Schema):
         url: str,
         file_path: Optional[str] = None,
         description: Optional[str] = None,
+        guid: Optional[str] = None,
     ) -> int:
-        """Add new episode. ``description`` is its show notes.
+        """Add new episode. ``description`` is its show notes, ``guid`` the
+        feed's id for it.
 
         ``date`` is stored as naive UTC. The ``date`` column is DuckDB's
         timezone-naive TIMESTAMP, so binding a timezone-aware datetime (as
@@ -157,12 +159,52 @@ class Library(Schema):
         self.conn.execute(
             """
             INSERT INTO episodes (id, podcast_id, title, date, url, file_path,
-                description)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                description, guid)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-            (next_id, podcast_id, title, date, url, file_path, description or None),
+            (
+                next_id,
+                podcast_id,
+                title,
+                date,
+                url,
+                file_path,
+                description or None,
+                guid or None,
+            ),
         )
         return next_id
+
+    def get_episode_url_by_guid(
+        self, podcast_id: int, guid: Optional[str]
+    ) -> Optional[str]:
+        """The URL a podcast's episode with this feed ``guid`` is stored
+        under, which may be older than the one its feed lists now."""
+        if not guid:
+            return None
+        row = self.conn.execute(
+            "SELECT url FROM episodes WHERE podcast_id = ? AND guid = ?",
+            (podcast_id, guid),
+        ).fetchone()
+        return row[0] if row else None
+
+    def set_missing_guids(self, podcast_id: int, guids: Dict[str, str]) -> int:
+        """Store the feed ``guid`` of a podcast's episodes stored without one
+        (added before guids were kept), from ``guids``: audio URL -> guid.
+        Returns how many changed."""
+        rows = self.conn.execute(
+            "SELECT id, url FROM episodes WHERE podcast_id = ? AND guid IS NULL",
+            (podcast_id,),
+        ).fetchall()
+        changed = 0
+        for episode_id, url in rows:
+            if guids.get(url):
+                self.conn.execute(
+                    "UPDATE episodes SET guid = ? WHERE id = ?",
+                    (guids[url], episode_id),
+                )
+                changed += 1
+        return changed
 
     def set_missing_description(self, url: str, description: Optional[str]) -> bool:
         """Store the show notes of an episode that has none yet (episodes

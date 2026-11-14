@@ -136,9 +136,14 @@ def _preview_episodes(db, url: str, username: str) -> list[dict]:
 
     _epoch = datetime.min.replace(tzinfo=timezone.utc)
     episodes.sort(key=lambda episode: episode["date"] or _epoch, reverse=True)
+    podcast = db.get_podcast_by_url(url)
     rows = []
     for episode in episodes:
-        episode_id = db.get_episode_id_by_url(episode["url"])
+        # By guid too: the feed may list the episode under a newer URL.
+        stored_url = podcast and db.get_episode_url_by_guid(
+            podcast["id"], episode["guid"]
+        )
+        episode_id = db.get_episode_id_by_url(stored_url or episode["url"])
         rows.append(
             {
                 "guid": episode["guid"],

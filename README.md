@@ -651,8 +651,9 @@ DuckDB file at `data/p3.duckdb`:
 - `podcasts`: sources, shared by everyone who follows them. Title, canonical
   URL in `rss_url` (unique), category, and `source_type`: `rss`,
   `youtube_channel` or `youtube_video`
-- `episodes`: title, publish date, audio or YouTube watch URL (unique), local
-  file path, status
+- `episodes`: title, publish date, audio or YouTube watch URL (unique), the
+  feed's `guid` (which stays when a feed moves an episode to a new audio URL,
+  so it isn't downloaded again), local file path, status
 - `transcripts`: one row per segment with start/end timestamps and text
 - `summaries`: short summary, long-form synopsis, and JSON lists of topics,
   themes, quotes and companies, keyed by episode and digest date, plus Quebec
@@ -666,7 +667,7 @@ DuckDB file at `data/p3.duckdb`:
 - `sessions`: local sign-in sessions, keyed by the hash of their cookie token
 - `user_podcasts`, `user_episodes`, `user_deleted_episodes`: who follows which
   podcast, who has which episode, and which episodes a user deleted
-  (remembered by URL, so a deleted episode's data can go)
+  (remembered by URL and guid, so a deleted episode's data can go)
 - `chunks`, `chunk_terms`: Ask's passages with their embeddings, and their
   BM25 terms
 - `ask_threads`, `ask_messages`: Ask conversations; each answer keeps the

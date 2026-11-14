@@ -88,10 +88,6 @@ and the installer, not the language.
 
 ## Pipeline
 
-- **Recognize an episode whose audio URL changed.** Episodes are identified by
-  audio URL; a feed that changes its tracking URLs gets its episodes
-  downloaded again. The feed's own episode id (`guid`) is read but not
-  stored.
 - **Speaker diarization.** Fill the `speaker` field on transcript segments,
   which is currently always empty. Built, unfinished, on the `speakers`
   branch (direction, item 3).

@@ -299,6 +299,7 @@ class TestPreviewSource:
         db = deps.get_db()
         pid = db.add_podcast("Pod", "http://example.com/feed.xml")
         db.add_episode(pid, "Have", None, "http://x/have.mp3")
+        db.add_episode(pid, "Moved", None, "http://x/moved-old.mp3", guid="moved")
         listing = [
             {
                 "title": t,
@@ -307,7 +308,7 @@ class TestPreviewSource:
                 "description": "",
                 "guid": t,
             }
-            for t in ("have", "new")
+            for t in ("have", "new", "moved")
         ]
         monkeypatch.setattr(
             downloader.PodcastDownloader,
@@ -318,7 +319,7 @@ class TestPreviewSource:
         resp = client.get(f"/api/podcasts/{pid}/available")
         assert resp.status_code == 200
         flags = {e["guid"]: e["in_library"] for e in resp.json()["episodes"]}
-        assert flags == {"have": True, "new": False}
+        assert flags == {"have": True, "new": False, "moved": True}
 
     def test_available_unknown_podcast_is_404(self):
         assert client.get("/api/podcasts/999/available").status_code == 404
