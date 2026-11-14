@@ -62,8 +62,9 @@ P³ ships as both a command-line tool (`p3`) and a web app (FastAPI + React).
 - **Speakers.** With the `speakers` extra, each transcript is split by voice
   after transcription (pyannote, on this computer, about 5 minutes per hour
   of audio), so every line has its speaker. At the digest step one LLM
-  request names the voices from the show notes, the first 6 minutes and a
-  few lines of each voice; a name is kept only if that text contains it.
+  request names the voices from the show notes, the first 6 minutes, a few
+  lines of each voice and, for a voice first heard later, the minute
+  before its first turn, where it is usually introduced; a name is kept only if that text contains it.
   Choose that LLM in the shared settings ("Name speakers with"); it gets
   text, never audio. The episode page shows who speaks, digests and Ask read
   "Name:" before each turn, and Ask's citations say who said it. Voices
