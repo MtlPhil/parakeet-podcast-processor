@@ -127,6 +127,14 @@ export const processLibrary = (step) =>
 export const getTranscript = (episodeId) =>
   request(`/episodes/${episodeId}/transcript`);
 
+// Apple's podcast directory: a search, or a category's top chart (no q).
+export const getDirectoryCategories = () => request('/podcasts/discover/categories');
+export const discoverPodcasts = ({ q, genre, country }) => {
+  const params = new URLSearchParams({ q: q || '', country: country || 'us' });
+  if (genre) params.set('genre', genre);
+  return request(`/podcasts/discover?${params}`);
+};
+
 // The user's posts made from an episode.
 export const getEpisodePosts = (episodeId) => request(`/episodes/${episodeId}/posts`);
 

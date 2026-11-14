@@ -12,16 +12,16 @@ item, docs updated with each:
 1. Done: Ask ranks sponsor reads and jingles last and skips cold opens;
    "what did X say" searches only X's passages; admins rename a speaker on
    the episode page; the Search page is ranked by Ask's keyword index; job
-   progress is pushed to the page; the episode page has a Posts tab.
-2. Next (Web app): podcast discovery.
-3. Ask: counting by concept; touch-friendly citation popovers and flagging
+   progress is pushed to the page; the episode page has a Posts tab; Add
+   Podcast can search and browse Apple's directory.
+2. Next, Ask: counting by concept; touch-friendly citation popovers and flagging
    one citation; answers that outlive a restart; measuring subtler
    overstatement; local or Gemini answers (from the plan's measurements);
    tools for the model; the web as a second source.
-4. Speakers: remembering a show's host voice across episodes.
-5. Content and analysis: the summary's format, companies to a CRM,
+3. Speakers: remembering a show's host voice across episodes.
+4. Content and analysis: the summary's format, companies to a CRM,
    investment theses.
-6. Testing: recorded-fixture integration tests, an end-to-end smoke test,
+5. Testing: recorded-fixture integration tests, an end-to-end smoke test,
    a CI job for `install.sh`.
 
 On hold: secrets in the keychain and timing transcription on Linux and
@@ -98,8 +98,6 @@ and the installer, not the language.
 
 ## Web app
 
-- **Podcast discovery.** Browse and search a podcast directory by category
-  instead of pasting feed URLs.
 - **Frontend tests.** No JavaScript test framework is set up yet.
 
 ## Content and analysis

@@ -5,6 +5,7 @@ import { useJobPoller } from '../hooks/useJobPoller';
 import JobProgress from '../components/JobProgress';
 import EpisodePicker from '../components/EpisodePicker';
 import { TagInput } from '../components/Tags';
+import DiscoverPodcasts from '../components/DiscoverPodcasts';
 
 const DEFAULT_SELECTED = 5;
 
@@ -41,13 +42,24 @@ export default function AddPodcast({ embedded = false }) {
     startPolling(result.job_id);
   };
 
-  const handlePreview = async (e) => {
+  const handlePreview = (e) => {
     e.preventDefault();
+    return previewUrl(url);
+  };
+
+  // A show picked in Discover: its feed goes through the same preview.
+  const pickShow = (feedUrl, showName) => {
+    setUrl(feedUrl);
+    if (!name) setName(showName || '');
+    return previewUrl(feedUrl);
+  };
+
+  const previewUrl = async (target) => {
     setError(null);
     setSubmitting(true);
 
     try {
-      const result = await previewSource(url);
+      const result = await previewSource(target);
       setPreview(result);
       setSelected(defaultSelection(result.episodes, DEFAULT_SELECTED));
     } catch (e) {
@@ -55,7 +67,7 @@ export default function AddPodcast({ embedded = false }) {
       // fall back to the direct add-and-fetch flow instead of erroring out.
       if (/playlist/i.test(e.message)) {
         try {
-          await startFetch({ url, name: name || undefined, category: category || undefined });
+          await startFetch({ url: target, name: name || undefined, category: category || undefined });
         } catch (e2) {
           setError(e2.message);
         }
@@ -121,7 +133,7 @@ export default function AddPodcast({ embedded = false }) {
 
       {!preview && !job && (
         <div className="flex gap-1 mb-4 border-b">
-          {[['single', 'One podcast'], ['bulk', 'Bulk add']].map(([value, label]) => (
+          {[['single', 'One podcast'], ['discover', 'Discover'], ['bulk', 'Bulk add']].map(([value, label]) => (
             <button
               key={value}
               type="button"
@@ -134,6 +146,14 @@ export default function AddPodcast({ embedded = false }) {
             </button>
           ))}
         </div>
+      )}
+
+      {mode === 'discover' && !preview && !job && (
+        <>
+          <DiscoverPodcasts onPick={pickShow} />
+          {submitting && <p className="text-sm text-gray-500 mt-3">Loading the episodes...</p>}
+          {error && <p className="text-sm text-red-600 mt-3">{error}</p>}
+        </>
       )}
 
       {mode === 'bulk' && !job && (

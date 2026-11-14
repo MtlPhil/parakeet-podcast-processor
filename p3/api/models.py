@@ -269,6 +269,23 @@ class SynopsisEmail(BaseModel):
     )
 
 
+class DirectoryShow(BaseModel):
+    name: str
+    author: Optional[str] = None
+    feed_url: str
+    artwork: Optional[str] = None
+    genre: Optional[str] = None
+    apple_url: Optional[str] = None
+    episode_count: Optional[int] = None
+    # The user already follows this feed.
+    in_library: bool = False
+
+
+class DirectoryCategory(BaseModel):
+    id: int
+    name: str
+
+
 class EpisodePost(BaseModel):
     kind: str  # "blog" or "linkedin"
     slug: str

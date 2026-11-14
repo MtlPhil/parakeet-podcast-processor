@@ -1965,3 +1965,40 @@ class TestEpisodePosts:
             "linkedin",
         ]
         assert client.get("/api/episodes/9999/posts").status_code == 404
+
+
+class TestDiscover:
+    def test_marks_followed_feeds_and_checks_its_input(self, monkeypatch):
+        from p3 import directory
+
+        client.get("/api/me")
+        db = deps.get_db()
+        pid = db.add_podcast("Mine", "https://feeds.example.com/1")
+        db.subscribe(USER, pid)
+        shows = [
+            {"name": n, "feed_url": f"https://feeds.example.com/{i}"}
+            for i, n in ((1, "Mine"), (2, "New"))
+        ]
+        monkeypatch.setattr(directory, "search", lambda term, country, genre: shows)
+        monkeypatch.setattr(directory, "top", lambda genre, country: shows[1:])
+        hits = client.get("/api/podcasts/discover", params={"q": "x"}).json()
+        assert [(h["name"], h["in_library"]) for h in hits] == [
+            ("Mine", True),
+            ("New", False),
+        ]
+        top = client.get("/api/podcasts/discover", params={"genre": 1321}).json()
+        assert [h["name"] for h in top] == ["New"]
+        assert client.get("/api/podcasts/discover").status_code == 400
+        assert (
+            client.get("/api/podcasts/discover", params={"genre": 1}).status_code == 400
+        )
+        categories = client.get("/api/podcasts/discover/categories").json()
+        assert {"id": 1318, "name": "Technology"} in categories
+
+        def down(*a):
+            raise directory.DirectoryError("down")
+
+        monkeypatch.setattr(directory, "search", down)
+        assert (
+            client.get("/api/podcasts/discover", params={"q": "x"}).status_code == 502
+        )

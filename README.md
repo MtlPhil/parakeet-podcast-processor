@@ -59,6 +59,9 @@ P³ ships as both a command-line tool (`p3`) and a web app (FastAPI + React).
   Parakeet episodes are transcribed in 10-minute chunks that overlap by 15
   seconds, to keep memory use bounded without cutting a sentence at a chunk
   boundary. If Parakeet fails, Whisper transcribes the whole episode.
+- **Discover podcasts.** Add Podcast → Discover searches Apple's podcast
+  directory or lists a category's top shows (by country); a pick opens the
+  usual episode preview. Apple gets the search words, category and country.
 - **Speakers.** With the `speakers` extra, each transcript is split by voice
   after transcription (pyannote, on this computer, about 5 minutes per hour
   of audio), so every line has its speaker. At the digest step one LLM
