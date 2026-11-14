@@ -4,7 +4,8 @@ import json
 import logging
 import os
 import time
-from typing import Any, Callable, Dict, Iterator, Optional, Tuple, Union
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
 
 import httpx
 
@@ -84,6 +85,60 @@ def _anthropic_pieces(data: Dict[str, Any]) -> Iterator[str]:
     delta = data.get("delta") or {}
     if data.get("type") == "content_block_delta" and delta.get("type") == "text_delta":
         yield delta.get("text") or ""
+
+
+@dataclass
+class ToolCall:
+    """A tool the model asks to run. ``id`` is the provider's (empty when it
+    gives none: Ollama, older Gemini models)."""
+
+    name: str
+    arguments: Dict[str, Any]
+    id: str = ""
+
+
+@dataclass
+class ToolTurn:
+    """One reply in a conversation with tools: its text, the tools it calls
+    (none: the model is done) and the provider's own message, which goes
+    back unchanged in the next request (Gemini's calls carry signatures it
+    checks)."""
+
+    text: str
+    calls: List[ToolCall] = field(default_factory=list)
+    message: Any = None
+
+
+def tool_result(call: ToolCall, content: str) -> Dict[str, Any]:
+    """The message that answers ``call`` in a ``chat_tools`` conversation."""
+    return {"role": "tool", "call": call, "content": content}
+
+
+def _json_args(raw: Any) -> Dict[str, Any]:
+    """A tool call's arguments as a dict, whether sent as JSON text (OpenAI)
+    or as an object; anything else as no arguments."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw or "{}")
+        except ValueError:
+            return {}
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def _tool_groups(messages: List[Dict[str, Any]]) -> Iterator[Tuple[str, Any]]:
+    """The conversation as (role, item) with each run of tool results as one
+    ("tool", [results]): Gemini and Anthropic take them in one message."""
+    results: List[Dict[str, Any]] = []
+    for m in messages:
+        if m["role"] == "tool":
+            results.append(m)
+            continue
+        if results:
+            yield "tool", results
+            results = []
+        yield m["role"], m
+    if results:
+        yield "tool", results
 
 
 def load_api_key(provider: str) -> Optional[str]:
@@ -235,6 +290,236 @@ class LLMClient:
             )
         else:
             yield self.chat(system, user, max_tokens)
+
+    def chat_tools(
+        self,
+        system: str,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        max_tokens: int = 1000,
+    ) -> ToolTurn:
+        """One turn of a conversation in which the model may call ``tools``
+        (each {name, description, parameters}, the parameters a JSON
+        schema). ``messages`` are {"role": "user", "content": text},
+        {"role": "assistant", "turn": a ToolTurn this returned} and
+        ``tool_result`` answers, in order. Not streamed: a turn that calls
+        tools is read whole before they run."""
+        if self.provider == "gemini":
+            return self._tools_gemini(system, messages, tools, max_tokens)
+        if self.provider == "openai":
+            return self._tools_openai(system, messages, tools, max_tokens)
+        if self.provider == "anthropic":
+            return self._tools_anthropic(system, messages, tools, max_tokens)
+        if self.provider == "ollama":
+            return self._tools_ollama(system, messages, tools, max_tokens)
+        raise ValueError(f"Unsupported LLM provider: {self.provider!r}")
+
+    def _tools_gemini(self, system, messages, tools, max_tokens) -> ToolTurn:
+        contents: List[Dict[str, Any]] = []
+        for role, item in _tool_groups(messages):
+            if role == "user":
+                contents.append({"role": "user", "parts": [{"text": item["content"]}]})
+            elif role == "assistant":
+                contents.append(item["turn"].message)
+            else:
+                parts = []
+                for r in item:
+                    response: Dict[str, Any] = {
+                        "name": r["call"].name,
+                        "response": {"result": r["content"]},
+                    }
+                    if r["call"].id:
+                        response["id"] = r["call"].id
+                    parts.append({"functionResponse": response})
+                contents.append({"role": "user", "parts": parts})
+        body = self._gemini_body(system, "", max_tokens)
+        body["contents"] = contents
+        body["tools"] = [
+            {
+                "functionDeclarations": [
+                    {
+                        "name": t["name"],
+                        "description": t["description"],
+                        "parameters": t["parameters"],
+                    }
+                    for t in tools
+                ]
+            }
+        ]
+        data = self._gemini_with_fallback(body)
+        try:
+            content = data["candidates"][0]["content"]
+        except (KeyError, IndexError) as e:
+            raise RuntimeError(f"Unexpected Gemini response shape: {data}") from e
+        parts = content.get("parts") or []
+        calls = [
+            ToolCall(
+                name=p["functionCall"].get("name", ""),
+                arguments=_json_args(p["functionCall"].get("args")),
+                id=p["functionCall"].get("id") or "",
+            )
+            for p in parts
+            if p.get("functionCall")
+        ]
+        text = "".join(
+            str(p.get("text") or "") for p in parts if not p.get("thought")
+        ).strip()
+        return ToolTurn(text, calls, {"role": "model", "parts": parts})
+
+    def _tools_openai(self, system, messages, tools, max_tokens) -> ToolTurn:
+        url, headers, body = self._openai_request(system, "", max_tokens)
+        native: List[Dict[str, Any]] = [{"role": "system", "content": system}]
+        for m in messages:
+            if m["role"] == "user":
+                native.append({"role": "user", "content": m["content"]})
+            elif m["role"] == "assistant":
+                native.append(m["turn"].message)
+            else:
+                native.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": m["call"].id,
+                        "content": m["content"],
+                    }
+                )
+        body["messages"] = native
+        body["tools"] = [
+            {
+                "type": "function",
+                "function": {
+                    "name": t["name"],
+                    "description": t["description"],
+                    "parameters": t["parameters"],
+                },
+            }
+            for t in tools
+        ]
+        with httpx.Client(timeout=_REQUEST_TIMEOUT) as client:
+            response = client.post(url, headers=headers, json=body)
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"OpenAI API error: {response.status_code} - {response.text}"
+            )
+        reply = response.json()["choices"][0]["message"]
+        raw_calls = reply.get("tool_calls") or []
+        calls = [
+            ToolCall(
+                name=(c.get("function") or {}).get("name", ""),
+                arguments=_json_args((c.get("function") or {}).get("arguments")),
+                id=c.get("id") or "",
+            )
+            for c in raw_calls
+        ]
+        message: Dict[str, Any] = {
+            "role": "assistant",
+            "content": reply.get("content"),
+        }
+        if raw_calls:
+            message["tool_calls"] = raw_calls
+        return ToolTurn((reply.get("content") or "").strip(), calls, message)
+
+    def _tools_anthropic(self, system, messages, tools, max_tokens) -> ToolTurn:
+        url, headers, body = self._anthropic_request(system, "", max_tokens)
+        native: List[Dict[str, Any]] = []
+        for role, item in _tool_groups(messages):
+            if role == "user":
+                native.append({"role": "user", "content": item["content"]})
+            elif role == "assistant":
+                native.append(item["turn"].message)
+            else:
+                native.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": r["call"].id,
+                                "content": r["content"],
+                            }
+                            for r in item
+                        ],
+                    }
+                )
+        body["messages"] = native
+        body["tools"] = [
+            {
+                "name": t["name"],
+                "description": t["description"],
+                "input_schema": t["parameters"],
+            }
+            for t in tools
+        ]
+        with httpx.Client(timeout=_REQUEST_TIMEOUT) as client:
+            response = client.post(url, headers=headers, json=body)
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"Anthropic API error: {response.status_code} - {response.text}"
+            )
+        blocks = response.json().get("content") or []
+        calls = [
+            ToolCall(
+                name=b.get("name", ""),
+                arguments=_json_args(b.get("input")),
+                id=b.get("id") or "",
+            )
+            for b in blocks
+            if b.get("type") == "tool_use"
+        ]
+        text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+        # Thinking blocks stay in the message sent back, as the API expects.
+        return ToolTurn(text.strip(), calls, {"role": "assistant", "content": blocks})
+
+    def _tools_ollama(self, system, messages, tools, max_tokens) -> ToolTurn:
+        if not OLLAMA_AVAILABLE:
+            raise RuntimeError("The 'ollama' Python package is not installed")
+        native: List[Dict[str, Any]] = [{"role": "system", "content": system}]
+        for m in messages:
+            if m["role"] == "user":
+                native.append({"role": "user", "content": m["content"]})
+            elif m["role"] == "assistant":
+                native.append(m["turn"].message)
+            else:
+                native.append(
+                    {
+                        "role": "tool",
+                        "content": m["content"],
+                        "tool_name": m["call"].name,
+                    }
+                )
+        client = ollama.Client(host=self.ollama_base_url)
+        response = client.chat(
+            model=self.model,
+            messages=native,
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": t["name"],
+                        "description": t["description"],
+                        "parameters": t["parameters"],
+                    },
+                }
+                for t in tools
+            ],
+            keep_alive=self.keep_alive,
+            think=False,
+            options=self._ollama_options(max_tokens),
+        )
+        reply = response["message"]
+        calls = [
+            ToolCall(
+                name=c["function"]["name"],
+                arguments=_json_args(c["function"]["arguments"]),
+            )
+            for c in reply.get("tool_calls") or []
+        ]
+        text = (reply.get("content") or "").strip()
+        message: Dict[str, Any] = {"role": "assistant", "content": text}
+        if calls:
+            message["tool_calls"] = [
+                {"function": {"name": c.name, "arguments": c.arguments}} for c in calls
+            ]
+        return ToolTurn(text, calls, message)
 
     def _ollama_options(self, max_tokens: int) -> Dict[str, Any]:
         return {

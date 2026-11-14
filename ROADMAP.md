@@ -18,12 +18,14 @@ item, docs updated with each:
    an answer a restart cut short is written again; counting questions also
    list episodes that discuss it in other words; the answer evaluation
    judges each cited claim (supported, overstated, misattributed,
-   unsupported).
-2. Next, Ask: tools for the model.
-3. Speakers: remembering a show's host voice across episodes.
-4. Content and analysis: the summary's format, companies to a CRM,
+   unsupported); broad questions get a research step in which a hosted
+   model calls read-only tools (search again, list episodes, read
+   summaries, count mentions) before the answer, on tool calls for every
+   provider.
+2. Next, Speakers: remembering a show's host voice across episodes.
+3. Content and analysis: the summary's format, companies to a CRM,
    investment theses.
-5. Testing: recorded-fixture integration tests, an end-to-end smoke test,
+4. Testing: recorded-fixture integration tests, an end-to-end smoke test,
    a CI job for `install.sh`.
 
 On hold: secrets in the keychain and timing transcription on Linux and
@@ -61,7 +63,9 @@ and the installer, not the language.
      SearXNG; [W1] citations listed apart). Still to do: one real grounded
      answer (the Gemini key tried has no grounding quota), Anthropic's and
      OpenAI's own web search tools.
-   - Tool calls for every provider (every one of them streams).
+   - Tool calls for every provider: done (`LLMClient.chat_tools`, used by
+     Ask's research step). Tried for real with Gemini only; Anthropic's,
+     OpenAI's and Ollama's are tested with stand-ins.
    - Send real requests through the Anthropic provider and OpenAI's own API,
      streamed and whole (the README's "LLM providers" shows how). Both are
      tested only with stand-ins; an OpenAI-compatible server (Ollama's)
@@ -77,7 +81,9 @@ and the installer, not the language.
      - Run the claim judge on real answers once there are some
        (`python -m p3.eval_ask answers --stored 50 --judge-provider gemini`)
        and act on what it finds.
-     - Tools for the model, beyond the broad-question routing.
+     - Tools for the model: done for broad questions with a hosted model.
+       Left: run the evaluation with and without research, and try Ollama's
+       tool calling against it before giving local models the tools.
 4. **A desktop app.** Done: `p3-app` opens P³ in a native window with the
    server inside it, and the web app can be installed on a phone's home
    screen. Still to do:

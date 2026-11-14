@@ -370,6 +370,33 @@ class Ask(Search):
                 break
         return topics
 
+    def indexed_episodes(
+        self,
+        username: Optional[str],
+        filters: Optional[Dict[str, Any]] = None,
+        limit: int = 40,
+    ) -> Tuple[int, List[Dict[str, Any]]]:
+        """How many of a user's indexed episodes the filters (as
+        ``_chunk_scope`` takes them) keep, and the newest ``limit`` of them
+        with their podcast."""
+        scope, params = self._chunk_scope(username, filters)
+        where = f"e.id IN (SELECT c.episode_id FROM chunks c {scope})"
+        total = self.conn.execute(
+            f"SELECT COUNT(*) FROM episodes e WHERE {where}", params
+        ).fetchone()[0]
+        cursor = self.conn.execute(
+            f"""
+            SELECT e.id AS episode_id, e.title AS episode_title,
+                   e.date AS episode_date, p.title AS podcast_title
+            FROM episodes e JOIN podcasts p ON p.id = e.podcast_id
+            WHERE {where}
+            ORDER BY e.date DESC NULLS LAST, e.id DESC
+            LIMIT ?
+        """,
+            [*params, limit],
+        )
+        return total, self._fetchall_as_dicts(cursor)
+
     def summary_chunks(self, episode_ids: List[int]) -> Dict[int, Dict[str, Any]]:
         """Each listed episode's summary passage (as ``get_chunks`` returns
         it), by episode id."""
