@@ -163,7 +163,8 @@ class Ask(Search):
     ) -> Tuple[str, List[Any]]:
         """JOIN/WHERE text limiting ``c`` (chunks) to a user's episodes and
         the optional filters: ``podcast_ids``, ``after`` / ``before`` (dates,
-        inclusive), ``language``, ``kinds``. ``e`` is the episode."""
+        inclusive), ``language``, ``kinds``, ``speakers`` (names: passages
+        one of them speaks in). ``e`` is the episode."""
         sql = "JOIN episodes e ON e.id = c.episode_id "
         params: List[Any] = []
         if username is not None:
@@ -187,7 +188,26 @@ class Ask(Search):
         if filters.get("kinds"):
             where.append("c.kind IN (SELECT unnest(?::VARCHAR[]))")
             params.append(list(filters["kinds"]))
+        if filters.get("speakers"):
+            where.append("list_has_any(string_split(c.speakers, ', '), ?::VARCHAR[])")
+            params.append(list(filters["speakers"]))
         return sql + "WHERE " + " AND ".join(where), params
+
+    def speaker_names(self, username: Optional[str]) -> List[str]:
+        """The names of the speakers of a user's episodes (everyone's with
+        no username)."""
+        sql = "SELECT DISTINCT s.name FROM episode_speakers s "
+        params: List[Any] = []
+        if username is not None:
+            sql += (
+                "JOIN user_episodes ue ON ue.episode_id = s.episode_id "
+                "AND ue.username = ? "
+            )
+            params.append(username)
+        rows = self.conn.execute(
+            sql + "WHERE s.name IS NOT NULL ORDER BY 1", params
+        ).fetchall()
+        return [r[0] for r in rows]
 
     def bm25_search(
         self,

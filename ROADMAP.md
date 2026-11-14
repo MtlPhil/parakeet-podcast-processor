@@ -38,7 +38,7 @@ and the installer, not the language.
      tested only with stand-ins; an OpenAI-compatible server (Ollama's)
      answered real ones.
    - Speakers: done (diarization, names, citations that say who spoke).
-     Still to do: "what did X say" as a filter; editing a name on the episode page; remembering a show's
+     Still to do: editing a name on the episode page; remembering a show's
      host voice across episodes; speakers for episodes digested before,
      whose audio is gone.
    - Ask, from [docs/ask-plan.md](docs/ask-plan.md):

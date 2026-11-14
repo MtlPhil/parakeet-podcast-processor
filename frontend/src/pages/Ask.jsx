@@ -211,6 +211,7 @@ function ScopeLine({ scope }) {
   return (
     <p className="text-[11px] text-gray-500 mt-3">
       Searched: {shows}, {dates}
+      {scope.speakers?.length > 0 && `, what ${scope.speakers.join(' or ')} said`}
       {scope.inferred && ' (read from your question)'}
       {scope.chosen && ' (your filters)'}
       {coverage}
