@@ -23,8 +23,9 @@ import ProviderSelect from '../components/ProviderSelect';
 import EmailSynopsis from '../components/EmailSynopsis';
 import MarkdownText from '../components/MarkdownText';
 import SpeakerNames from '../components/SpeakerNames';
+import EpisodePosts from '../components/EpisodePosts';
 
-const TABS = ['overview', 'transcript', 'summary'];
+const TABS = ['overview', 'transcript', 'summary', 'posts'];
 
 export default function EpisodeDetail() {
   const { id } = useParams();
@@ -316,6 +317,8 @@ export default function EpisodeDetail() {
           )}
         </div>
       )}
+
+      {tab === 'posts' && <EpisodePosts episodeId={id} language={language} />}
 
       {tab === 'summary' && (
         <div>

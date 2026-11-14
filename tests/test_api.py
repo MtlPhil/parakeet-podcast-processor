@@ -1900,3 +1900,68 @@ class TestConfigFile:
         path = tmp_path / "feeds.yaml"
         path.write_text("settings:\n", encoding="utf-8")
         assert load_config(str(path)) == {"feeds": [], "settings": {}}
+
+
+class TestEpisodePosts:
+    def test_lists_the_episodes_posts_with_their_grades(self, tmp_path, monkeypatch):
+        from p3.writer import BlogWriter
+
+        monkeypatch.chdir(tmp_path)
+        client.get("/api/me")
+        db = deps.get_db()
+        pid = db.add_podcast("Pod A", "http://example.com/rss")
+        eid = db.add_episode(pid, "Episode 1", datetime.now(), "http://example.com/1")
+        other = db.add_episode(pid, "Episode 2", datetime.now(), "http://example.com/2")
+        for e in (eid, other):
+            db.link_episode(USER, e)
+        writer = BlogWriter(db=None)
+        meta = {
+            "episode_title": "Episode 1",
+            "podcast_title": "Pod A",
+            "generated_at": "2026-11-14T12:00:00",
+            "model_used": "gemma4:12b",
+        }
+        writer.save_blog_post(
+            {
+                "topic": "Rates",
+                "slug": "rates",
+                "final_post": "Post",
+                "final_post_fr": "Billet",
+                "final_grade": "A",
+                "final_score": 92.0,
+                "iterations": [
+                    {"iteration": 1, "grade": "B", "score": 78.0, "feedback": ""},
+                    {"iteration": 2, "grade": "A", "score": 92.0, "feedback": ""},
+                ],
+                "metadata": {**meta, "source_count": 2, "episode_ids": [other, eid]},
+            },
+            output_dir=str(tmp_path / "blog_posts" / USER),
+        )
+        writer.save_linkedin_post(
+            {
+                "english": "Hello",
+                "french_quebec": "Bonjour",
+                "slug": "pod-a-episode-1",
+                "metadata": {**meta, "episode_id": other},
+            },
+            output_dir=str(tmp_path / "linkedin_posts" / USER),
+        )
+        # A post from before ids were kept names its episode.
+        (tmp_path / "linkedin_posts" / USER / "2026-10-01-old.md").write_text(
+            '---\ntitle: "Episode 1"\nsource_episode: "Episode 1"\n'
+            'source_podcast: "Pod A"\n---\n\n## English\n\nOld\n'
+        )
+        posts = client.get(f"/api/episodes/{eid}/posts").json()
+        assert [(p["kind"], p["slug"]) for p in posts] == [
+            ("blog", "rates"),
+            ("linkedin", "old"),
+        ]
+        assert posts[0]["grades"] == "B 78; A 92"
+        assert posts[0]["final_score"] == 92.0 and posts[0]["content"]
+        assert [
+            p["kind"] for p in client.get(f"/api/episodes/{other}/posts").json()
+        ] == [
+            "blog",
+            "linkedin",
+        ]
+        assert client.get("/api/episodes/9999/posts").status_code == 404
