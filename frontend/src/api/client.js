@@ -127,6 +127,9 @@ export const processLibrary = (step) =>
 export const getTranscript = (episodeId) =>
   request(`/episodes/${episodeId}/transcript`);
 
+// The user's posts made from an episode.
+export const getEpisodePosts = (episodeId) => request(`/episodes/${episodeId}/posts`);
+
 // Who speaks in an episode; admins can rename a speaker (empty name: unnamed).
 export const getSpeakers = (episodeId) => request(`/episodes/${episodeId}/speakers`);
 export const renameSpeaker = (episodeId, label, name) =>

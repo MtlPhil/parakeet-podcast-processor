@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from p3.api.auth import current_username, require_admin
 from p3.api.deps import get_db, user_settings
 from p3.api.job_queue import job_runner
-from p3.api.models import EpisodeOut, SynopsisCreate, SynopsisEmail
+from p3.api.models import EpisodeOut, EpisodePost, SynopsisCreate, SynopsisEmail
 from p3.api.routers.setup import email_problem
 from p3.api.tasks.content import task_generate_synopsis
 from p3.api.tasks.pipeline import (
@@ -115,6 +115,34 @@ def refresh_all(
 @router.get("/{episode_id}", response_model=EpisodeOut)
 def get_episode(episode_id: int, username: str = Depends(current_username)):
     return user_episode(get_db(), episode_id, username)
+
+
+@router.get("/{episode_id}/posts", response_model=list[EpisodePost])
+def episode_posts(episode_id: int, username: str = Depends(current_username)):
+    """The user's blog and LinkedIn posts made from this episode, newest
+    first, blog posts with each round's grade."""
+    from p3.api.content import is_from_episode, post_files, read_post
+    from p3.api.routers import blogs, linkedin
+
+    episode = user_episode(get_db(), episode_id, username)
+    posts = []
+    for kind, base in (("blog", blogs.POSTS_DIR), ("linkedin", linkedin.POSTS_DIR)):
+        for post in map(read_post, post_files(base, username)):
+            if not is_from_episode(post, episode):
+                continue
+            meta = post["meta"]
+            score = meta.get("final_score")
+            posts.append(
+                {
+                    **post,
+                    "kind": kind,
+                    "final_grade": meta.get("final_grade"),
+                    "final_score": float(score) if score else None,
+                    "grades": meta.get("grades") or None,
+                }
+            )
+    posts.sort(key=lambda p: (p["date"], p["filename"]), reverse=True)
+    return posts
 
 
 @router.delete("/{episode_id}")

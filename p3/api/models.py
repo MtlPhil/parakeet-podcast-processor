@@ -269,6 +269,21 @@ class SynopsisEmail(BaseModel):
     )
 
 
+class EpisodePost(BaseModel):
+    kind: str  # "blog" or "linkedin"
+    slug: str
+    title: str
+    date: str
+    filename: str
+    final_grade: Optional[str] = None
+    final_score: Optional[float] = None
+    # Each write -> grade -> revise round's grade and score, e.g. "B 78; A 92";
+    # None for LinkedIn posts and older blog posts.
+    grades: Optional[str] = None
+    content: Optional[str] = None
+    content_fr: Optional[str] = None
+
+
 class LinkedInOut(BaseModel):
     slug: str
     title: str

@@ -162,6 +162,9 @@ class BlogWriter:
                 "episode_title": primary.get("episode_title", ""),
                 "podcast_title": primary.get("podcast_title", ""),
                 "source_count": len(summaries),
+                "episode_ids": [
+                    s["episode_id"] for s in summaries if s.get("episode_id")
+                ],
                 "generated_at": datetime.now().isoformat(),
                 "model_used": self.llm_model,
             },
@@ -443,6 +446,12 @@ Style Guidelines:
             if source_count == 1
             else f"{source_count} podcast episodes"
         )
+        episode_ids = ", ".join(
+            str(i) for i in blog_result["metadata"].get("episode_ids") or []
+        )
+        grades = "; ".join(
+            f"{it['grade']} {it['score']:g}" for it in blog_result["iterations"]
+        )
 
         content = f"""---
 title: "{blog_result['topic']}"
@@ -450,6 +459,8 @@ date: {blog_result['metadata']['generated_at']}
 source_episode: "{blog_result['metadata']['episode_title']}"
 source_podcast: "{blog_result['metadata']['podcast_title']}"
 source_count: {source_count}
+episode_ids: {episode_ids}
+grades: "{grades}"
 final_grade: {blog_result['final_grade']}
 final_score: {blog_result['final_score']}
 model: {blog_result['metadata']['model_used']}
@@ -542,6 +553,7 @@ model: {blog_result['metadata']['model_used']}
             "metadata": {
                 "episode_title": episode_title,
                 "podcast_title": podcast_title,
+                "episode_id": summary.get("episode_id"),
                 "generated_at": datetime.now().isoformat(),
                 "model_used": self.llm_model,
             },
@@ -564,6 +576,7 @@ title: "{meta['episode_title']}"
 date: {meta['generated_at']}
 source_episode: "{meta['episode_title']}"
 source_podcast: "{meta['podcast_title']}"
+episode_ids: {meta.get('episode_id') or ''}
 model: {meta['model_used']}
 ---
 

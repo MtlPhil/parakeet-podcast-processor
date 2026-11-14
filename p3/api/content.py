@@ -83,6 +83,18 @@ def find_post(base: str, username: str, name: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def is_from_episode(post: Dict[str, Any], episode: Dict[str, Any]) -> bool:
+    """Whether a post was made from ``episode``: listed in its front matter's
+    ``episode_ids``, or, for a post made before those were kept, the episode
+    and podcast it names as its source."""
+    ids = post["meta"].get("episode_ids")
+    if ids:
+        return str(episode["id"]) in [i.strip() for i in ids.split(",")]
+    return post["meta"].get("source_episode") == episode.get("title") and post[
+        "meta"
+    ].get("source_podcast") == episode.get("podcast_title")
+
+
 def split_languages(text: str) -> Tuple[str, Optional[str]]:
     """A post body as (English, Quebec French). French is None for posts
     without a French half. A blog post's generation notes go with both."""
