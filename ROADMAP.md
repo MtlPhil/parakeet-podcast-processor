@@ -13,9 +13,9 @@ item, docs updated with each:
    "what did X say" searches only X's passages; admins rename a speaker on
    the episode page; the Search page is ranked by Ask's keyword index; job
    progress is pushed to the page; the episode page has a Posts tab; Add
-   Podcast can search and browse Apple's directory.
-2. Next, Ask: counting by concept; touch-friendly citation popovers and flagging
-   one citation; answers that outlive a restart; measuring subtler
+   Podcast can search and browse Apple's directory; Ask's citations open a
+   popover on tap, where one can be flagged.
+2. Next, Ask: counting by concept; answers that outlive a restart; measuring subtler
    overstatement; local or Gemini answers (from the plan's measurements);
    tools for the model; the web as a second source.
 3. Speakers: remembering a show's host voice across episodes.
@@ -75,8 +75,6 @@ and the installer, not the language.
      - Measure subtler overstatement than the support check catches
        (`python -m p3.eval_ask answers`).
      - Tools for the model, beyond the broad-question routing.
-     - Citation popovers that work on touch screens; flag a single
-       citation.
      - An answer cut short by a server restart is lost (answers run on
        daemon threads).
 4. **A desktop app.** Done: `p3-app` opens P³ in a native window with the

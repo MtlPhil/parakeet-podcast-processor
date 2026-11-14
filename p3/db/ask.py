@@ -416,7 +416,7 @@ class Ask(Search):
             )
         )
         for m in messages:
-            for key in ("citations", "retrieval", "timings", "models"):
+            for key in ("citations", "retrieval", "timings", "models", "flagged"):
                 if isinstance(m.get(key), str):
                     m[key] = json.loads(m[key])
         thread["messages"] = messages
@@ -507,6 +507,35 @@ class Ask(Search):
         )
         return True
 
+    def flag_ask_citation(
+        self, message_id: str, username: str, n: int, flagged: bool
+    ) -> Optional[List[int]]:
+        """Flag (or unflag) citation ``n`` of one of the user's answers as
+        not supporting its sentence. Returns the answer's flagged citation
+        numbers; None if the answer isn't theirs or has no citation ``n``."""
+        row = self.conn.execute(
+            "SELECT m.citations, m.flagged FROM ask_messages m "
+            "JOIN ask_threads t ON t.id = m.thread_id "
+            "WHERE m.id = ? AND t.username = ? AND m.role = 'assistant'",
+            (message_id, username),
+        ).fetchone()
+        if not row:
+            return None
+        citations = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+        if n not in {c.get("n") for c in citations or []}:
+            return None
+        flags = set(json.loads(row[1]) if row[1] else [])
+        if flagged:
+            flags.add(n)
+        else:
+            flags.discard(n)
+        stored = sorted(flags)
+        self.conn.execute(
+            "UPDATE ask_messages SET flagged = ? WHERE id = ?",
+            (json.dumps(stored) if stored else None, message_id),
+        )
+        return stored
+
     def rated_ask_message(self, message_id: str) -> Optional[Dict[str, Any]]:
         rows = self.rated_ask_messages(1, message_id)
         return rows[0] if rows else None
@@ -514,18 +543,20 @@ class Ask(Search):
     def rated_ask_messages(
         self, limit: int = 50, message_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """Answers users rated, newest first, each with the question asked
-        just before it (for the Admin page and the evaluation set)."""
+        """Answers users rated or flagged a citation of, newest first, each
+        with the question asked just before it (for the Admin page and the
+        evaluation set)."""
         cursor = self.conn.execute(
             """
             SELECT m.id, m.thread_id, t.username, m.content AS answer, m.rating,
-                   m.citations, m.created_at,
+                   m.citations, m.flagged, m.created_at,
                    (SELECT q.content FROM ask_messages q
                     WHERE q.thread_id = m.thread_id AND q.role = 'user'
                       AND q.created_at <= m.created_at
                     ORDER BY q.created_at DESC LIMIT 1) AS question
             FROM ask_messages m JOIN ask_threads t ON t.id = m.thread_id
-            WHERE m.role = 'assistant' AND m.rating IS NOT NULL
+            WHERE m.role = 'assistant'
+              AND (m.rating IS NOT NULL OR m.flagged IS NOT NULL)
               AND (? IS NULL OR m.id = ?)
             ORDER BY m.created_at DESC
             LIMIT ?
@@ -534,6 +565,7 @@ class Ask(Search):
         )
         rows = self._fetchall_as_dicts(cursor)
         for row in rows:
-            if isinstance(row.get("citations"), str):
-                row["citations"] = json.loads(row["citations"])
+            for key in ("citations", "flagged"):
+                if isinstance(row.get(key), str):
+                    row[key] = json.loads(row[key])
         return rows

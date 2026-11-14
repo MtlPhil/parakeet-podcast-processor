@@ -361,6 +361,11 @@ class AskRating(BaseModel):
     rating: int = Field(..., ge=-1, le=1, description="1 helpful, -1 not, 0 clear")
 
 
+class CitationFlag(BaseModel):
+    n: int = Field(..., ge=1, description="The citation's number in the answer")
+    flagged: bool = Field(True, description="False takes the flag back")
+
+
 class UserSettings(BaseModel):
     """A user's own settings (see deps.USER_SETTING_DEFAULTS). Omitted or
     null fields fall back to the shared settings."""

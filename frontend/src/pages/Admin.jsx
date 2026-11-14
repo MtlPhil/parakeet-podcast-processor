@@ -167,11 +167,16 @@ function AskQuality() {
       )}
       {feedback.length > 0 && (
         <>
-          <h3 className="text-sm font-semibold text-gray-700 mb-2">Rated answers</h3>
+          <h3 className="text-sm font-semibold text-gray-700 mb-2">Rated answers and flagged citations</h3>
           <ul className="space-y-2">
             {feedback.map((f) => (
               <li key={f.id} className="text-sm border rounded p-2">
-                <span className={f.rating > 0 ? 'text-green-700' : 'text-red-700'}>{f.rating > 0 ? '▲' : '▼'}</span>{' '}
+                {f.rating ? (
+                  <span className={f.rating > 0 ? 'text-green-700' : 'text-red-700'}>{f.rating > 0 ? '▲' : '▼'}</span>
+                ) : null}{' '}
+                {f.flagged?.length > 0 && (
+                  <span className="text-xs text-red-700">flagged citation{f.flagged.length > 1 ? 's' : ''} {f.flagged.join(', ')} </span>
+                )}
                 <span className="font-medium">{f.question}</span>{' '}
                 <span className="text-xs text-gray-500">({f.username})</span>
                 <p className="text-xs text-gray-600 mt-1 line-clamp-2">{f.answer}</p>

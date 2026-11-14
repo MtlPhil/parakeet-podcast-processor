@@ -9,6 +9,7 @@ import {
   getAskThreads,
   indexLibrary,
   rateAskAnswer,
+  flagAskCitation,
   stopAsk,
 } from '../api/client';
 import MarkdownText from '../components/MarkdownText';
@@ -64,33 +65,86 @@ const sourceLine = (s) =>
     .filter(Boolean)
     .join(' · ');
 
+// One [n] citation: a tap or click opens a popover with the passage's
+// start, a link to it in the episode, and a flag for a citation that
+// doesn't support its sentence (hover alone fails on touch screens).
+function Citation({ source, weak, flagged, onFlag }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const close = (e) => {
+      if (e.type === 'keydown' ? e.key === 'Escape' : !ref.current?.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', close);
+    document.addEventListener('keydown', close);
+    return () => {
+      document.removeEventListener('pointerdown', close);
+      document.removeEventListener('keydown', close);
+    };
+  }, [open]);
+  const tone = flagged
+    ? 'text-red-800 bg-red-100 hover:bg-red-200'
+    : weak
+      ? 'text-amber-800 bg-amber-100 hover:bg-amber-200'
+      : 'text-blue-700 bg-blue-50 hover:bg-blue-100';
+  return (
+    <span ref={ref} className="relative inline-block">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        aria-label={`Source ${source.n}: ${sourceLine(source)}`}
+        className={`align-super text-[10px] font-semibold rounded px-1 mx-0.5 ${tone}`}
+      >
+        {source.n}
+      </button>
+      {open && (
+        <span
+          role="dialog"
+          className="absolute z-20 left-0 top-full mt-1 w-72 max-w-[80vw] bg-white border border-gray-200 rounded-lg shadow-lg p-3 text-xs text-gray-700 not-italic font-normal block"
+        >
+          <Link to={sourceLink(source)} className="font-medium text-blue-700 hover:underline block break-words">
+            {sourceLine(source)}
+          </Link>
+          {weak && <span className="block text-amber-800 mt-1">This passage may not support the sentence.</span>}
+          <span className="block mt-1 whitespace-pre-line break-words">
+            {source.text.length > 240 ? `${source.text.slice(0, 240)}…` : source.text}
+          </span>
+          {onFlag && (
+            <button
+              type="button"
+              onClick={() => onFlag(source.n, !flagged)}
+              className={`mt-2 ${flagged ? 'text-red-700 font-semibold' : 'text-gray-500 hover:text-gray-800'}`}
+            >
+              {flagged ? 'Flagged: doesn\'t support this (undo)' : 'Doesn\'t support this sentence'}
+            </button>
+          )}
+        </span>
+      )}
+    </span>
+  );
+}
+
 // Answer text (Markdown, see MarkdownText) with [n] citations turned into
-// links to their sources.
-function AnswerText({ text, sources, weak }) {
+// popovers of their sources.
+function AnswerText({ text, sources, weak, flagged, onFlag }) {
   const byNumber = Object.fromEntries((sources || []).map((s) => [s.n, s]));
   const weakNumbers = new Set((weak || []).map((w) => w.n));
+  const flags = new Set(flagged || []);
   const withCitations = (run) =>
     run.split(/(\[\d+\])/g).map((part, i) => {
       const match = /^\[(\d+)\]$/.exec(part);
       const source = match && byNumber[Number(match[1])];
       if (!source) return part;
       return (
-        <Link
+        <Citation
           key={i}
-          to={sourceLink(source)}
-          title={
-            weakNumbers.has(source.n)
-              ? `${sourceLine(source)} — this passage may not support the sentence`
-              : sourceLine(source)
-          }
-          className={`inline-block align-super text-[10px] font-semibold rounded px-1 mx-0.5 no-underline ${
-            weakNumbers.has(source.n)
-              ? 'text-amber-800 bg-amber-100 hover:bg-amber-200'
-              : 'text-blue-700 bg-blue-50 hover:bg-blue-100'
-          }`}
-        >
-          {source.n}
-        </Link>
+          source={source}
+          weak={weakNumbers.has(source.n)}
+          flagged={flags.has(source.n)}
+          onFlag={onFlag}
+        />
       );
     });
   return (
@@ -255,6 +309,16 @@ const NOTICES = {
 
 function AssistantMessage({ message, question }) {
   const [rating, setRating] = useState(message.rating || 0);
+  const [flagged, setFlagged] = useState(message.flagged || []);
+  const flag = async (n, on) => {
+    const before = flagged;
+    setFlagged(on ? [...before, n] : before.filter((x) => x !== n));
+    try {
+      setFlagged((await flagAskCitation(message.id, n, on)).flagged);
+    } catch {
+      setFlagged(before);
+    }
+  };
   const [copied, setCopied] = useState(false);
   const rate = async (value) => {
     const next = rating === value ? 0 : value;
@@ -279,7 +343,13 @@ function AssistantMessage({ message, question }) {
         </p>
       )}
       {message.answer && (
-        <AnswerText text={message.answer} sources={message.sources} weak={message.weak} />
+        <AnswerText
+          text={message.answer}
+          sources={message.sources}
+          weak={message.weak}
+          flagged={flagged}
+          onFlag={message.id ? flag : null}
+        />
       )}
       {message.weak?.length > 0 && (
         <p className="text-xs text-amber-800 mt-2">
@@ -361,6 +431,7 @@ const fromStored = (m) => ({
   weak: m.weak_citations,
   uncited: (m.mode || 'answer') === 'answer' && m.role === 'assistant' && !m.citations?.some((c) => c.cited),
   rating: m.rating,
+  flagged: m.flagged || [],
 });
 
 export default function Ask() {

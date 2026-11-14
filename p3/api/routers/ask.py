@@ -21,7 +21,7 @@ from fastapi.responses import StreamingResponse
 from p3.api.auth import current_user, current_username, require_admin
 from p3.api.deps import get_db, user_settings
 from p3.api.job_queue import job_runner
-from p3.api.models import AskRating, AskRequest
+from p3.api.models import AskRating, AskRequest, CitationFlag
 from p3.llm import DEFAULT_OLLAMA_URL, resolve_provider_and_model
 
 router = APIRouter(prefix="/api/ask", tags=["ask"])
@@ -280,6 +280,18 @@ def delete_thread(thread_id: str, username: str = Depends(current_username)):
     if not get_db().delete_ask_thread(thread_id, username):
         raise HTTPException(404, "Conversation not found")
     return {"deleted": thread_id}
+
+
+@router.post("/messages/{message_id}/flags")
+def flag_citation(
+    message_id: str, body: CitationFlag, username: str = Depends(current_username)
+):
+    """Flag one citation of an answer as not supporting its sentence (shown
+    with the rated answers on the Admin page)."""
+    flagged = get_db().flag_ask_citation(message_id, username, body.n, body.flagged)
+    if flagged is None:
+        raise HTTPException(404, "Answer or citation not found")
+    return {"message_id": message_id, "flagged": flagged}
 
 
 @router.post("/messages/{message_id}/rating")
