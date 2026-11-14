@@ -1052,6 +1052,27 @@ class TestSearch:
         (hit,) = client.get("/api/search", params={"q": "GROWTH"}).json()
         assert "growth" in hit["summary_snippet"]
 
+    def test_ask_index_ranks_and_folds_accents(self):
+        from p3.indexer import index_episode
+
+        db = deps.get_db()
+        pid = db.add_podcast("Pod", "http://example.com/rss")
+        rows = {
+            "Brief": "Le Québec a voté. Puis on parle de sport longtemps encore.",
+            "Deep": "Le Québec vote: au Québec, le vote du Québec compte.",
+            "Other": "Le vote en Ontario.",
+        }
+        ids = {}
+        for title, text in rows.items():
+            ids[title] = db.add_episode(pid, title, datetime.now(), f"http://x/{title}")
+            db.add_transcript_segments(
+                ids[title], [{"start": 0, "end": 5, "text": text}]
+            )
+            index_episode(db, ids[title], None)
+        hits = client.get("/api/search", params={"q": "quebec vote"}).json()
+        assert [h["episode_title"] for h in hits] == ["Deep", "Brief"]  # all words
+        assert "Québec" in hits[0]["segments"][0]["text"]
+
     def test_wildcards_are_literal(self):
         self._seed()
         assert len(client.get("/api/search", params={"q": "100%"}).json()) == 1
