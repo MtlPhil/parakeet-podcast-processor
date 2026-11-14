@@ -204,6 +204,37 @@ def transcript_chunks(
     return chunks
 
 
+# A cold open: clips from later in the episode played before it starts.
+# A passage of the first ``COLD_OPEN_SECONDS`` is one when at least
+# ``_REPEATED_SHARE`` of its runs of ``_SHINGLE`` words are said again later.
+COLD_OPEN_SECONDS = 180.0
+_SHINGLE = 6
+_REPEATED_SHARE = 0.5
+
+
+def _shingles(text: str) -> set:
+    words = tokenize(text)
+    return {tuple(words[i : i + _SHINGLE]) for i in range(len(words) - _SHINGLE + 1)}
+
+
+def without_cold_open(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Transcript passages without the cold open's: those clips are indexed
+    where they are said in full, and an early copy would take an answer's
+    slots with a teaser cut short."""
+    later: set = set()
+    for c in chunks:
+        if (c.get("start_s") or 0) >= COLD_OPEN_SECONDS:
+            later |= _shingles(c["text"])
+    kept = []
+    for c in chunks:
+        if (c.get("start_s") or 0) < COLD_OPEN_SECONDS:
+            own = _shingles(c["text"])
+            if own and len(own & later) >= _REPEATED_SHARE * len(own):
+                continue
+        kept.append(c)
+    return kept
+
+
 def build_chunks(
     episode: Dict[str, Any],
     segments: List[Dict[str, Any]],
@@ -217,7 +248,7 @@ def build_chunks(
     prefix = _prefix(
         episode.get("podcast_title") or "", episode["title"], episode.get("date")
     )
-    chunks = transcript_chunks(segments, names)
+    chunks = without_cold_open(transcript_chunks(segments, names))
     # Taken before the show notes: quotes are placed in what was said.
     transcript = list(chunks)
     notes = notes_text(episode.get("description"))

@@ -17,6 +17,7 @@ from .chunker import tokenize
 from .database import P3Database
 from .embedder import Embedder, Reranker
 from .model_gate import ModelsPaused, model_use
+from .speakers import is_ad_passage
 
 logger = logging.getLogger(__name__)
 
@@ -235,6 +236,10 @@ class Retriever:
                 result.skipped["rerank"] = str(e)
             result.timings["rerank"] = time.monotonic() - t
 
+        # Sponsor reads and jingles go last, in their order: they match a
+        # question's words (a sponsor's name, the show's tagline) without
+        # saying anything about it.
+        ranked = sorted(ranked, key=lambda kv: is_ad_passage(chunks[kv[0]]))
         episode_of = {i: c["episode_id"] for i, c in chunks.items()}
         for chunk_id, score in limit_per_episode(
             ranked, episode_of, top_k, per_episode

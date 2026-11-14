@@ -150,6 +150,27 @@ class TestChunking:
         ]
         assert chunks[1]["text"].startswith("s2")
 
+    def test_a_cold_open_is_indexed_where_it_is_said_in_full(self):
+        clip = "the central bank will never let inflation run away from us again"
+        segments = [
+            {"timestamp_start": 0, "timestamp_end": 10, "text": clip + "."},
+            {
+                "timestamp_start": 70,
+                "timestamp_end": 90,
+                "text": "Welcome to the show.",
+            },
+            {
+                "timestamp_start": 1500,
+                "timestamp_end": 1520,
+                "text": f"As I said, {clip}, and I mean it.",
+            },
+        ]
+        chunks = build_chunks(
+            {"title": "T", "podcast_title": "P", "date": None}, segments
+        )
+        starts = [c["start_s"] for c in chunks if c["kind"] == "transcript"]
+        assert starts == [70, 1500]  # the teaser at 0:00 is left out
+
     def test_long_segment_never_stalls(self):
         chunks = transcript_chunks(_segments(["a", "b", "c"], length=120.0))
         assert [c["text"] for c in chunks] == ["a", "b", "c"]
