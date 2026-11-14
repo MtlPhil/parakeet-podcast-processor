@@ -465,20 +465,48 @@ class Ask(Search):
         )
         return message_id
 
-    def close_unanswered_ask_turns(self, note: str) -> int:
+    _UNANSWERED = """
+        SELECT m.thread_id, t.username, m.id, m.content, m.retrieval, m.created_at,
+               m.created_at >= CURRENT_TIMESTAMP::TIMESTAMP - to_hours(?) AS recent
+        FROM (
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY thread_id ORDER BY created_at DESC, id DESC
+            ) AS rn
+            FROM ask_messages
+        ) m JOIN ask_threads t ON t.id = m.thread_id
+        WHERE m.rn = 1 AND m.role = 'user'
+        ORDER BY m.created_at
+    """
+
+    def unanswered_ask_turns(self, max_age_hours: float) -> List[Dict[str, Any]]:
+        """Questions left without a reply (the server stopped while answering
+        them) asked in the last ``max_age_hours``, oldest first, each with
+        its thread, user and the options it was asked with (``request``)."""
+        rows = self._fetchall_as_dicts(
+            self.conn.execute(self._UNANSWERED, (int(max_age_hours),))
+        )
+        turns = []
+        for row in rows:
+            if not row.pop("recent"):
+                continue
+            record = row.pop("retrieval")
+            record = json.loads(record) if isinstance(record, str) else record or {}
+            turns.append({**row, "request": record.get("request") or {}})
+        return turns
+
+    def close_unanswered_ask_turns(self, note: str, older_than_hours: float = 0) -> int:
         """Give every question left without a reply (the server stopped while
-        answering it) a stored reply saying so, so a thread never holds two
-        user turns in a row. Returns how many were closed."""
-        rows = self.conn.execute("""
-            SELECT thread_id FROM (
-                SELECT thread_id, role,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY thread_id ORDER BY created_at DESC, id DESC
-                       ) AS rn
-                FROM ask_messages
-            ) WHERE rn = 1 AND role = 'user'
-        """).fetchall()
-        for (thread_id,) in rows:
+        answering it) and asked over ``older_than_hours`` ago a stored reply
+        saying so, so a thread never holds two user turns in a row. Returns
+        how many were closed."""
+        rows = [
+            r[0]
+            for r in self.conn.execute(
+                self._UNANSWERED, (int(older_than_hours),)
+            ).fetchall()
+            if not older_than_hours or not r[6]
+        ]
+        for thread_id in rows:
             self.add_ask_message(
                 thread_id, "assistant", note, retrieval={"mode": "interrupted"}
             )

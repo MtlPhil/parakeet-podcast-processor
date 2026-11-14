@@ -14,8 +14,9 @@ item, docs updated with each:
    the episode page; the Search page is ranked by Ask's keyword index; job
    progress is pushed to the page; the episode page has a Posts tab; Add
    Podcast can search and browse Apple's directory; Ask's citations open a
-   popover on tap, where one can be flagged; Ask can also search the web.
-2. Next, Ask: counting by concept; answers that outlive a restart; measuring subtler
+   popover on tap, where one can be flagged; Ask can also search the web;
+   an answer a restart cut short is written again.
+2. Next, Ask: counting by concept; measuring subtler
    overstatement; local or Gemini answers (from the plan's measurements);
    tools for the model.
 3. Speakers: remembering a show's host voice across episodes.
@@ -76,8 +77,6 @@ and the installer, not the language.
      - Measure subtler overstatement than the support check catches
        (`python -m p3.eval_ask answers`).
      - Tools for the model, beyond the broad-question routing.
-     - An answer cut short by a server restart is lost (answers run on
-       daemon threads).
 4. **A desktop app.** Done: `p3-app` opens P³ in a native window with the
    server inside it, and the web app can be installed on a phone's home
    screen. Still to do:

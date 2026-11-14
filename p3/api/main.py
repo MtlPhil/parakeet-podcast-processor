@@ -75,12 +75,6 @@ async def lifespan(app: FastAPI):
     # Warm up database and clear jobs orphaned by a previous process
     db = get_db()
     stale = db.fail_stale_jobs()
-    # Questions a restart left without a reply get one saying so.
-    closed = db.close_unanswered_ask_turns(
-        "(The server restarted before this question was answered; ask it again.)"
-    )
-    if closed:
-        logger.info("Closed %d Ask question(s) a restart left unanswered", closed)
     if stale:
         logger.warning("Marked %d interrupted job(s) as failed", stale)
     # Start the serial pipeline worker, then the daily run that feeds it
@@ -96,6 +90,16 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("Could not resume the interrupted daily run")
     daily_scheduler.start()
+    # Ask questions a restart left without a reply: recent ones are answered
+    # again, older ones get a reply saying to ask again.
+    try:
+        from p3.api.routers.ask import resume_unanswered
+
+        resumed_answers = resume_unanswered()
+        if resumed_answers:
+            logger.info("Answering again %d interrupted question(s)", resumed_answers)
+    except Exception:
+        logger.exception("Could not resume interrupted Ask answers")
     logger.info("P3 API started")
     yield
     daily_scheduler.stop()
