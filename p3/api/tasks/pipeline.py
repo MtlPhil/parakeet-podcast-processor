@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 def _make_transcriber(db, settings: dict):
+    from p3.speakers import make_diarizer
     from p3.transcriber import (
         DEFAULT_PARAKEET_MODEL,
         DEFAULT_WHISPER_MODEL,
@@ -31,6 +32,7 @@ def _make_transcriber(db, settings: dict):
         use_parakeet=setting(settings, "parakeet_enabled"),
         parakeet_model=setting(settings, "parakeet_model"),
         parakeet_languages=setting(settings, "parakeet_languages"),
+        diarizer=make_diarizer(settings),
     )
 
 

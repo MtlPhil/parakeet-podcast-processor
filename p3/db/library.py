@@ -100,13 +100,12 @@ class Library(Schema):
         """,
             (podcast_id,),
         )
-        self.conn.execute(
-            """
-            DELETE FROM transcripts WHERE episode_id IN
-                (SELECT id FROM episodes WHERE podcast_id = ?)
-        """,
-            (podcast_id,),
-        )
+        for table in ("transcripts", "episode_speakers"):
+            self.conn.execute(
+                f"DELETE FROM {table} WHERE episode_id IN "
+                "(SELECT id FROM episodes WHERE podcast_id = ?)",
+                (podcast_id,),
+            )
         # Jobs for this podcast (fetch jobs) or any of its episodes
         # (transcribe/digest/pipeline jobs) — must run before episodes are gone.
         self.conn.execute(
@@ -452,7 +451,14 @@ class Library(Schema):
         same transaction, so the episode row couldn't go.)"""
         self.remove_audio(episode_id)
         with self._chunk_lock:
-            for table in ("transcripts", "summaries", "jobs", "chunk_terms", "chunks"):
+            for table in (
+                "transcripts",
+                "episode_speakers",
+                "summaries",
+                "jobs",
+                "chunk_terms",
+                "chunks",
+            ):
                 self.conn.execute(
                     f"DELETE FROM {table} WHERE episode_id = ?", (episode_id,)
                 )

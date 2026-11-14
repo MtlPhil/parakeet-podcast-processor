@@ -248,7 +248,7 @@ class TestParakeet:
         def transcribe(path, **options):
             seen.update(options)
             sentence = SimpleNamespace(
-                start=599.5, end=601.0, text=" Hi. ", confidence=0.9
+                start=599.5, end=601.0, text=" Hi. ", confidence=0.9, tokens=[]
             )
             return SimpleNamespace(sentences=[sentence])
 
@@ -266,6 +266,7 @@ class TestParakeet:
                     "text": "Hi.",
                     "speaker": None,
                     "confidence": 0.9,
+                    "words": [],
                 }
             ],
             "language": "en",

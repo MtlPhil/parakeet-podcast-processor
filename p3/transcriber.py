@@ -15,7 +15,7 @@ TranscriptionError and leaves the episode as it was, so it can be retried.
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from .database import P3Database
 from .settings import DEFAULT_PARAKEET_MODEL, DEFAULT_WHISPER_MODEL, SHARED_DEFAULTS
@@ -93,8 +93,11 @@ class AudioTranscriber:
         use_parakeet: bool = False,
         parakeet_model: str = DEFAULT_PARAKEET_MODEL,
         parakeet_languages: Optional[Iterable[str]] = None,
+        diarizer: Any = None,
     ):
         self.db = db
+        # A speakers.Diarizer: each transcript then gets its speakers.
+        self.diarizer = diarizer
         self.whisper_model = WHISPER_MODELS.get(whisper_model, whisper_model)
         self.faster_whisper_model = _FASTER_WHISPER_NAMES.get(
             whisper_model, whisper_model
@@ -187,6 +190,11 @@ class AudioTranscriber:
                     # Whisper reports the probability that a segment holds
                     # no speech; its complement serves as confidence.
                     "confidence": 1.0 - segment.get("no_speech_prob", 0.0),
+                    # For speaker alignment (p3/speakers.py); not stored.
+                    "words": [
+                        {"start": w["start"], "end": w["end"], "text": w["word"]}
+                        for w in segment.get("words") or []
+                    ],
                 }
                 for segment in result.get("segments", [])
             ],
@@ -262,8 +270,14 @@ class AudioTranscriber:
                     "start": sentence.start,
                     "end": sentence.end,
                     "text": sentence.text.strip(),
-                    "speaker": None,  # no speaker diarization
+                    "speaker": None,  # see p3/speakers.py
                     "confidence": sentence.confidence,
+                    # Tokens, with their leading space, for speaker
+                    # alignment (p3/speakers.py); not stored.
+                    "words": [
+                        {"start": t.start, "end": t.end, "text": t.text}
+                        for t in sentence.tokens
+                    ],
                 }
                 for sentence in result.sentences
             ],
@@ -272,6 +286,9 @@ class AudioTranscriber:
 
     def transcribe_episode(self, episode_id: int) -> None:
         """Transcribe a single episode and store its transcript and language.
+        With a diarizer, the transcription models are then unloaded and the
+        segments get their speakers (a failed diarization stores the
+        transcript without them).
 
         Raises TranscriptionError, leaving the episode untouched, if it
         can't be transcribed.
@@ -303,6 +320,25 @@ class AudioTranscriber:
         segments = [s for s in result["segments"] if s["text"]]
         if not segments:
             raise TranscriptionError("No speech was found in the audio")
+        if self.diarizer is not None:
+            segments = self._with_speakers(audio_path, segments)
 
         self.db.store_transcript(episode_id, segments, result.get("language"))
         logger.info("Transcribed: %s", episode["title"])
+
+    def _with_speakers(
+        self, audio_path: str, segments: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """``segments`` split by speaker; unchanged if diarization fails.
+        Only one model is in memory at a time: the transcription models go
+        first, the diarization model after."""
+        from .speakers import assign_speakers
+
+        self.unload_models()
+        try:
+            return assign_speakers(segments, self.diarizer.diarize(audio_path))
+        except Exception as e:
+            logger.warning("Diarization failed, storing without speakers: %s", e)
+            return segments
+        finally:
+            self.diarizer.release()

@@ -82,12 +82,13 @@ class Ask(Search):
                     sum(counts.values()),
                     embeddings[i] if embeddings else None,
                     embed_model if embeddings else None,
+                    chunk.get("speakers"),
                 )
             )
         self.conn.executemany(
             "INSERT INTO chunks (id, episode_id, seq, kind, start_s, end_s, "
-            "text, prefix, language, n_terms, embedding, embed_model) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "text, prefix, language, n_terms, embedding, embed_model, speakers) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             rows,
         )
         if term_rows[0]:
@@ -310,8 +311,8 @@ class Ask(Search):
         cursor = self.conn.execute(
             """
             SELECT c.id, c.episode_id, c.seq, c.kind, c.start_s, c.end_s, c.text,
-                   c.language, e.title AS episode_title, e.date AS episode_date,
-                   e.podcast_id, p.title AS podcast_title
+                   c.language, c.speakers, e.title AS episode_title,
+                   e.date AS episode_date, e.podcast_id, p.title AS podcast_title
             FROM chunks c
             JOIN episodes e ON e.id = c.episode_id
             JOIN podcasts p ON p.id = e.podcast_id

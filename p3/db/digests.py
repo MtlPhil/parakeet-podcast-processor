@@ -16,6 +16,10 @@ class Digests(Library):
             self.conn.execute(
                 "DELETE FROM transcripts WHERE episode_id = ?", (episode_id,)
             )
+            # A new transcript's speaker labels needn't mean the same people.
+            self.conn.execute(
+                "DELETE FROM episode_speakers WHERE episode_id = ?", (episode_id,)
+            )
             if segments:
                 self.conn.executemany(
                     """
@@ -46,6 +50,44 @@ class Digests(Library):
             self.add_transcript_segments(episode_id, segments)
             self.set_episode_language(episode_id, language)
             self.update_episode_status(episode_id, "transcribed")
+
+    def replace_episode_speakers(
+        self, episode_id: int, speakers: Dict[str, Dict[str, Any]]
+    ):
+        """Replace who an episode's speaker labels are: {label: {name, role,
+        seconds}} (see p3/speakers.py)."""
+        with self.transaction():
+            self.conn.execute(
+                "DELETE FROM episode_speakers WHERE episode_id = ?", (episode_id,)
+            )
+            if speakers:
+                self.conn.executemany(
+                    "INSERT INTO episode_speakers (episode_id, label, name, role, "
+                    "seconds) VALUES (?, ?, ?, ?, ?)",
+                    [
+                        (
+                            episode_id,
+                            label,
+                            s.get("name"),
+                            s.get("role"),
+                            s.get("seconds"),
+                        )
+                        for label, s in speakers.items()
+                    ],
+                )
+
+    def get_episode_speakers(self, episode_id: int) -> Dict[str, Dict[str, Any]]:
+        """{label: {name, role, seconds}} for an episode, most talk first; {}
+        if its speakers weren't named."""
+        cursor = self.conn.execute(
+            "SELECT label, name, role, seconds FROM episode_speakers "
+            "WHERE episode_id = ? ORDER BY seconds DESC, label",
+            (episode_id,),
+        )
+        return {
+            row["label"]: {k: row[k] for k in ("name", "role", "seconds")}
+            for row in self._fetchall_as_dicts(cursor)
+        }
 
     def get_transcripts_for_episode(self, episode_id: int) -> List[Dict[str, Any]]:
         """Get all transcript segments for an episode."""

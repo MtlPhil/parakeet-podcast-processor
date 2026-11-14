@@ -29,6 +29,11 @@ def get_transcript(episode_id: int, username: str = Depends(current_username)):
     segments = db.get_transcripts_for_episode(episode_id)
     if not segments:
         raise HTTPException(404, "No transcript found for this episode")
+    from p3.speakers import display_names
+
+    names = display_names(db.get_episode_speakers(episode_id))
+    for segment in segments:
+        segment["speaker_name"] = names.get(segment.get("speaker") or "")
     return segments
 
 

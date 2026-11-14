@@ -50,6 +50,7 @@ def _make_cleaner(
     db, settings: dict, provider: Optional[str] = None, model: Optional[str] = None
 ):
     from p3.cleaner import TranscriptCleaner
+    from p3.speakers import naming_llm
 
     llm_provider, llm_model = resolve_provider_and_model(settings, provider, model)
     return TranscriptCleaner(
@@ -57,4 +58,5 @@ def _make_cleaner(
         llm_provider=llm_provider,
         llm_model=llm_model,
         ollama_base_url=setting(settings, "ollama_base_url"),
+        naming_llm=naming_llm(settings),
     )

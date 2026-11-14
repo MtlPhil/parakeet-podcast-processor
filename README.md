@@ -59,6 +59,17 @@ P³ ships as both a command-line tool (`p3`) and a web app (FastAPI + React).
   Parakeet episodes are transcribed in 10-minute chunks that overlap by 15
   seconds, to keep memory use bounded without cutting a sentence at a chunk
   boundary. If Parakeet fails, Whisper transcribes the whole episode.
+- **Speakers.** With the `speakers` extra, each transcript is split by voice
+  after transcription (pyannote, on this computer, about 5 minutes per hour
+  of audio), so every line has its speaker. At the digest step one LLM
+  request names the voices from the show notes, the first 6 minutes and a
+  few lines of each voice; a name is kept only if that text contains it.
+  Choose that LLM in the shared settings ("Name speakers with"); it gets
+  text, never audio. The episode page shows who speaks, digests and Ask read
+  "Name:" before each turn, and Ask's citations say who said it. Voices
+  nobody named show as "Speaker 1", "Speaker 2"; sponsor reads and the
+  show's jingle as "Ad" and "Intro". Episodes digested before have no audio
+  left, so they stay without speakers.
 - **Transcript cleaning.** Filler words are stripped with a regex. The summary
   prompts then tell the LLM to ignore ads and sponsor reads. The transcript is
   not rewritten by the LLM first: that took most of each episode's processing
@@ -203,6 +214,13 @@ p3 init
 
 Add `--extra ask` for Ask's reranker (it pulls in PyTorch). Without it, Ask
 still works, ranking passages by keyword and embedding only.
+
+Add `--extra speakers` to tell speakers apart (pyannote, also PyTorch). Its
+model is gated: accept the terms of
+`pyannote/speaker-diarization-community-1` on Hugging Face, then sign in
+once with `hf auth login`. Diarization needs 5.5 to 7.3 GB while it runs,
+with the transcription models unloaded first. Without the extra, or if the
+model can't load, transcripts are stored without speakers.
 
 Without uv, `python3 -m venv .venv && source .venv/bin/activate &&
 pip install -e ".[web]"` installs the newest versions that satisfy
@@ -640,6 +658,7 @@ p3/
 ├── url_resolver.py   Source URL resolution: RSS, Apple Podcasts (iTunes Lookup API), YouTube
 ├── transcriber.py    Language detection, Parakeet MLX (chunked), Whisper MLX;
 │                     faster-whisper where MLX doesn't run
+├── speakers.py       Speakers: diarization (pyannote), word alignment, naming
 ├── cleaner.py        Digests, long-form synopsis, Quebec French translation
 ├── writer.py         Graded blog posts, LinkedIn posts, social snippets
 ├── exporter.py       Markdown / JSON / HTML formatting
@@ -688,7 +707,10 @@ DuckDB file at `data/p3.duckdb`:
 - `episodes`: title, publish date, audio or YouTube watch URL (unique), the
   feed's `guid` (which stays when a feed moves an episode to a new audio URL,
   so it isn't downloaded again), local file path, status
-- `transcripts`: one row per segment with start/end timestamps and text
+- `transcripts`: one row per segment with start/end timestamps, text and
+  speaker label
+- `episode_speakers`: who each of an episode's speaker labels is (name,
+  role, talk time)
 - `summaries`: short summary, long-form synopsis, and JSON lists of topics,
   themes, quotes and companies, keyed by episode and digest date, plus Quebec
   French versions (`*_fr`) of the summary, synopsis, topics and themes
