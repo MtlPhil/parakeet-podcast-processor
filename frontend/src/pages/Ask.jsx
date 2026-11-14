@@ -376,7 +376,35 @@ function MentionList({ mentions }) {
         ))}
       </ul>
       {mentions.episodes > shown && <p className="mt-1 text-gray-400">and {mentions.episodes - shown} more</p>}
+      <RelatedList related={mentions.related} />
     </details>
+  );
+}
+
+// Episodes found by meaning, not by the counted words: listed apart, never
+// added to the count.
+function RelatedList({ related }) {
+  if (!related?.length) return null;
+  return (
+    <div className="mt-3">
+      <p className="text-gray-600">
+        {related.length === 1 ? '1 more episode discusses' : `${related.length} more episodes discuss`} it without those
+        words (found by meaning, so check them):
+      </p>
+      <ul className="mt-1 space-y-1">
+        {related.map((e) => (
+          <li key={e.episode_id}>
+            <Link
+              to={`/episodes/${e.episode_id}${e.start_s != null ? `?t=${Math.floor(e.start_s)}${e.end_s != null ? `&end=${Math.ceil(e.end_s)}` : ''}` : ''}`}
+              className="hover:underline"
+              title={e.text}
+            >
+              {e.date || 'undated'} · {e.podcast_title}: {e.episode_title}
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

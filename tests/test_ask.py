@@ -1270,3 +1270,42 @@ def test_a_restart_answers_recent_questions_again(tmp_path, monkeypatch):
     deps.close_db()
     if os.path.exists(tmp_path / "api.duckdb"):
         os.remove(tmp_path / "api.duckdb")
+
+
+def test_counting_also_finds_episodes_that_discuss_it_in_other_words(db):
+    e1, e2 = _library(db)  # e1 says "inflation"; e2 is about phones
+    p = db.add_podcast("Grocery Talk", "http://example.com/grocery")
+    e3 = db.add_episode(p, "Food prices", datetime(2026, 10, 5), "http://x/3")
+    db.add_transcript_segments(
+        e3, _segments(["Prices keep climbing at the grocery store, the bank says."])
+    )
+    db.update_episode_status(e3, "processed")
+    index_episode(db, e3, FakeEmbedder())
+
+    class ConceptReranker(FakeReranker):
+        def score(self, question, passages):
+            return [0.9 if "Prices" in p or "Inflation" in p else 0.1 for p in passages]
+
+    llm = FakeLLM(
+        understanding={
+            "question": "How often is inflation discussed?",
+            "scope": "broad",
+            "mentions": ["inflation"],
+        }
+    )
+    asker = Asker(db, Retriever(db, FakeEmbedder(), ConceptReranker()), llm, None)
+    done = asker.ask("How often is inflation discussed?")
+    mentions = done["scope"]["mentions"]
+    assert [e["episode_id"] for e in mentions["list"]] == [e1]
+    assert [e["episode_id"] for e in mentions["related"]] == [e3]  # not e2, not e1
+    assert "Also discussing it without those words" in llm.prompts[-1]
+    assert "Food prices" in llm.prompts[-1]
+
+
+def test_without_a_reranker_counting_stays_with_the_words(db):
+    _library(db)
+    llm = FakeLLM(understanding={"mentions": ["inflation"], "scope": "broad"})
+    asker = Asker(db, Retriever(db, FakeEmbedder(), None), llm, None)
+    done = asker.ask("How often is inflation discussed?")
+    assert done["scope"]["mentions"]["episodes"] == 1
+    assert done["scope"]["mentions"]["related"] == []

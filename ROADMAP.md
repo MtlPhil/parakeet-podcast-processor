@@ -15,8 +15,9 @@ item, docs updated with each:
    progress is pushed to the page; the episode page has a Posts tab; Add
    Podcast can search and browse Apple's directory; Ask's citations open a
    popover on tap, where one can be flagged; Ask can also search the web;
-   an answer a restart cut short is written again.
-2. Next, Ask: counting by concept; measuring subtler
+   an answer a restart cut short is written again; counting questions also
+   list episodes that discuss it in other words.
+2. Next, Ask: measuring subtler
    overstatement; local or Gemini answers (from the plan's measurements);
    tools for the model.
 3. Speakers: remembering a show's host voice across episodes.
@@ -73,7 +74,6 @@ and the installer, not the language.
      - Decide local or hosted answers from the measurements in the plan, or
        try a smaller local answer model, then check the attribution rules
        on a broad question.
-     - Count by concept, not only by the words the question names.
      - Measure subtler overstatement than the support check catches
        (`python -m p3.eval_ask answers`).
      - Tools for the model, beyond the broad-question routing.
