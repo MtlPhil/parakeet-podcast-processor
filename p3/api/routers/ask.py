@@ -45,6 +45,7 @@ def _asker(username: str):
     )
     from p3.llm import LLMClient
     from p3.retriever import Retriever
+    from p3.websearch import make_web_searcher
 
     settings = user_settings(username)
     base_url = settings.get("ollama_base_url", DEFAULT_OLLAMA_URL)
@@ -72,6 +73,7 @@ def _asker(username: str):
         username,
         default_language=settings.get("language") or "en",
         min_free_memory=int(settings.get("ask_min_free_memory", 25)),
+        web_searcher=make_web_searcher(settings),
     )
 
 
@@ -151,6 +153,7 @@ def ask(body: AskRequest, username: str = Depends(current_username)):
                         "before": body.before,
                     },
                     cancel=cancel,
+                    web=body.web,
                 ):
                     if event["event"] == "done":
                         event["thread_id"] = thread_id
@@ -166,6 +169,8 @@ def ask(body: AskRequest, username: str = Depends(current_username)):
                                 "scope": event["scope"],
                                 "invalid_citations": event["invalid_citations"],
                                 "weak_citations": event["weak_citations"],
+                                "web_sources": event["web_sources"],
+                                "web_error": event["web_error"],
                             },
                             timings=event["timings"],
                             models=event["models"],
@@ -240,6 +245,7 @@ def ask_status(
 ):
     """What Ask can do right now, for the page's notices."""
     from p3.embedder import RERANKER_AVAILABLE
+    from p3.websearch import make_web_searcher
 
     db = get_db()
     everyone = library and user["role"] == "admin"
@@ -248,6 +254,10 @@ def ask_status(
         "models_paused": not _models_allowed(),
         "suggestions": db.recent_topics(user["username"]),
         "reranker_available": RERANKER_AVAILABLE,
+        # Which web search the "Also search the web" switch uses, or None.
+        "web_search": getattr(
+            make_web_searcher(user_settings(user["username"])), "name", None
+        ),
     }
 
 
@@ -270,6 +280,7 @@ def get_thread(thread_id: str, username: str = Depends(current_username)):
         message["standalone"] = (record.get("understanding") or {}).get("question")
         message["scope"] = record.get("scope")
         message["weak_citations"] = record.get("weak_citations") or []
+        message["web_sources"] = record.get("web_sources") or []
     return thread
 
 

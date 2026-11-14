@@ -14,10 +14,10 @@ item, docs updated with each:
    the episode page; the Search page is ranked by Ask's keyword index; job
    progress is pushed to the page; the episode page has a Posts tab; Add
    Podcast can search and browse Apple's directory; Ask's citations open a
-   popover on tap, where one can be flagged.
+   popover on tap, where one can be flagged; Ask can also search the web.
 2. Next, Ask: counting by concept; answers that outlive a restart; measuring subtler
    overstatement; local or Gemini answers (from the plan's measurements);
-   tools for the model; the web as a second source.
+   tools for the model.
 3. Speakers: remembering a show's host voice across episodes.
 4. Content and analysis: the summary's format, companies to a CRM,
    investment theses.
@@ -55,9 +55,10 @@ and the installer, not the language.
    answered from the library with cited passages (keyword and meaning
    search, reranking, streamed answers, conversations, evaluation), as
    designed in [docs/ask-plan.md](docs/ask-plan.md). Still to do:
-   - The web as a second source: a hosted model's built-in search where
-     there is one, a search API for local models, with web and podcast
-     citations kept apart.
+   - The web as a second source: done (Google Search through Gemini, or
+     SearXNG; [W1] citations listed apart). Still to do: one real grounded
+     answer (the Gemini key tried has no grounding quota), Anthropic's and
+     OpenAI's own web search tools.
    - Tool calls for every provider (every one of them streams).
    - Send real requests through the Anthropic provider and OpenAI's own API,
      streamed and whole (the README's "LLM providers" shows how). Both are

@@ -29,6 +29,10 @@ SHARED_DEFAULTS: dict[str, Any] = {
     "diarization_enabled": True,
     "diarization_model": "pyannote/speaker-diarization-community-1",
     "speaker_naming_provider": "",
+    # Ask's second source, asked per question: "" (off), "gemini" (Google
+    # Search through Gemini) or "searxng" (the server at searxng_url).
+    "web_search": "",
+    "searxng_url": "",
     # The LLM (its model has a default per provider, see p3.llm)
     "ollama_base_url": DEFAULT_OLLAMA_URL,
 }

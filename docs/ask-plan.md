@@ -201,6 +201,13 @@ Two separate problems: **diarization** (when each voice speaks, as anonymous lab
 4. Ask a few questions. With gemma4:12b expect 1.5 to 3 minutes per answer, and often a "not enough free memory" reply with the passages only: on this Mac the 12B model barely fits beside Ask's models. Setting your **writing LLM to Gemini** in Settings makes answers take seconds and avoids the memory problem (see the measurements above).
 5. Admin → Ask quality → **Evaluate retrieval** reruns the baseline on the live library (the question set is in `data/eval/questions.json`).
 
+## The web as a second source (2026-11-14)
+
+- **Per question, off by default:** "Also search the web" under the question box (remembered per browser), shown when an admin set the shared `web_search`. Only the question as the question step rewrote it is sent.
+- **Searchers** (`p3/websearch.py`): `gemini`, Google Search grounding through the Gemini API key (one request, no retries or fallback model: grounding has its own quota; each web page Gemini cites becomes a passage of the sentences it supports, `grounded_passages`); `searxng`, a SearXNG server's JSON results (title and snippet), for local models. At most 6 web passages.
+- **Kept apart:** the answer prompt (answer-v6) numbers them [W1], [W2]... after the podcasts' passages, with rules to answer from the podcasts first, name the site, and never pass a web page off as an episode. `validate_web_citations` checks them like [n]. The page shows them in green, with a "From the web" list; they are stored in the answer's record (`web_sources`). A failed search answers from the podcasts with a note; web passages alone can answer what the library doesn't cover.
+- **Real run:** the Gemini key here returns 429 (quota) for every grounded request on both models while ordinary requests work, so no real grounded answer yet; the error now comes back in 0.2 s with that explanation instead of after two minutes of retries.
+
 ## Still open
 
 - **Decide local vs Gemini for answers**, from the measurements above, or try a smaller local answer model. Then check the new attribution rules on a broad question (the run meant to verify them was stopped by the memory watchdog).

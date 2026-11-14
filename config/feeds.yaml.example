@@ -36,6 +36,12 @@ settings:
   # or anthropic; empty = the summarizing LLM below
   speaker_naming_provider: ""
 
+  # Ask's "Also search the web" (asked per question): "" off, gemini (Google
+  # Search through Gemini, its own quota on the API key) or searxng (the
+  # SearXNG server at searxng_url, JSON output enabled)
+  web_search: ""
+  searxng_url: ""
+
   # LLM used for summaries and writing: ollama, openai, gemini or anthropic
   llm_provider: ollama
   llm_model: "gemma4:12b"

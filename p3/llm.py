@@ -435,13 +435,48 @@ class LLMClient:
         return response.json()["choices"][0]["message"]["content"].strip()
 
     def _chat_gemini(self, system: str, user: str, max_tokens: int) -> str:
+        data = self._gemini_with_fallback(self._gemini_body(system, user, max_tokens))
+        try:
+            return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        except (KeyError, IndexError) as e:
+            raise RuntimeError(f"Unexpected Gemini response shape: {data}") from e
+
+    def gemini_web_search(self, system: str, user: str, max_tokens: int) -> dict:
+        """A Gemini request grounded in Google Search: the whole response,
+        whose ``groundingMetadata`` lists the web pages used and which part
+        of the reply each one supports. Asked once, with no retries or
+        fallback model: a question is waiting, and grounding has its own
+        quota, which a retry or another model doesn't change."""
+        if not self.api_key:
+            raise RuntimeError(
+                f"No Gemini API key found: {secrets.missing('gemini_api_key')}"
+            )
+        body = self._gemini_body(system, user, max_tokens)
+        body["tools"] = [{"google_search": {}}]
+        return self._gemini_request(self.api_key, body, retry=False)
+
+    @staticmethod
+    def _gemini_body(system: str, user: str, max_tokens: int) -> dict:
+        return {
+            "systemInstruction": {"parts": [{"text": system}]},
+            "contents": [{"role": "user", "parts": [{"text": user}]}],
+            "generationConfig": {
+                "maxOutputTokens": max_tokens,
+                "temperature": 0.2,
+                # Thinking tokens count against maxOutputTokens and can
+                # leave the reply empty or cut off.
+                "thinkingConfig": {"thinkingBudget": 0},
+            },
+        }
+
+    def _gemini_with_fallback(self, body: dict) -> dict:
         if not self.api_key:
             raise RuntimeError(
                 f"No Gemini API key found: {secrets.missing('gemini_api_key')}"
             )
         self._skip_unavailable_gemini()
         try:
-            return self._gemini_request(self.api_key, system, user, max_tokens)
+            return self._gemini_request(self.api_key, body)
         except _GeminiUnavailable as e:
             if self.model == GEMINI_FALLBACK_MODEL:
                 raise
@@ -457,18 +492,17 @@ class LLMClient:
                 GEMINI_FALLBACK_MODEL,
             )
             self.model = GEMINI_FALLBACK_MODEL
-            return self._gemini_request(self.api_key, system, user, max_tokens)
+            return self._gemini_request(self.api_key, body)
 
-    def _gemini_request(
-        self, api_key: str, system: str, user: str, max_tokens: int
-    ) -> str:
-        """One Gemini request to ``self.model``, with the overload retries.
-        Raises _GeminiUnavailable once every retry failed that way."""
+    def _gemini_request(self, api_key: str, body: dict, retry: bool = True) -> dict:
+        """One Gemini request to ``self.model``, with the overload retries
+        (unless ``retry`` is False): the response JSON. Raises
+        _GeminiUnavailable once every retry failed that way."""
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
             f"{self.model}:generateContent"
         )
-        for wait in (*_GEMINI_RETRY_WAITS, None):
+        for wait in (*(_GEMINI_RETRY_WAITS if retry else ()), None):
             try:
                 with httpx.Client(timeout=_REQUEST_TIMEOUT) as client:
                     response = client.post(
@@ -476,17 +510,7 @@ class LLMClient:
                         # Sent as a header rather than a query parameter so the
                         # key never appears in request logs.
                         headers={"x-goog-api-key": api_key},
-                        json={
-                            "systemInstruction": {"parts": [{"text": system}]},
-                            "contents": [{"role": "user", "parts": [{"text": user}]}],
-                            "generationConfig": {
-                                "maxOutputTokens": max_tokens,
-                                "temperature": 0.2,
-                                # Thinking tokens count against maxOutputTokens and
-                                # can leave the reply empty or cut off.
-                                "thinkingConfig": {"thinkingBudget": 0},
-                            },
-                        },
+                        json=body,
                     )
             except httpx.TransportError as e:  # timeouts and dropped connections
                 if wait is None:
@@ -508,8 +532,4 @@ class LLMClient:
             raise RuntimeError(
                 f"Gemini API error: {response.status_code} - {response.text}"
             )
-        data = response.json()
-        try:
-            return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-        except (KeyError, IndexError) as e:
-            raise RuntimeError(f"Unexpected Gemini response shape: {data}") from e
+        return response.json()
