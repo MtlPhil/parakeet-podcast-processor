@@ -107,6 +107,120 @@ def _release(username: str) -> None:
         _answering.pop(username, None)
 
 
+def _answer_and_store(asker, thread_id, question, history, request, cancel, put):
+    """Answer a question and store the reply, passing each event to
+    ``put``. Every question gets a stored reply, so a thread never holds two
+    user turns in a row, and every stream ends with done or error."""
+    db = get_db()
+    try:
+        for event in asker.answer_stream(
+            question,
+            history,
+            _models_allowed(),
+            filters={
+                "podcast_ids": request.get("podcast_ids"),
+                "after": request.get("after"),
+                "before": request.get("before"),
+            },
+            cancel=cancel,
+            web=bool(request.get("web")),
+        ):
+            if event["event"] == "done":
+                event["thread_id"] = thread_id
+                event["message_id"] = db.add_ask_message(
+                    thread_id,
+                    "assistant",
+                    event["answer"],
+                    citations=event["sources"],
+                    retrieval={
+                        **event["retrieval"],
+                        "mode": event["mode"],
+                        "understanding": event["understanding"],
+                        "scope": event["scope"],
+                        "invalid_citations": event["invalid_citations"],
+                        "weak_citations": event["weak_citations"],
+                        "web_sources": event["web_sources"],
+                        "web_error": event["web_error"],
+                    },
+                    timings=event["timings"],
+                    models=event["models"],
+                )
+                # The stored record is for review, not for the page.
+                event.pop("retrieval", None)
+            put(event)
+    except Exception:
+        logger.exception("Answering failed")
+        put({"event": "error", "detail": _FAILED["error"], "thread_id": thread_id})
+        try:
+            db.add_ask_message(
+                thread_id, "assistant", _FAILED["error"], retrieval={"mode": "error"}
+            )
+        except Exception:
+            logger.exception("Could not store the failed answer")
+
+
+# A question a restart left unanswered is answered again at startup when it
+# was asked this recently; older ones get a reply saying to ask again.
+RESUME_HOURS = 6
+INTERRUPTED_NOTE = (
+    "(The server restarted before this question was answered; ask it again.)"
+)
+
+
+def resume_unanswered() -> int:
+    """At startup: answer again, one at a time on a background thread, the
+    questions of the last ``RESUME_HOURS`` a restart left without a reply,
+    with the options they were asked with; close older ones. The page shows
+    each as being written until its reply is stored. Returns how many are
+    resumed."""
+    from p3.ask import history_of
+
+    db = get_db()
+    closed = db.close_unanswered_ask_turns(INTERRUPTED_NOTE, RESUME_HOURS)
+    if closed:
+        logger.info("Closed %d old Ask question(s) a restart left unanswered", closed)
+    turns = db.unanswered_ask_turns(RESUME_HOURS)
+    claimed = []
+    with _answering_lock:
+        for turn in turns:
+            if turn["username"] in _answering:
+                continue  # one answer at a time per user: the next start
+            _answering[turn["username"]] = {
+                "thread_id": turn["thread_id"],
+                "cancel": Event(),
+            }
+            claimed.append(turn)
+
+    def work():
+        for turn in claimed:
+            username = turn["username"]
+            try:
+                thread = db.get_ask_thread(turn["thread_id"], username)
+                if not thread or thread["messages"][-1]["id"] != turn["id"]:
+                    continue  # deleted, or answered meanwhile
+                with _answering_lock:
+                    cancel = _answering[username]["cancel"]
+                history = history_of({"messages": thread["messages"][:-1]})
+                _answer_and_store(
+                    _asker(username),
+                    turn["thread_id"],
+                    turn["content"],
+                    history,
+                    turn["request"],
+                    cancel,
+                    lambda event: None,
+                )
+                logger.info("Answered again a question a restart cut short")
+            except Exception:
+                logger.exception("Could not answer again an interrupted question")
+            finally:
+                _release(username)
+
+    if claimed:
+        threading.Thread(target=work, name="ask-resume", daemon=True).start()
+    return len(claimed)
+
+
 @router.post("")
 def ask(body: AskRequest, username: str = Depends(current_username)):
     """Answer a question, streamed. Continues ``thread_id`` when given (the
@@ -124,7 +238,6 @@ def ask(body: AskRequest, username: str = Depends(current_username)):
         if not thread:
             raise HTTPException(404, "Conversation not found")
     asker = _asker(username)
-    use_models = _models_allowed()
     cancel = Event()
     with _answering_lock:
         if username in _answering:
@@ -136,66 +249,22 @@ def ask(body: AskRequest, username: str = Depends(current_username)):
         thread_id = thread["id"] if thread else db.create_ask_thread(username, question)
         with _answering_lock:
             _answering[username]["thread_id"] = thread_id
-        db.add_ask_message(thread_id, "user", question)
+        request = {
+            "podcast_ids": body.podcast_ids,
+            "after": body.after.isoformat() if body.after else None,
+            "before": body.before.isoformat() if body.before else None,
+            "web": body.web,
+        }
+        # The options are kept with the question, so an answer a restart cut
+        # short is written again as asked (resume_unanswered).
+        db.add_ask_message(thread_id, "user", question, retrieval={"request": request})
         history = history_of(thread)
 
         def work():
-            # Every question gets a stored reply, so a thread never holds two
-            # user turns in a row, and every stream ends with done or error.
             try:
-                for event in asker.answer_stream(
-                    question,
-                    history,
-                    use_models,
-                    filters={
-                        "podcast_ids": body.podcast_ids,
-                        "after": body.after,
-                        "before": body.before,
-                    },
-                    cancel=cancel,
-                    web=body.web,
-                ):
-                    if event["event"] == "done":
-                        event["thread_id"] = thread_id
-                        event["message_id"] = db.add_ask_message(
-                            thread_id,
-                            "assistant",
-                            event["answer"],
-                            citations=event["sources"],
-                            retrieval={
-                                **event["retrieval"],
-                                "mode": event["mode"],
-                                "understanding": event["understanding"],
-                                "scope": event["scope"],
-                                "invalid_citations": event["invalid_citations"],
-                                "weak_citations": event["weak_citations"],
-                                "web_sources": event["web_sources"],
-                                "web_error": event["web_error"],
-                            },
-                            timings=event["timings"],
-                            models=event["models"],
-                        )
-                        # The stored record is for review, not for the page.
-                        event.pop("retrieval", None)
-                    out.put(event)
-            except Exception:
-                logger.exception("Answering failed")
-                out.put(
-                    {
-                        "event": "error",
-                        "detail": _FAILED["error"],
-                        "thread_id": thread_id,
-                    }
+                _answer_and_store(
+                    asker, thread_id, question, history, request, cancel, out.put
                 )
-                try:
-                    db.add_ask_message(
-                        thread_id,
-                        "assistant",
-                        _FAILED["error"],
-                        retrieval={"mode": "error"},
-                    )
-                except Exception:
-                    logger.exception("Could not store the failed answer")
             finally:
                 _release(username)
                 out.put(None)

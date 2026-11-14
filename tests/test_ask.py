@@ -1212,3 +1212,61 @@ def test_titles_cannot_close_the_count_fence():
         }
     )
     assert block.count(">>>") == 1 and "- and 1 more" in block
+
+
+def test_a_restart_answers_recent_questions_again(tmp_path, monkeypatch):
+    import time as _time
+
+    client, deps = _client(tmp_path, monkeypatch)
+    from p3.api.routers import ask as ask_router
+
+    db = deps.get_db()
+    client.get("/api/me")
+    _library(db, username="tester")
+    asked = []
+
+    class Recording(Asker):
+        def answer_stream(self, question, history=None, *a, **k):
+            asked.append((question, history, k.get("filters"), k.get("web")))
+            yield from super().answer_stream(question, history, *a, **k)
+
+    monkeypatch.setattr(
+        ask_router,
+        "_asker",
+        lambda username: Recording(
+            db, Retriever(db, FakeEmbedder(), FakeReranker()), FakeLLM(), username
+        ),
+    )
+    recent = db.create_ask_thread("tester", "rates?")
+    db.add_ask_message(recent, "user", "first")
+    db.add_ask_message(recent, "assistant", "earlier answer")
+    db.add_ask_message(
+        recent,
+        "user",
+        "What about bank rates?",
+        retrieval={"request": {"after": "2026-01-01", "web": True}},
+    )
+    old = db.create_ask_thread("tester", "old")
+    old_q = db.add_ask_message(old, "user", "old question")
+    db.conn.execute(
+        "UPDATE ask_messages SET created_at = created_at - INTERVAL 10 HOUR WHERE id = ?",
+        (old_q,),
+    )
+    assert ask_router.resume_unanswered() == 1
+    assert ask_router.answering_thread("tester") in (recent, None)
+    for _ in range(100):
+        if ask_router.answering_thread("tester") is None:
+            break
+        _time.sleep(0.05)
+    messages = db.get_ask_thread(recent, "tester")["messages"]
+    assert [m["role"] for m in messages] == ["user", "assistant", "user", "assistant"]
+    assert messages[-1]["content"].startswith("Rates went up")
+    question, history, filters, web = asked[0]
+    assert question == "What about bank rates?" and web is True
+    assert filters["after"] == "2026-01-01"
+    assert [h["content"] for h in history] == ["first", "earlier answer"]
+    old_reply = db.get_ask_thread(old, "tester")["messages"][-1]
+    assert old_reply["role"] == "assistant" and "ask it again" in old_reply["content"]
+    deps.close_db()
+    if os.path.exists(tmp_path / "api.duckdb"):
+        os.remove(tmp_path / "api.duckdb")
