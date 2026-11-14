@@ -49,8 +49,8 @@ and the installer, not the language.
      - Measure subtler overstatement than the support check catches
        (`python -m p3.eval_ask answers`).
      - Tools for the model, beyond the broad-question routing.
-     - Rank cold opens and ad reads lower; citation popovers that work on
-       touch screens; flag a single citation.
+     - Citation popovers that work on touch screens; flag a single
+       citation.
      - An answer cut short by a server restart is lost (answers run on
        daemon threads).
 4. **A desktop app.** Done: `p3-app` opens P³ in a native window with the

@@ -541,6 +541,14 @@ def display_names(speakers: Dict[str, Dict[str, Any]]) -> Dict[str, str]:
     return shown
 
 
+def is_ad_passage(chunk: Dict[str, Any]) -> bool:
+    """Whether an Ask passage is mostly a sponsor read or the show's jingle:
+    its main speaker (``chunks.speakers`` lists the most talk first) is
+    shown as "Ad" or "Intro"."""
+    main = (chunk.get("speakers") or "").split(", ")[0]
+    return main in _ROLE_LABELS.values()
+
+
 def speaker_text(segments: List[Dict[str, Any]], names: Dict[str, str]) -> str:
     """Transcript text, a line per speaker turn starting "Name: ". Without
     ``names`` (an episode without speakers), the segments joined into one

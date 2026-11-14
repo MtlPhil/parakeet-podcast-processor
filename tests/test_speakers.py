@@ -592,3 +592,30 @@ class TestNamingLLM:
         cleaner = _make_cleaner(None, {"speaker_naming_provider": "gemini"})
         assert cleaner.naming_llm.provider == "gemini"
         assert cleaner.llm.provider == "ollama"
+
+
+def test_ask_ranks_sponsor_reads_last(db):
+    from p3.retriever import Retriever
+    from tests.test_ask import FakeEmbedder, FakeReranker
+
+    episode = _episode(db)
+    _stored(
+        episode,
+        db,
+        [
+            (0, 30, "S", "Bank rates bank rates: the bank with the best rates."),
+            (200, 230, "A", "Rates went up again, said the bank."),
+        ],
+    )
+    db.replace_episode_speakers(
+        episode,
+        {
+            "S": {"name": None, "role": "ad", "seconds": 30},
+            "A": {"name": "Étienne Crevier", "role": "host", "seconds": 30},
+        },
+    )
+    db.update_episode_status(episode, "processed")
+    index_episode(db, episode, FakeEmbedder())
+    found = Retriever(db, FakeEmbedder(), FakeReranker()).retrieve("bank rates", None)
+    transcript = [p for p in found.passages if p["kind"] == "transcript"]
+    assert [p["speakers"] for p in transcript] == ["Étienne Crevier", "Ad"]

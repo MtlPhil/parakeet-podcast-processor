@@ -208,5 +208,5 @@ Two separate problems: **diarization** (when each voice speaks, as anonymous lab
 - **Counting by concept** rather than by word: the episode count matches the words the question step names (and their spellings and translations), so an episode that discusses the idea in other words isn't counted. Check the count on real questions once answers run.
 - **The support check** flags only clear mismatches (1 citation in 80 on the night's answers); measure subtler overstatement with `python -m p3.eval_ask answers`.
 - **Tools** for the model (addition 3, beyond the broad-question routing done).
-- Lower rank for cold opens and ad reads; touch-friendly citation popovers; flagging a single citation.
+- Touch-friendly citation popovers; flagging a single citation. (Done 2026-11-14: sponsor reads and jingles, by their speaker role, rank last; a cold open's passages, the first 3 minutes' clips said again later, are not indexed. Both apply to episodes indexed from now on; the cold-open check is untried on a full real episode.)
 - Answers run on daemon threads: a server restart mid-answer leaves the question without a reply (rare; the next question works).
