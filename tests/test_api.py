@@ -15,8 +15,10 @@ _tmp_db = os.path.join(_tmp_dir, "test.duckdb")
 
 import p3.api.deps as deps
 
-# Every request acts as this user (no reverse proxy in tests). As the first
-# user of each fresh database, they are its admin.
+# Proxy mode with no proxy: every request acts as this user (other users are
+# simulated with a Remote-User header). As the first user of each fresh
+# database, they are its admin.
+os.environ["P3_AUTH"] = "proxy"
 os.environ["P3_DEV_USER"] = "tester"
 USER = "tester"
 

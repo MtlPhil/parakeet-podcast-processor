@@ -361,6 +361,21 @@ class TestSingleUserMode:
         assert resp.status_code == 403
         assert remote.get("/api/podcasts").status_code == 403
 
+    def test_it_is_the_default(self, single, monkeypatch):
+        monkeypatch.delenv("P3_AUTH")
+        assert auth.auth_mode() == "single"
+        assert single.get("/api/me").json()["username"] == "me"
+
+    @pytest.mark.parametrize(
+        "header", ["Forwarded", "X-Forwarded-For", "X-Real-IP", "Remote-User"]
+    )
+    def test_a_request_through_a_proxy_is_refused(self, single, header):
+        """A proxy on this computer connects from loopback, so without this
+        every visitor it lets through would be the owner."""
+        resp = single.get("/api/me", headers={header: "someone"})
+        assert resp.status_code == 403
+        assert "P3_AUTH" in resp.json()["detail"]
+
     def test_accounts_cannot_be_created(self, single):
         resp = single.post(
             "/api/admin/users", json={"username": "bob", "password": "long enough"}

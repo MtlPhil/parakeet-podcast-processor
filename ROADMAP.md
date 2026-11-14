@@ -15,11 +15,8 @@ and the installer, not the language.
    shared setting, the database layer split by subject with numbered
    migrations, the job wrappers split into pipeline, content, Ask and
    daily-run modules, and a single-user mode with no sign-in
-   (`P3_AUTH=single`). Still to do:
+   (`P3_AUTH=single`), now the default. Still to do:
    - Secrets in the OS keychain rather than files in `config/`.
-   - Single-user as the default. Today an unset `P3_AUTH` still means proxy
-     mode; changing that silently would drop sign-in on a server that
-     relies on it, so it needs its own release note.
 2. **Transcription beyond Apple Silicon.** Done: faster-whisper transcribes
    on Linux and Windows, and there is a container image. Still to do:
    - Run it on real episodes and time it, CPU and GPU; pick the default
@@ -27,7 +24,6 @@ and the installer, not the language.
    - A faster engine for English off the Mac, to match Parakeet there
      (Parakeet through ONNX is the candidate to measure).
    - A GPU image, published images, and tagged releases.
-   - Wording: the setup wizard and several messages still say "this Mac".
 3. **A wider LLM layer, and Ask.** Done: an Anthropic provider, any
    OpenAI-compatible server through `OPENAI_BASE_URL`, and Ask: questions
    answered from the library with cited passages (keyword and meaning
