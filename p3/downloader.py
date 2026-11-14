@@ -9,6 +9,7 @@ import re
 import subprocess
 import tempfile
 import time
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
@@ -194,12 +195,24 @@ class PodcastDownloader:
             return False
         return self.db.link_episode(self.username, episode_id)
 
-    def _was_deleted(self, url: str, label: str, hand_picked: bool) -> bool:
+    def _was_deleted(
+        self,
+        url: str,
+        label: str,
+        hand_picked: bool,
+        podcast_id: Optional[int] = None,
+        guid: Optional[str] = None,
+    ) -> bool:
         """True (and noted) for an episode the user deleted earlier, which a
-        regular fetch must not bring back. Hand-picking one overrides this."""
+        regular fetch must not bring back. Hand-picking one overrides this.
+        With ``podcast_id`` and ``guid``, an episode deleted under another
+        audio URL counts too."""
         if hand_picked or not self.username:
             return False
-        if not self.db.is_url_deleted(self.username, url):
+        if not self.db.is_url_deleted(self.username, url) and not (
+            podcast_id is not None
+            and self.db.is_guid_deleted(self.username, podcast_id, guid)
+        ):
             return False
         self.skipped.append(label or url)
         return True
@@ -453,16 +466,33 @@ class PodcastDownloader:
             return self._process_youtube_source(podcast, episode_guids)
 
         if episode_guids is not None:
+            listed = self._rss_episodes(rss_url)
             wanted = set(episode_guids)
-            episodes = [e for e in self._rss_episodes(rss_url) if e["guid"] in wanted]
+            episodes = [e for e in listed if e["guid"] in wanted]
         else:
-            episodes = self.fetch_episodes(rss_url)
+            listed = episodes = self.fetch_episodes(rss_url)
+        # An episode is known by its feed guid as well as its audio URL: feeds
+        # move episodes to new URLs (a new tracking prefix), and the guid
+        # stays. Episodes stored before guids were kept get theirs here. A
+        # guid the feed gives twice identifies nothing.
+        counts = Counter(e["guid"] for e in listed)
+        guids = {e["url"]: e["guid"] for e in listed if counts[e["guid"]] == 1}
+        self.db.set_missing_guids(podcast["id"], guids)
         total = len(episodes)
         downloaded_count = 0
 
         for i, ep_data in enumerate(episodes):
+            guid = ep_data["guid"] if counts[ep_data["guid"]] == 1 else None
+            # Under a new URL, the stored episode keeps its first one.
+            stored_url = self.db.get_episode_url_by_guid(podcast["id"], guid)
+            if stored_url:
+                ep_data["url"] = stored_url
             if self._was_deleted(
-                ep_data["url"], ep_data["title"], episode_guids is not None
+                ep_data["url"],
+                ep_data["title"],
+                episode_guids is not None,
+                podcast["id"],
+                guid,
             ):
                 continue
             # Already downloaded (maybe for another user): just link it.
@@ -503,6 +533,7 @@ class PodcastDownloader:
                     url=ep_data["url"],
                     file_path=file_path,
                     description=ep_data.get("description"),
+                    guid=guid,
                 )
                 self._link_new(episode_id)
                 downloaded_count += 1

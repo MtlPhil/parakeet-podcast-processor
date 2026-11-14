@@ -68,6 +68,7 @@ class TestProcessFeedResume:
         db = MagicMock()
         db.get_podcast_by_url.return_value = {"id": 1, "title": "Pod"}
         db.episode_exists.return_value = False
+        db.get_episode_url_by_guid.return_value = None
         dl = PodcastDownloader(
             db=db,
             data_dir=str(tmp_path),
@@ -368,6 +369,7 @@ class TestProblemsAreRecorded:
         db = MagicMock()
         db.get_podcast_by_url.return_value = {"id": 1}
         db.episode_exists.return_value = False
+        db.get_episode_url_by_guid.return_value = None
         dl = downloader.PodcastDownloader(db=db, data_dir=str(tmp_path))
 
         assert dl.process_feed("http://example.com/rss") == 0
@@ -434,6 +436,7 @@ class TestShowNotes:
         db.get_podcast_by_url.return_value = {"id": 1, "title": "Pod"}
         db.episode_exists.return_value = exists
         db.was_deleted.return_value = False
+        db.get_episode_url_by_guid.return_value = None
         dl = PodcastDownloader(db=db, data_dir=str(tmp_path), max_episodes=5)
         ep = {
             "title": "Ep",

@@ -363,7 +363,19 @@ class Schema(Connection):
         model...), as JSON, so it can be retried as it was."""
         self.conn.execute("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS args VARCHAR")
 
-    _MIGRATIONS = (_baseline, _ask_index, _job_args)
+    def _episode_guid(self):
+        """Migration 4: the feed's own id for an episode (RSS ``guid``),
+        which stays when the feed moves the episode to a new audio URL, and
+        the same for an episode a user deleted, with its podcast. Not
+        indexed: filling it in is an UPDATE (see the gotcha on indexes)."""
+        self.conn.execute("ALTER TABLE episodes ADD COLUMN IF NOT EXISTS guid VARCHAR")
+        for column, kind in (("podcast_id", "INTEGER"), ("guid", "VARCHAR")):
+            self.conn.execute(
+                f"ALTER TABLE user_deleted_episodes ADD COLUMN IF NOT EXISTS "
+                f"{column} {kind}"
+            )
+
+    _MIGRATIONS = (_baseline, _ask_index, _job_args, _episode_guid)
 
     def _resync_sequences(self):
         """Ensure each id sequence starts past its table's current max id.
