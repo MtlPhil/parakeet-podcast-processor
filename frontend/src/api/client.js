@@ -127,6 +127,14 @@ export const processLibrary = (step) =>
 export const getTranscript = (episodeId) =>
   request(`/episodes/${episodeId}/transcript`);
 
+// Who speaks in an episode; admins can rename a speaker (empty name: unnamed).
+export const getSpeakers = (episodeId) => request(`/episodes/${episodeId}/speakers`);
+export const renameSpeaker = (episodeId, label, name) =>
+  request(`/episodes/${episodeId}/speakers/${encodeURIComponent(label)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ name }),
+  });
+
 // An episode's transcript as Markdown.
 export const downloadTranscript = (episodeId) =>
   download(`/episodes/${episodeId}/transcript/export`, {}, `transcript_${episodeId}.md`);

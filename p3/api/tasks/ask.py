@@ -7,11 +7,26 @@ from typing import Optional
 
 from p3.api.deps import get_db
 from p3.api.job_queue import job_runner
-from p3.api.tasks.common import _get_settings, _make_embedder
+from p3.api.tasks.common import _get_settings, _index_episode, _make_embedder
 from p3.llm import resolve_provider_and_model
 from p3.settings import setting
 
 logger = logging.getLogger(__name__)
+
+
+def task_index_episode(job_id: str, episode_id: int):
+    """Index one episode again (its passages changed: a speaker renamed)."""
+    db = get_db()
+    db.update_job(job_id, status="running", message="Indexing the episode...")
+    note = _index_episode(db, episode_id, _get_settings())
+    failed = note.startswith("not indexed")
+    db.update_job(
+        job_id,
+        status="failed" if failed else "completed",
+        progress=1.0,
+        message=note,
+        error=note if failed else None,
+    )
 
 
 def task_index(job_id: str, username: Optional[str] = None):
