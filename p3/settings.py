@@ -22,6 +22,13 @@ SHARED_DEFAULTS: dict[str, Any] = {
     "whisper_model": DEFAULT_WHISPER_MODEL,
     # Unload Ollama's models first, so they never share memory with these
     "release_ollama_before_transcription": True,
+    # Speakers (p3/speakers.py): told apart after transcription when the
+    # "speakers" extra is installed, then named at the digest step by this
+    # provider's LLM ("" = the digest's own; it reads the show notes and the
+    # first minutes of the transcript)
+    "diarization_enabled": True,
+    "diarization_model": "pyannote/speaker-diarization-community-1",
+    "speaker_naming_provider": "",
     # The LLM (its model has a default per provider, see p3.llm)
     "ollama_base_url": DEFAULT_OLLAMA_URL,
 }

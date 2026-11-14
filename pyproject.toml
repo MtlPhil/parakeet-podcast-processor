@@ -38,6 +38,11 @@ web = [
 ask = [
     "sentence-transformers>=3.0",
 ]
+# Speakers told apart by voice (diarization); pulls in PyTorch. The model is
+# gated: accept its terms on Hugging Face and log in (hf auth login).
+speakers = [
+    "pyannote.audio>=4.0",
+]
 # The app in a window of its own (p3-app); includes the web extra's packages.
 desktop = [
     "fastapi>=0.104.0",
@@ -77,5 +82,5 @@ plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
 # Third-party packages without type information.
-module = ["faster_whisper", "feedparser", "mlx_whisper", "mlx_whisper.*", "parakeet_mlx", "mlx.*", "sentence_transformers", "sentence_transformers.*", "torch", "torch.*", "webview", "yt_dlp", "yt_dlp.*"]
+module = ["faster_whisper", "feedparser", "mlx_whisper", "mlx_whisper.*", "parakeet_mlx", "mlx.*", "sentence_transformers", "sentence_transformers.*", "torch", "torch.*", "torchaudio", "pyannote.*", "webview", "yt_dlp", "yt_dlp.*"]
 ignore_missing_imports = true

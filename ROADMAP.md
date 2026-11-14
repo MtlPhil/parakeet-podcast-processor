@@ -37,9 +37,12 @@ and the installer, not the language.
      streamed and whole (the README's "LLM providers" shows how). Both are
      tested only with stand-ins; an OpenAI-compatible server (Ollama's)
      answered real ones.
-   - Speaker names in transcripts and citations (built, unfinished, on the
-     `speakers` branch). The review found host lines credited to guests;
-     this is Ask's biggest remaining trust gap.
+   - Speakers: done (diarization, names, citations that say who spoke).
+     Still to do: introductions after the first 6 minutes (a late guest
+     stays "Speaker 2" unless a sampled line names them); "what did X say"
+     as a filter; editing a name on the episode page; remembering a show's
+     host voice across episodes; speakers for episodes digested before,
+     whose audio is gone.
    - Ask, from [docs/ask-plan.md](docs/ask-plan.md):
      - Decide local or hosted answers from the measurements in the plan, or
        try a smaller local answer model, then check the attribution rules
@@ -81,12 +84,6 @@ and the installer, not the language.
 - **Blog post tab on the episode page.** Show posts generated from an episode,
   with their grading history.
 - **Frontend tests.** No JavaScript test framework is set up yet.
-
-## Pipeline
-
-- **Speaker diarization.** Fill the `speaker` field on transcript segments,
-  which is currently always empty. Built, unfinished, on the `speakers`
-  branch (direction, item 3).
 
 ## Content and analysis
 

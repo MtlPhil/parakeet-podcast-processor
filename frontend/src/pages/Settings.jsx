@@ -203,6 +203,18 @@ function SharedSettings() {
       <Checkbox id="release-ollama" checked={s.release_ollama_before_transcription ?? true} onChange={(v) => set('release_ollama_before_transcription', v)}>
         Unload Ollama models before transcribing (the LLM and the transcription models may not fit in memory together)
       </Checkbox>
+      <Checkbox id="diarization" checked={s.diarization_enabled ?? true} onChange={(v) => set('diarization_enabled', v)}>
+        Tell speakers apart after transcribing (needs the speakers extra; about 5 minutes per hour of audio)
+      </Checkbox>
+      <Field label="Name speakers with" htmlFor="speaker-naming" help="One request per episode, with the show notes and the first minutes of the transcript.">
+        <select id="speaker-naming" value={s.speaker_naming_provider || ''} onChange={(e) => set('speaker_naming_provider', e.target.value)} className={inputClass}>
+          <option value="">The summarizing LLM</option>
+          <option value="ollama">Ollama (local)</option>
+          <option value="openai">OpenAI</option>
+          <option value="gemini">Gemini</option>
+          <option value="anthropic">Anthropic (Claude)</option>
+        </select>
+      </Field>
       <Field label="Default max episodes per feed" htmlFor="shared-max">
         <input
           id="shared-max"

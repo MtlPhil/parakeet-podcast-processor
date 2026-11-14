@@ -379,6 +379,7 @@ class TranscriptCleaner:
         llm_model: str = DEFAULT_OLLAMA_MODEL,
         api_key: Optional[str] = None,
         ollama_base_url: str = DEFAULT_OLLAMA_URL,
+        naming_llm: Optional[LLMClient] = None,
     ):
         self.db = db
         self.llm = LLMClient(
@@ -387,6 +388,9 @@ class TranscriptCleaner:
             api_key=api_key,
             ollama_base_url=ollama_base_url,
         )
+        # Names the speakers of a diarized episode (speakers.naming_llm);
+        # None: this digest LLM does.
+        self.naming_llm = naming_llm
 
     def _chat(self, system: str, user: str, max_tokens: int = 2000) -> str:
         """Send one request to the configured LLM provider."""
@@ -403,9 +407,17 @@ class TranscriptCleaner:
         """An episode's transcript as the prompts read it: fillers removed by
         regex, names spelled as the show writes them (_respell_names),
         nothing else rewritten (the prompts skip ads themselves, see
-        _AD_RULE). Empty if the episode has no transcript."""
+        _AD_RULE), and "Name: " starting each speaker's turn once the
+        speakers are named (speakers.speaker_text). Empty if the episode has
+        no transcript."""
+        from .speakers import display_names, speaker_text
+
         segments = self.db.get_transcripts_for_episode(episode_id)
-        text = self._basic_clean_text(" ".join(s["text"] for s in segments))
+        names = display_names(self.db.get_episode_speakers(episode_id))
+        text = speaker_text(
+            [{**s, "text": self._basic_clean_text(s["text"])} for s in segments],
+            names,
+        )
         episode = self.db.get_episode_by_id(episode_id)
         if not isinstance(episode, dict):
             return text
@@ -413,6 +425,18 @@ class TranscriptCleaner:
         title = title if isinstance(title, str) else ""
         notes = _notes_text(episode.get("description"))
         return _respell_names(text, f"{title}\n{notes}")
+
+    def _name_speakers(self, episode_id: int):
+        """Name a diarized episode's speakers (one LLM call) unless they
+        were named already. A failure leaves them "Speaker 1", "Speaker 2"
+        and never fails the digest (speakers.name_speakers)."""
+        from .speakers import name_speakers
+
+        if self.db.get_episode_speakers(episode_id):
+            return
+        segments = self.db.get_transcripts_for_episode(episode_id)
+        if any(s.get("speaker") for s in segments):
+            name_speakers(self.db, episode_id, self.naming_llm or self.llm)
 
     def _require_llm(self):
         if not self.llm.is_configured:
@@ -428,6 +452,7 @@ class TranscriptCleaner:
         LLM, or an LLM step fails. Only the translation may fail without
         failing the digest: it can be redone on its own (translate_digest).
         """
+        self._name_speakers(episode_id)
         text = self._transcript(episode_id)
         if not text:
             raise DigestError("The episode has no transcript")
@@ -465,6 +490,7 @@ class TranscriptCleaner:
 
         All or nothing, French included: a step that fails raises
         DigestError and leaves the stored digest as it was."""
+        self._name_speakers(episode_id)
         text = self._transcript(episode_id)
         existing = self.db.get_summary_by_episode(episode_id)
         if not text or not existing:

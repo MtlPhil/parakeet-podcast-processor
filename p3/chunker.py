@@ -140,10 +140,46 @@ def _as_list(value: Any) -> List[str]:
     return [str(v).strip() for v in value if str(v).strip()]
 
 
-def transcript_chunks(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _passage(
+    group: List[Dict[str, Any]], names: Optional[Dict[str, str]]
+) -> Dict[str, Any]:
+    """One transcript passage. With speaker ``names`` ({label: name}), its
+    text says "Name: " at the start and wherever the speaker changes, and
+    ``speakers`` lists who speaks in it, most talk first."""
+    chunk: Dict[str, Any] = {
+        "kind": KIND_TRANSCRIPT,
+        "start_s": group[0].get("timestamp_start"),
+        "end_s": group[-1].get("timestamp_end"),
+    }
+    if not names:
+        chunk["text"] = " ".join(s["text"].strip() for s in group)
+        return chunk
+    parts: List[str] = []
+    talk: Dict[str, int] = {}
+    previous = None
+    for s in group:
+        text = s["text"].strip()
+        name = names.get(s.get("speaker") or "")
+        if name:
+            talk[name] = talk.get(name, 0) + len(text)
+            if name != previous:
+                text = f"{name}: {text}"
+                if parts:
+                    parts[-1] += "\n"
+            previous = name
+        parts.append(text)
+    chunk["text"] = " ".join(parts).replace("\n ", "\n")
+    chunk["speakers"] = ", ".join(sorted(talk, key=lambda n: -talk[n])) or None
+    return chunk
+
+
+def transcript_chunks(
+    segments: List[Dict[str, Any]], names: Optional[Dict[str, str]] = None
+) -> List[Dict[str, Any]]:
     """Group transcript segments (``timestamp_start``, ``timestamp_end``,
     ``text``, in order) into passages of about ``TARGET_SECONDS``, each
-    starting with the last segment of the one before."""
+    starting with the last segment of the one before. ``names`` maps speaker
+    labels to names (see ``_passage``)."""
     segments = [s for s in segments if (s.get("text") or "").strip()]
     chunks: List[Dict[str, Any]] = []
     i = 0
@@ -159,14 +195,7 @@ def transcript_chunks(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 break
             group.append(segments[j])
             j += 1
-        chunks.append(
-            {
-                "kind": KIND_TRANSCRIPT,
-                "start_s": group[0].get("timestamp_start"),
-                "end_s": group[-1].get("timestamp_end"),
-                "text": " ".join(s["text"].strip() for s in group),
-            }
-        )
+        chunks.append(_passage(group, names))
         if j >= len(segments):
             break
         # Overlap: the next passage starts with this one's last segment,
@@ -179,15 +208,16 @@ def build_chunks(
     episode: Dict[str, Any],
     segments: List[Dict[str, Any]],
     summary: Optional[Dict[str, Any]] = None,
+    names: Optional[Dict[str, str]] = None,
 ) -> List[Dict[str, Any]]:
     """Every passage of an episode, numbered in ``seq`` order: transcript
     passages first, then the show notes, summary, topics and quotes.
     ``episode`` needs ``title``, ``podcast_title``, ``date``, ``language``
-    and ``description``."""
+    and ``description``; ``names`` maps speaker labels to names."""
     prefix = _prefix(
         episode.get("podcast_title") or "", episode["title"], episode.get("date")
     )
-    chunks = transcript_chunks(segments)
+    chunks = transcript_chunks(segments, names)
     # Taken before the show notes: quotes are placed in what was said.
     transcript = list(chunks)
     notes = notes_text(episode.get("description"))

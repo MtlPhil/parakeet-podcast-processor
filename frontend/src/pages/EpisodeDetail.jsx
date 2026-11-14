@@ -282,23 +282,27 @@ export default function EpisodeDetail() {
                 </button>
               </div>
               <div className="space-y-2 max-h-[600px] overflow-y-auto">
-                {transcript.map((seg) => (
-                  <div
-                    key={seg.id}
-                    ref={seg.id === targetId ? targetRef : null}
-                    className={`flex gap-3 text-sm ${
-                      seg.id === targetId ||
-                      (jumpEnd != null &&
-                        seg.timestamp_start >= jumpTo &&
-                        seg.timestamp_start < jumpEnd)
-                        ? 'bg-yellow-100 rounded -mx-1 px-1'
-                        : ''
-                    }`}
-                  >
-                    <span className="text-gray-400 w-16 shrink-0 text-right tabular-nums">
-                      {formatTime(seg.timestamp_start)}
-                    </span>
-                    <p className="text-gray-700">{seg.text}</p>
+                {transcript.map((seg, i) => (
+                  <div key={seg.id}>
+                    {seg.speaker_name && seg.speaker_name !== transcript[i - 1]?.speaker_name && (
+                      <p className="text-xs font-semibold text-gray-500 mt-3 ml-[4.75rem]">{seg.speaker_name}</p>
+                    )}
+                    <div
+                      ref={seg.id === targetId ? targetRef : null}
+                      className={`flex gap-3 text-sm ${
+                        seg.id === targetId ||
+                        (jumpEnd != null &&
+                          seg.timestamp_start >= jumpTo &&
+                          seg.timestamp_start < jumpEnd)
+                          ? 'bg-yellow-100 rounded -mx-1 px-1'
+                          : ''
+                      }`}
+                    >
+                      <span className="text-gray-400 w-16 shrink-0 text-right tabular-nums">
+                        {formatTime(seg.timestamp_start)}
+                      </span>
+                      <p className="text-gray-700">{seg.text}</p>
+                    </div>
                   </div>
                 ))}
               </div>

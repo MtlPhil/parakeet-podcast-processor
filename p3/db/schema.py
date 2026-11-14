@@ -375,7 +375,25 @@ class Schema(Connection):
                 f"{column} {kind}"
             )
 
-    _MIGRATIONS = (_baseline, _ask_index, _job_args, _episode_guid)
+    def _episode_speakers(self):
+        """Migration 5: who each anonymous speaker label of a transcript is
+        (see p3/speakers.py), and the names speaking in each Ask passage,
+        most talk first."""
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS episode_speakers (
+                episode_id INTEGER NOT NULL,
+                label VARCHAR NOT NULL,
+                name VARCHAR,
+                role VARCHAR,
+                seconds DOUBLE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        self.conn.execute(
+            "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS speakers VARCHAR"
+        )
+
+    _MIGRATIONS = (_baseline, _ask_index, _job_args, _episode_guid, _episode_speakers)
 
     def _resync_sequences(self):
         """Ensure each id sequence starts past its table's current max id.

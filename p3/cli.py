@@ -30,6 +30,7 @@ from .llm import (
     resolve_provider_and_model,
 )
 from .settings import setting
+from .speakers import make_diarizer, naming_llm
 from .transcriber import (
     DEFAULT_PARAKEET_MODEL,
     DEFAULT_WHISPER_MODEL,
@@ -237,6 +238,7 @@ def transcribe(ctx, model, episode_id):
         use_parakeet=use_parakeet,
         parakeet_model=setting(settings, "parakeet_model"),
         parakeet_languages=setting(settings, "parakeet_languages"),
+        diarizer=make_diarizer(settings),
     )
 
     if episode_id:
@@ -284,6 +286,7 @@ def digest(ctx, provider, model, episode_id):
         llm_provider=llm_provider,
         llm_model=llm_model,
         ollama_base_url=setting(settings, "ollama_base_url"),
+        naming_llm=naming_llm(settings),
     )
 
     if episode_id:
