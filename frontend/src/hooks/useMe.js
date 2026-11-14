@@ -9,6 +9,13 @@ export const MeContext = createContext({ me: null, reload: () => {}, authMode: '
 
 export const useMe = () => useContext(MeContext);
 
-// The language a page shows first: the one picked on the page, else the
-// user's setting.
-export const languageOf = (me, picked) => picked || me?.settings?.language || 'en';
+// The language ('en' or 'fr') a page shows first: the one picked on the
+// page, else the user's setting. 'original' is the episode's own language:
+// French for a French episode, English for any other (digests exist in those
+// two only), and English where there is no single episode.
+export const languageOf = (me, picked, episodeLanguage) => {
+  if (picked) return picked;
+  const setting = me?.settings?.language;
+  if (setting === 'original') return episodeLanguage === 'fr' ? 'fr' : 'en';
+  return setting === 'fr' ? 'fr' : 'en';
+};

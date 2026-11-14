@@ -47,7 +47,7 @@ export default function EpisodeDetail() {
   const { job, isPolling, startPolling } = useJobPoller();
   const { me } = useMe();
   const navigate = useNavigate();
-  const language = languageOf(me, pickedLanguage);
+  const language = languageOf(me, pickedLanguage, episode?.language);
 
   const load = useCallback(
     () =>
