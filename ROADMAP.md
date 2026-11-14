@@ -1,7 +1,8 @@
 # Roadmap
 
-What is planned and not built yet. The first section is the agreed direction,
-in order; the rest is a backlog grouped by area, not ordered by priority.
+What is planned and not built yet. The first section says where the work
+stands and in what order it continues; then the agreed direction, in order;
+the rest is a backlog grouped by area, not ordered by priority.
 
 ## Where things stand (2026-11-14)
 
