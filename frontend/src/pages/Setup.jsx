@@ -183,8 +183,8 @@ function SummariesStep(nav) {
         <Choice name="provider" value="anthropic" current={provider} onChange={choose} title="Anthropic (Claude)">
           Needs an API key from console.anthropic.com. Usage is billed by Anthropic.
         </Choice>
-        <Choice name="provider" value="ollama" current={provider} onChange={choose} title="Ollama, on this Mac">
-          Free and private: nothing leaves this Mac. Needs the Ollama app and a fast Mac with plenty of memory; summaries are slower.
+        <Choice name="provider" value="ollama" current={provider} onChange={choose} title="Ollama, on this computer">
+          Free and private: nothing leaves this computer. Needs the Ollama app and a fast computer with plenty of memory; summaries are slower.
         </Choice>
       </div>
 
@@ -218,7 +218,7 @@ function SummariesStep(nav) {
             )
           ) : (
             <p className="text-sm text-amber-700">
-              Ollama isn't running on this Mac. Install it from{' '}
+              Ollama isn't running on this computer. Install it from{' '}
               <a href="https://ollama.com/download" target="_blank" rel="noreferrer" className="underline">ollama.com/download</a>
               , open it, download a model, then check again.
             </p>
@@ -246,7 +246,7 @@ function TranscriptionStep(nav) {
     <StepFrame
       {...nav}
       title="Transcription"
-      intro="P3 turns each episode's audio into text on this Mac. The defaults suit most people."
+      intro="P3 turns each episode's audio into text on this computer. The defaults suit most people."
       skipLabel="Keep the defaults"
       onSave={async () => {
         await saveShared({
@@ -264,7 +264,7 @@ function TranscriptionStep(nav) {
       <Field label="Whisper quality" htmlFor="whisper">
         <select id="whisper" value={settings.whisper_model || 'turbo'} onChange={(e) => set('whisper_model', e.target.value)} className={inputClass}>
           <option value="turbo">Balanced (recommended)</option>
-          <option value="small">Lighter: faster, less accurate, for Macs with less memory</option>
+          <option value="small">Lighter: faster, less accurate, for computers with less memory</option>
           <option value="large">Best: slowest, most accurate</option>
         </select>
       </Field>
@@ -341,7 +341,7 @@ function DailyStep({ me, reload, ...nav }) {
     >
       <Checkbox id="daily" checked={daily} onChange={setDaily}>Check for new episodes every day</Checkbox>
       {daily && (
-        <Field label="At" htmlFor="time" help="The Mac must be on (asleep is fine; P3 catches up when it wakes).">
+        <Field label="At" htmlFor="time" help="This computer must be on (asleep is fine; P3 catches up when it wakes).">
           <input id="time" type="time" value={time} onChange={(e) => setTime(e.target.value)} className={`${inputClass} max-w-[10rem]`} />
         </Field>
       )}
@@ -446,13 +446,13 @@ function NetworkStep(nav) {
     <StepFrame
       {...nav}
       title="Who can open P3"
-      intro="P3 runs on this Mac. You can keep it to this Mac, or let phones and computers on your home network open it too. Everyone still signs in with their own account."
-      skipLabel="Keep it to this Mac"
+      intro="P3 runs on this computer. You can keep it to this computer, or let phones and computers on your home network open it too. Everyone still signs in with their own account."
+      skipLabel="Keep it to this computer"
       onSave={() => apply(false)}
     >
       <div className="space-y-2">
-        <Choice name="lan" value="local" current={lan ? 'lan' : 'local'} onChange={() => setLan(false)} title="Only this Mac" />
-        <Choice name="lan" value="lan" current={lan ? 'lan' : 'local'} onChange={() => setLan(true)} title="This Mac and other devices on my home network">
+        <Choice name="lan" value="local" current={lan ? 'lan' : 'local'} onChange={() => setLan(false)} title="Only this computer" />
+        <Choice name="lan" value="lan" current={lan ? 'lan' : 'local'} onChange={() => setLan(true)} title="This computer and other devices on my home network">
           Only turn this on at home or on a network you trust.
         </Choice>
       </div>
@@ -463,7 +463,7 @@ function NetworkStep(nav) {
             {net.addresses.map((a) => <li key={a}><code>{a}</code></li>)}
           </ul>
           <p className="text-xs text-gray-500">
-            If your Mac asks whether to allow incoming connections for Python, click Allow.
+            If this computer asks whether to allow incoming connections for Python, click Allow.
           </p>
         </div>
       )}

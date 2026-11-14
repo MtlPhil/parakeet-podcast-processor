@@ -432,6 +432,7 @@ def _client(tmp_path, monkeypatch):
 
     monkeypatch.setattr(deps, "_DB_PATH", str(tmp_path / "api.duckdb"))
     monkeypatch.setattr(deps, "_CONFIG_PATH", str(tmp_path / "feeds.yaml"))
+    monkeypatch.setenv("P3_AUTH", "proxy")
     monkeypatch.setenv("P3_DEV_USER", "tester")
     deps.close_db()
     from fastapi.testclient import TestClient

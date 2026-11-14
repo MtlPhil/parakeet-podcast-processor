@@ -177,7 +177,7 @@ are kept. To remove P3, run `~/Parakeet/bin/p3-uninstall`.
 
 This mode uses P3's own sign-in (`P3_AUTH=local`) and is for a Mac on a home
 network, without a reverse proxy. For a server behind Traefik + Authelia,
-use the manual installation below (proxy mode is the default).
+use the manual installation below and set `P3_AUTH=proxy`.
 
 ## Installation
 
@@ -351,12 +351,13 @@ the same work from the web app.
 For development, run the API and the Vite dev server side by side:
 
 ```bash
-P3_DEV_USER=me uvicorn p3.api.main:app --reload   # API on http://127.0.0.1:8000
-cd frontend && npm run dev                        # UI on http://localhost:5173 (proxies /api)
+uvicorn p3.api.main:app --reload   # API on http://127.0.0.1:8000
+cd frontend && npm run dev         # UI on http://localhost:5173 (proxies /api)
 ```
 
-In the default sign-in mode there is no signed-in user without a reverse
-proxy, so `P3_DEV_USER` names the user to act as (see
+In the default sign-in mode, single, every request from this computer acts
+as the library's owner. To act as a user of your choice, as a reverse proxy
+would pass them, start the API with `P3_AUTH=proxy P3_DEV_USER=me` (see
 [Users and sign-in](#users-and-sign-in)). The first user ever is an admin
 and takes over everything already in the library.
 
@@ -456,7 +457,16 @@ that does and is untested.
 
 ### Users and sign-in
 
-The `P3_AUTH` environment variable picks one of three modes.
+The `P3_AUTH` environment variable picks one of three modes. Unset, it is
+single.
+
+**`P3_AUTH=single` (the default): one person, no sign-in.** For P³ running on
+your own computer for you alone. Every request acts as the library's owner
+(created as `me` on first use, or the existing first admin). Nothing is
+asked, so only requests from the same computer are answered; anything else
+gets a 403. So does a request that came through a proxy (one carrying a
+`Forwarded`, `X-Forwarded-For`, `X-Real-IP` or `Remote-User` header): a proxy
+on the same computer would otherwise make every visitor the owner.
 
 **`P3_AUTH=local`: P³'s own accounts.** The mode the Mac installer sets up,
 for a machine on a home network. The setup wizard creates the first account,
@@ -464,12 +474,7 @@ an admin; admins create the others on the Admin page. Passwords are stored
 as scrypt hashes and a sign-in lasts 30 days. The `Remote-User` header and
 `P3_DEV_USER` are ignored in this mode.
 
-**`P3_AUTH=single`: one person, no sign-in.** For P³ running on your own
-computer for you alone. Every request acts as the library's owner (created
-as `me` on first use, or the existing first admin). Nothing is asked, so only
-requests from the same computer are answered; anything else gets a 403.
-
-**Proxy mode (the default): Authelia.** P³ handles no passwords. It expects
+**`P3_AUTH=proxy`: Authelia.** P³ handles no passwords. It expects
 a reverse proxy in front of it that signs users in with
 [Authelia](https://www.authelia.com/)'s forward-auth and passes the user in
 the `Remote-User` header (plus `Remote-Name` and `Remote-Email`). Requests
@@ -479,6 +484,12 @@ without that header are refused.
   the proxy can reach) so nobody can send the header themselves, and make the
   proxy overwrite any copy a client sends; Traefik's `authResponseHeaders`
   does.
+
+> **Upgrading a proxy server.** Proxy mode used to be the default. A server
+> behind Authelia that never set `P3_AUTH` must now set `P3_AUTH=proxy`
+> (under `EnvironmentVariables` in its launchd plist, say). Until it does,
+> it refuses every request that comes through the proxy with a 403; it lets
+> nobody in by mistake.
 
 In every mode:
 
@@ -516,16 +527,16 @@ http:
           - url: "http://host.docker.internal:8000"
 ```
 
-For local development in proxy mode without a proxy, set `P3_DEV_USER` to the
-username to act as; it is used only when the header is absent. Never set it
-on a server others can reach.
+For local development in proxy mode without a proxy, set `P3_AUTH=proxy` and
+`P3_DEV_USER` to the username to act as; it is used only when the header is
+absent. Never set it on a server others can reach.
 
 ### Environment variables
 
 | Variable | Effect |
 |---|---|
 | `P3_HOME` | The folder holding `data/`, `config/` and the generated files. Unset, it is the folder P³ is started from |
-| `P3_AUTH` | `local` for P³'s own accounts, `single` for one person with no sign-in; anything else, or unset, is proxy mode |
+| `P3_AUTH` | `single` for one person with no sign-in, `local` for P³'s own accounts, `proxy` for a reverse proxy with Authelia; anything else, or unset, is `single` |
 | `P3_DEV_USER` | Proxy mode only: the user to act as when no `Remote-User` header arrives |
 | `P3_LOG_LEVEL` | Log level of the web server's own messages (default `INFO`) |
 | `OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `SMTP_PASSWORD` | Secrets; each takes precedence over its file in `config/` |
@@ -572,7 +583,8 @@ launchctl load ~/Library/LaunchAgents/com.p3.server.plist
 
 `PATH` must include Homebrew so the server can find `ffmpeg`. Add
 `OPENAI_API_KEY` or `GEMINI_API_KEY` under `EnvironmentVariables` if you use a
-hosted provider.
+hosted provider. Behind a reverse proxy, add `P3_AUTH` there too, set to
+`proxy`; without it the server answers only this computer, as one person.
 
 ### Exposing the dev server on a LAN
 
@@ -584,7 +596,9 @@ P3_DEV_HOST=0.0.0.0
 P3_ALLOWED_HOSTS=p3.example.com   # optional, comma-separated extra hostnames
 ```
 
-The same security caveat applies.
+Only do this on a network you trust: the API sees the dev server's requests
+as coming from this computer, so in single mode (or proxy mode with
+`P3_DEV_USER` set) everyone who reaches it acts as that one user.
 
 ### Scheduling the CLI
 

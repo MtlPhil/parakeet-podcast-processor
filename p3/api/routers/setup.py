@@ -175,7 +175,7 @@ def email_problem(error: Exception, settings: dict) -> str:
     ):
         host = settings.get("smtp_host")
         port = settings.get("smtp_port") or 587
-        return f"Couldn't reach the mail server {host} on port {port}. Check both, and that this Mac is online."
+        return f"Couldn't reach the mail server {host} on port {port}. Check both, and that this computer is online."
     return f"Could not send: {text}"
 
 

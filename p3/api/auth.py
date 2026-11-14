@@ -2,7 +2,13 @@
 
 Three modes, chosen by the ``P3_AUTH`` environment variable:
 
-``proxy`` (default): P3 sits behind a reverse proxy (e.g. Traefik) that
+``single`` (default): one person, on this computer, with no sign-in (what a
+desktop app wants). Every request acts as the library's owner, created on
+first use. Because nothing is asked, only requests from this computer are
+answered, and not those that came through a proxy (one on this computer
+would otherwise make every visitor the owner).
+
+``proxy``: P3 sits behind a reverse proxy (e.g. Traefik) that
 authenticates every request with Authelia's forward-auth and passes the
 signed-in user in the ``Remote-User`` header (plus ``Remote-Name`` and
 ``Remote-Email``). P3 trusts that header, so it must only be reachable
@@ -17,9 +23,8 @@ header and ``P3_DEV_USER`` are ignored, since any client on the network
 could send them. The first account, created by the setup wizard, is an
 admin; admins create the others (see routers/auth.py).
 
-``single``: one person, on this computer, with no sign-in (what a desktop
-app wants). Every request acts as the library's owner, created on first use.
-Because nothing is asked, only requests from this computer are answered.
+Before single became the default, an unset ``P3_AUTH`` meant proxy: a server
+behind a proxy that never set it must now set ``P3_AUTH=proxy``.
 """
 
 import hashlib
@@ -54,12 +59,15 @@ _SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 2**14, 8, 1
 # The owner's username when single mode has to create one.
 SINGLE_USER = "me"
 _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
+# Headers only a proxy sends (Remote-User: Authelia's forward-auth).
+_PROXY_HEADERS = ("forwarded", "x-forwarded-for", "x-real-ip", USER_HEADER)
 
 
 def auth_mode() -> str:
-    """``local``, ``single`` or ``proxy`` (anything else counts as proxy)."""
+    """``proxy``, ``local`` or ``single`` (unset or anything else counts as
+    single, the one that answers nobody but this computer)."""
     mode = os.environ.get(AUTH_MODE_ENV, "").lower()
-    return mode if mode in ("local", "single") else "proxy"
+    return mode if mode in ("proxy", "local") else "single"
 
 
 def _single_user(request: Request) -> Dict[str, Any]:
@@ -67,6 +75,13 @@ def _single_user(request: Request) -> Dict[str, Any]:
     if not request.client or request.client.host not in _LOOPBACK:
         raise HTTPException(
             403, "P3 is set up for one person on this computer (P3_AUTH=single)"
+        )
+    if any(header in request.headers for header in _PROXY_HEADERS):
+        raise HTTPException(
+            403,
+            "P3 is set up for one person on this computer (P3_AUTH=single) and "
+            "this request came through a proxy. Behind a proxy, set P3_AUTH to "
+            "proxy or local.",
         )
     db = get_db()
     return db.ensure_user(db.get_owner() or SINGLE_USER)

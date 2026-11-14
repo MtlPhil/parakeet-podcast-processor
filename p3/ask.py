@@ -172,12 +172,12 @@ _PAUSED = {
 # citations (years, amounts) and are left alone.
 _LOW_MEMORY = {
     "en": (
-        "There isn't enough free memory on the Mac to load the answer model "
+        "There isn't enough free memory on this computer to load the answer model "
         "right now, so here are the passages found. Closing other apps helps; "
         "a cloud writing LLM (Settings) avoids this altogether."
     ),
     "fr": (
-        "Il n'y a pas assez de mémoire libre sur le Mac pour charger le modèle "
+        "Il n'y a pas assez de mémoire libre sur cet ordinateur pour charger le modèle "
         "de réponse en ce moment; voici les passages trouvés. Fermer d'autres "
         "applications aide; un modèle d'écriture infonuagique (Paramètres) "
         "évite le problème."
