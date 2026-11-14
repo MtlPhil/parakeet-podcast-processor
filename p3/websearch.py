@@ -8,7 +8,10 @@ Two searchers, chosen by the shared ``web_search`` setting:
   Gemini writes short notes and says which web page supports each one; each
   page becomes a passage of the notes it supports.
 - ``searxng``: a SearXNG server (``searxng_url``, its JSON format enabled),
-  for local models: each result's title and snippet is a passage.
+  for local models: each result's title and snippet is a passage. Use its
+  local address: through a public URL its limiter lets only a couple of
+  JSON requests through, and behind a proxy (Cloudflare) every client has
+  the same address, so it can't be exempted by IP.
 
 Only the question (as the question step rewrote it) is sent. Asked per
 question: the page has an "Also search the web" switch, off by default."""
@@ -133,8 +136,9 @@ class SearxngWebSearch:
             )
         if response.status_code == 429:
             raise RuntimeError(
-                "SearXNG's limiter refused the request (429): allow this "
-                "server's address in its limiter settings"
+                "SearXNG's limiter refused the request (429): set searxng_url "
+                "to the SearXNG server's local address, which its limiter can "
+                "exempt, rather than a public URL"
             )
         try:
             response.raise_for_status()
