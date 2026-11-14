@@ -227,7 +227,7 @@ function SharedSettings() {
         </select>
       </Field>
       {s.web_search === 'searxng' && (
-        <Field label="SearXNG address" htmlFor="searxng-url" help="Its JSON output must be enabled (search.formats: json in its settings).">
+        <Field label="SearXNG address" htmlFor="searxng-url" help="Its local address (a public URL's limiter blocks P3 after a couple of searches). Its JSON output must be enabled (search.formats: json in its settings).">
           <input
             id="searxng-url"
             type="url"
