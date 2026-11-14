@@ -19,8 +19,7 @@ item, docs updated with each:
    list episodes that discuss it in other words; the answer evaluation
    judges each cited claim (supported, overstated, misattributed,
    unsupported).
-2. Next, Ask: local or Gemini answers (from the plan's measurements);
-   tools for the model.
+2. Next, Ask: tools for the model.
 3. Speakers: remembering a show's host voice across episodes.
 4. Content and analysis: the summary's format, companies to a CRM,
    investment theses.
@@ -72,9 +71,9 @@ and the installer, not the language.
      host voice across episodes; speakers for episodes digested before,
      whose audio is gone.
    - Ask, from [docs/ask-plan.md](docs/ask-plan.md):
-     - Decide local or hosted answers from the measurements in the plan, or
-       try a smaller local answer model, then check the attribution rules
-       on a broad question.
+     - Check the attribution rules on a real broad question, answered by
+       Gemini (decided 2026-11-14: answers by the writing LLM, Gemini on this
+       Mac; search stays local).
      - Run the claim judge on real answers once there are some
        (`python -m p3.eval_ask answers --stored 50 --judge-provider gemini`)
        and act on what it finds.
