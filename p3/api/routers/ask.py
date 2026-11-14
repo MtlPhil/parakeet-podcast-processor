@@ -331,7 +331,7 @@ def index_library(admin: dict = Depends(require_admin)):
     """Admins: queue indexing of every processed episode not yet in the Ask
     index (or embedded with another model). The job is the admin's, so it
     shows in their job list."""
-    from p3.api.tasks import task_index
+    from p3.api.tasks.ask import task_index
 
     username = admin["username"]
     job_id = get_db().create_job("index", username=username)
@@ -378,7 +378,7 @@ def eval_overview():
 
 @router.post("/eval/generate", dependencies=[Depends(require_admin)])
 def eval_generate(count: int = Query(60, ge=5, le=300)):
-    from p3.api.tasks import task_eval_generate
+    from p3.api.tasks.ask import task_eval_generate
 
     job_id = get_db().create_job("eval_generate")
     job_runner.enqueue(task_eval_generate, job_id, count)
@@ -387,7 +387,7 @@ def eval_generate(count: int = Query(60, ge=5, le=300)):
 
 @router.post("/eval/run", dependencies=[Depends(require_admin)])
 def eval_run():
-    from p3.api.tasks import task_eval_retrieval
+    from p3.api.tasks.ask import task_eval_retrieval
     from p3.eval_ask import QUESTIONS_FILE
 
     if not QUESTIONS_FILE.exists():

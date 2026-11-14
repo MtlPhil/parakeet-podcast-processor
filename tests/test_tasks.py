@@ -1,11 +1,11 @@
-"""Tests for background task helpers in p3.api.tasks."""
+"""Tests for the pipeline jobs in p3.api.tasks.pipeline."""
 
 import time
 from unittest.mock import MagicMock
 
 import pytest
 
-from p3.api.tasks import _start_heartbeat
+from p3.api.tasks.pipeline import _start_heartbeat
 
 
 def test_heartbeat_ticks_with_elapsed_message():
@@ -44,14 +44,14 @@ def test_heartbeat_stop_before_any_tick_is_safe():
 
 
 def _stub_task_env(monkeypatch, db):
-    import p3.api.tasks as tasks
+    from p3.api.tasks import pipeline
 
-    monkeypatch.setattr(tasks, "get_db", lambda: db)
-    monkeypatch.setattr(tasks, "_get_settings", lambda: {})
+    monkeypatch.setattr(pipeline, "get_db", lambda: db)
+    monkeypatch.setattr(pipeline, "_get_settings", lambda: {})
 
 
 def test_import_playlist_reports_counts(monkeypatch):
-    import p3.api.tasks as tasks
+    from p3.api.tasks import pipeline
     from p3.downloader import PodcastDownloader
 
     db = MagicMock()
@@ -67,7 +67,7 @@ def test_import_playlist_reports_counts(monkeypatch):
         },
     )
 
-    tasks.task_import_playlist("job1", "https://www.youtube.com/playlist?list=PL1")
+    pipeline.task_import_playlist("job1", "https://www.youtube.com/playlist?list=PL1")
 
     final = db.update_job.call_args_list[-1]
     assert final.kwargs["status"] == "completed"
@@ -78,8 +78,8 @@ def test_import_playlist_reports_counts(monkeypatch):
 
 
 def test_import_playlist_failure_marks_job_failed(monkeypatch):
-    import p3.api.tasks as tasks
     from p3 import youtube
+    from p3.api.tasks import pipeline
     from p3.downloader import PodcastDownloader
 
     db = MagicMock()
@@ -90,7 +90,7 @@ def test_import_playlist_failure_marks_job_failed(monkeypatch):
 
     monkeypatch.setattr(PodcastDownloader, "import_youtube_playlist", boom)
 
-    tasks.task_import_playlist("job1", "https://www.youtube.com/playlist?list=PL1")
+    pipeline.task_import_playlist("job1", "https://www.youtube.com/playlist?list=PL1")
 
     final = db.update_job.call_args_list[-1]
     assert final.kwargs["status"] == "failed"
@@ -99,8 +99,8 @@ def test_import_playlist_failure_marks_job_failed(monkeypatch):
 
 def _bulk_env(monkeypatch, tmp_path):
     """Real temp DB; URL resolution faked, queued jobs recorded, not run."""
-    import p3.api.tasks as tasks
     import p3.url_resolver as url_resolver
+    from p3.api.tasks import pipeline
     from p3.database import P3Database
     from p3.url_resolver import ResolvedSource
 
@@ -108,10 +108,10 @@ def _bulk_env(monkeypatch, tmp_path):
     _stub_task_env(monkeypatch, db)
     enqueued = []
     monkeypatch.setattr(
-        tasks.job_runner, "enqueue", lambda fn, *a: enqueued.append((fn.__name__, a))
+        pipeline.job_runner, "enqueue", lambda fn, *a: enqueued.append((fn.__name__, a))
     )
     monkeypatch.setattr(
-        tasks.job_runner,
+        pipeline.job_runner,
         "enqueue_priority",
         lambda fn, *a: enqueued.append((fn.__name__, a)),
     )
@@ -126,13 +126,13 @@ def _bulk_env(monkeypatch, tmp_path):
 
 
 def test_bulk_add_adds_new_sources_and_reports_the_rest(monkeypatch, tmp_path):
-    import p3.api.tasks as tasks
+    from p3.api.tasks import pipeline
 
     db, enqueued = _bulk_env(monkeypatch, tmp_path)
     db.add_podcast("Old", "http://example.com/old")
     job = db.create_job("bulk_add")
 
-    tasks.task_bulk_add(
+    pipeline.task_bulk_add(
         job,
         [
             "http://example.com/new",
@@ -154,12 +154,12 @@ def test_bulk_add_adds_new_sources_and_reports_the_rest(monkeypatch, tmp_path):
 
 
 def test_bulk_add_fails_when_every_url_fails(monkeypatch, tmp_path):
-    import p3.api.tasks as tasks
+    from p3.api.tasks import pipeline
 
     db, enqueued = _bulk_env(monkeypatch, tmp_path)
     job = db.create_job("bulk_add")
 
-    tasks.task_bulk_add(job, ["http://example.com/bad"])
+    pipeline.task_bulk_add(job, ["http://example.com/bad"])
 
     assert db.get_job(job)["status"] == "failed"
     assert enqueued == []
@@ -168,11 +168,11 @@ def test_bulk_add_fails_when_every_url_fails(monkeypatch, tmp_path):
 
 class TestReleaseOllama:
     def _released(self, monkeypatch, settings):
-        import p3.api.tasks as tasks
+        from p3.api.tasks import pipeline
 
         calls = []
-        monkeypatch.setattr(tasks, "release_ollama_models", calls.append)
-        tasks._release_ollama(settings)
+        monkeypatch.setattr(pipeline, "release_ollama_models", calls.append)
+        pipeline._release_ollama(settings)
         return calls
 
     def test_releases_by_default(self, monkeypatch):
@@ -192,7 +192,7 @@ class TestRefreshDigests:
         import json
         from datetime import datetime, timedelta
 
-        import p3.api.tasks as tasks
+        from p3.api.tasks import pipeline
         from p3.database import P3Database
         from p3.downloader import PodcastDownloader
 
@@ -216,9 +216,9 @@ class TestRefreshDigests:
             db.add_summary(eid, [], [], [], [], "s")
             db.update_episode_status(eid, "processed")
             ids.append(eid)
-        db.set_state(tasks.REFRESHED_KEY, json.dumps([ids[0]]))
-        monkeypatch.setattr(tasks, "get_db", lambda: db)
-        monkeypatch.setattr(tasks, "_get_settings", lambda: {})
+        db.set_state(pipeline.REFRESHED_KEY, json.dumps([ids[0]]))
+        monkeypatch.setattr(pipeline, "get_db", lambda: db)
+        monkeypatch.setattr(pipeline, "_get_settings", lambda: {})
         monkeypatch.setattr(PodcastDownloader, "fill_missing_show_notes", lambda s: 2)
 
         clock = {"now": datetime(2026, 11, 1, 1, 0)}
@@ -228,7 +228,7 @@ class TestRefreshDigests:
             def now(cls, tz=None):
                 return clock["now"]
 
-        monkeypatch.setattr(tasks, "datetime", FakeDatetime)
+        monkeypatch.setattr(pipeline, "datetime", FakeDatetime)
         refreshed = []
 
         class FakeCleaner:
@@ -236,20 +236,20 @@ class TestRefreshDigests:
                 refreshed.append(episode_id)
                 clock["now"] += timedelta(minutes=minutes_per_episode)
 
-        monkeypatch.setattr(tasks, "_make_cleaner", lambda db, s: FakeCleaner())
+        monkeypatch.setattr(pipeline, "_make_cleaner", lambda db, s: FakeCleaner())
         self.indexed = []
         monkeypatch.setattr(
-            tasks,
+            pipeline,
             "_index_episode",
             lambda db, episode_id, s: self.indexed.append(episode_id),
         )
-        return tasks, db, ids, refreshed
+        return pipeline, db, ids, refreshed
 
     def test_refreshes_what_is_left_and_detects_language(self, monkeypatch, tmp_path):
-        tasks, db, ids, refreshed = self._env(monkeypatch, tmp_path)
+        pipeline, db, ids, refreshed = self._env(monkeypatch, tmp_path)
         try:
             job = db.create_job("refresh")
-            tasks.task_refresh_digests(job)
+            pipeline.task_refresh_digests(job)
             assert sorted(refreshed) == ids[1:]
             # Ask must not keep citing the digest that was just replaced.
             assert self.indexed == refreshed
@@ -258,7 +258,7 @@ class TestRefreshDigests:
                 "2 digest(s) refreshed, 0 failed, 0 left" in db.get_job(job)["message"]
             )
             assert db.get_episode_by_id(ids[1])["language"] == "fr"
-            tasks.task_refresh_digests(db.create_job("refresh"))
+            pipeline.task_refresh_digests(db.create_job("refresh"))
             assert len(refreshed) == 2  # nothing left to do
         finally:
             db.close()
@@ -266,12 +266,12 @@ class TestRefreshDigests:
     def test_stops_before_the_deadline(self, monkeypatch, tmp_path):
         # 01:00 now; 20 minutes an episode; stop at 01:30. The first starts
         # (15-minute default estimate), the second would end after 01:30.
-        tasks, db, ids, refreshed = self._env(
+        pipeline, db, ids, refreshed = self._env(
             monkeypatch, tmp_path, minutes_per_episode=20
         )
         try:
             job = db.create_job("refresh")
-            tasks.task_refresh_digests(job, "01:30")
+            pipeline.task_refresh_digests(job, "01:30")
             assert len(refreshed) == 1
             assert (
                 "1 digest(s) refreshed, 0 failed, 1 left" in db.get_job(job)["message"]
@@ -282,17 +282,17 @@ class TestRefreshDigests:
     def test_deadline_is_the_next_such_time(self, monkeypatch):
         from datetime import datetime
 
-        import p3.api.tasks as tasks
+        from p3.api.tasks import pipeline
 
         class FakeDatetime(datetime):
             @classmethod
             def now(cls, tz=None):
                 return datetime(2026, 10, 31, 23, 0)
 
-        monkeypatch.setattr(tasks, "datetime", FakeDatetime)
-        assert tasks._refresh_deadline("03:40") == datetime(2026, 11, 1, 3, 40)
-        assert tasks._refresh_deadline("23:30") == datetime(2026, 10, 31, 23, 30)
-        assert tasks._refresh_deadline(None) is None
+        monkeypatch.setattr(pipeline, "datetime", FakeDatetime)
+        assert pipeline._refresh_deadline("03:40") == datetime(2026, 11, 1, 3, 40)
+        assert pipeline._refresh_deadline("23:30") == datetime(2026, 10, 31, 23, 30)
+        assert pipeline._refresh_deadline(None) is None
 
 
 class TestPipeline:
@@ -301,12 +301,12 @@ class TestPipeline:
 
     @pytest.fixture
     def env(self, monkeypatch, tmp_path):
-        import p3.api.tasks as tasks
+        from p3.api.tasks import pipeline
         from p3.database import P3Database
 
         db = P3Database(str(tmp_path / "test.duckdb"))
         _stub_task_env(monkeypatch, db)
-        monkeypatch.setattr(tasks, "_release_ollama", lambda settings: None)
+        monkeypatch.setattr(pipeline, "_release_ollama", lambda settings: None)
         pid = db.add_podcast("Pod", "http://example.com/rss")
         eid = db.add_episode(pid, "Ep", None, "http://example.com/ep.mp3")
         events = []
@@ -324,9 +324,9 @@ class TestPipeline:
                 events.append("digest")
                 db.update_episode_status(episode_id, "processed")
 
-        monkeypatch.setattr(tasks, "_make_transcriber", lambda db, s: Transcriber())
-        monkeypatch.setattr(tasks, "_make_cleaner", lambda db, s: Cleaner())
-        yield tasks, db, eid, events, Transcriber, Cleaner
+        monkeypatch.setattr(pipeline, "_make_transcriber", lambda db, s: Transcriber())
+        monkeypatch.setattr(pipeline, "_make_cleaner", lambda db, s: Cleaner())
+        yield pipeline, db, eid, events, Transcriber, Cleaner
         db.close()
 
     def _run(self, db, task, eid, job_type="full_pipeline"):
@@ -335,22 +335,22 @@ class TestPipeline:
         return db.get_job(job_id)
 
     def test_full_pipeline_transcribes_then_digests(self, env):
-        tasks, db, eid, events, *_ = env
-        job = self._run(db, tasks.task_full_pipeline, eid)
+        pipeline, db, eid, events, *_ = env
+        job = self._run(db, pipeline.task_full_pipeline, eid)
         assert job["status"] == "completed"
         assert events == ["transcribe", "unload", "digest"]
         assert db.get_episode_by_id(eid)["status"] == "processed"
 
     def test_transcribe_stops_before_the_digest(self, env):
-        tasks, db, eid, events, *_ = env
-        job = self._run(db, tasks.task_transcribe, eid, "transcribe")
+        pipeline, db, eid, events, *_ = env
+        job = self._run(db, pipeline.task_transcribe, eid, "transcribe")
         assert (job["status"], job["message"]) == ("completed", "Transcribed: Ep")
         assert events == ["transcribe", "unload"]
 
     def test_steps_already_done_are_skipped(self, env):
-        tasks, db, eid, events, *_ = env
+        pipeline, db, eid, events, *_ = env
         db.update_episode_status(eid, "transcribed")
-        assert self._run(db, tasks.task_full_pipeline, eid)["status"] == "completed"
+        assert self._run(db, pipeline.task_full_pipeline, eid)["status"] == "completed"
         assert events == ["digest"]
 
     def test_a_failed_transcription_gives_its_reason_and_unloads_the_models(
@@ -358,13 +358,13 @@ class TestPipeline:
     ):
         from p3.transcriber import TranscriptionError
 
-        tasks, db, eid, events, Transcriber, _ = env
+        pipeline, db, eid, events, Transcriber, _ = env
 
         def fail(self, episode_id):
             raise TranscriptionError("Whisper failed: out of memory")
 
         monkeypatch.setattr(Transcriber, "transcribe_episode", fail)
-        job = self._run(db, tasks.task_full_pipeline, eid)
+        job = self._run(db, pipeline.task_full_pipeline, eid)
         assert (job["status"], job["error"]) == (
             "failed",
             "Whisper failed: out of memory",
@@ -374,7 +374,7 @@ class TestPipeline:
     def test_a_failed_digest_gives_its_reason(self, env, monkeypatch):
         from p3.cleaner import DigestError
 
-        tasks, db, eid, events, _, Cleaner = env
+        pipeline, db, eid, events, _, Cleaner = env
         db.update_episode_status(eid, "transcribed")
 
         def fail(self, episode_id):
@@ -382,14 +382,14 @@ class TestPipeline:
 
         monkeypatch.setattr(Cleaner, "generate_summary", fail)
         for task, kind in (
-            (tasks.task_digest, "digest"),
-            (tasks.task_full_pipeline, "full_pipeline"),
+            (pipeline.task_digest, "digest"),
+            (pipeline.task_full_pipeline, "full_pipeline"),
         ):
             job = self._run(db, task, eid, kind)
             assert job["status"] == "failed"
             assert job["error"] == "The summary failed: connection refused"
 
     def test_a_missing_episode_fails(self, env):
-        tasks, db, *_ = env
-        job = self._run(db, tasks.task_full_pipeline, 999)
+        pipeline, db, *_ = env
+        job = self._run(db, pipeline.task_full_pipeline, 999)
         assert (job["status"], job["error"]) == ("failed", "Episode 999 not found")

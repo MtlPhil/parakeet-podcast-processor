@@ -3,7 +3,7 @@
 Once a day, at the user's ``daily_run_time`` (local time, "HH:MM"), every
 podcast they follow is fetched and every new episode of theirs transcribed
 and digested, all through the serial job queue (see
-``tasks.queue_daily_run``). The check repeats every minute, so a run missed
+``tasks.daily_run.queue_daily_run``). The check repeats every minute, so a run missed
 while the Mac was asleep or the server was down starts as soon as it is
 back. Each user's last run date is kept in the database, so a restart never
 runs the same day twice.
@@ -16,7 +16,7 @@ from typing import Optional, Tuple
 
 from p3.api.deps import get_db, user_settings
 from p3.api.job_queue import job_runner
-from p3.api.tasks import (
+from p3.api.tasks.daily_run import (
     active_run_ids,
     attempts_today,
     queue_daily_run,
@@ -59,7 +59,7 @@ def run_if_due(now: Optional[datetime] = None) -> list[str]:
             continue
         if db.get_state(run_key("last_date", username)) == today:
             # Already run today, unless it read no feed and is due a retry
-            # (tasks.daily_finish).
+            # (daily_run.daily_finish).
             if not _due(db.get_state(run_key("retry_at", username)), now):
                 continue
             if db.get_state(run_key("id", username)) in active_run_ids:

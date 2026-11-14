@@ -13,11 +13,11 @@ from p3.api.deps import get_db, user_settings
 from p3.api.job_queue import job_runner
 from p3.api.models import EpisodeOut, SynopsisCreate, SynopsisEmail
 from p3.api.routers.setup import email_problem
-from p3.api.tasks import (
+from p3.api.tasks.content import task_generate_synopsis
+from p3.api.tasks.pipeline import (
     queue_step_jobs,
     task_digest,
     task_full_pipeline,
-    task_generate_synopsis,
     task_refresh_digests,
     task_transcribe,
     task_translate,
@@ -104,7 +104,7 @@ def refresh_all(
     admin: dict = Depends(require_admin),
 ):
     """Queue one job that redoes every digest (and synopsis) with the show
-    notes, keeping their dates; see tasks.task_refresh_digests. The job is
+    notes, keeping their dates; see tasks.pipeline.task_refresh_digests. The job is
     the admin's, so it shows in their job list."""
     db = get_db()
     job_id = db.create_job("refresh", username=admin["username"])

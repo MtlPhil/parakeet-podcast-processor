@@ -2,7 +2,6 @@
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
-from p3.api import tasks
 from p3.api.auth import current_user, end_session, require_admin
 from p3.api.deps import delete_content, get_db, user_settings
 from p3.api.models import (
@@ -14,6 +13,7 @@ from p3.api.models import (
     UserSettings,
 )
 from p3.api.scheduler import parse_run_time
+from p3.api.tasks import daily_run
 
 router = APIRouter(prefix="/api", tags=["users"])
 
@@ -29,7 +29,9 @@ def _delete_user(user: dict):
         raise HTTPException(
             400, "The only admin can't be deleted. Make someone else an admin first."
         )
-    run_active = db.get_state(tasks.run_key("id", username)) in tasks.active_run_ids
+    run_active = (
+        db.get_state(daily_run.run_key("id", username)) in daily_run.active_run_ids
+    )
     if run_active or db.get_active_jobs(username):
         raise HTTPException(
             409, f"{username} has jobs in progress. Try again when they finish."

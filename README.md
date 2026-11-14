@@ -630,7 +630,7 @@ p3/
     ├── auth.py       Who is making a request: an account, the proxy's header, or the owner
     ├── deps.py       Shared database instance, config I/O, per-user settings
     ├── job_queue.py  Single-threaded serial job runner with a priority lane
-    ├── tasks.py      Job wrappers around the pipeline modules; the daily run's steps
+    ├── tasks/        Job wrappers: pipeline, content and Ask jobs; the daily run's steps
     ├── scheduler.py  Starts each user's daily run when its time comes
     ├── content.py    Reading generated posts back from disk
     ├── models.py     Pydantic request/response schemas

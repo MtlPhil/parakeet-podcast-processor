@@ -1069,11 +1069,11 @@ class TestDailyRun:
         assert resp.json() is None
 
     def test_summarizes_the_last_run(self):
-        from p3.api import tasks
+        from p3.api.tasks import daily_run
 
         db = deps.get_db()
         pid = db.add_podcast("Pod", "http://example.com/rss")
-        db.set_state(tasks.run_key("id", USER), "run-1")
+        db.set_state(daily_run.run_key("id", USER), "run-1")
         done = db.create_job("fetch", podcast_id=pid, run_id="run-1")
         db.update_job(done, status="completed")
         bad = db.create_job("fetch", podcast_id=pid, run_id="run-1")
@@ -1085,7 +1085,7 @@ class TestDailyRun:
         assert data["jobs"] == {"fetch": {"completed": 1, "failed": 1}}
         assert [f["error"] for f in data["failures"]] == ["boom"]
 
-        db.set_state(tasks.run_key("finished_id", USER), "run-1")
+        db.set_state(daily_run.run_key("finished_id", USER), "run-1")
         assert client.get("/api/daily-run").json()["state"] == "finished"
 
 
@@ -1570,7 +1570,7 @@ class TestMultiUser:
         assert deps.get_db().get_user("bob") is None
 
     def test_user_with_work_in_progress_cannot_be_deleted(self, tmp_path, monkeypatch):
-        from p3.api import tasks
+        from p3.api.tasks import daily_run
 
         monkeypatch.chdir(tmp_path)
         db = deps.get_db()
@@ -1581,12 +1581,12 @@ class TestMultiUser:
         assert client.delete("/api/admin/users/bob").status_code == 409
         db.update_job(job, status="completed")
 
-        db.set_state(tasks.run_key("id", "bob"), "run-1")
-        monkeypatch.setattr(tasks, "active_run_ids", {"run-1"})
+        db.set_state(daily_run.run_key("id", "bob"), "run-1")
+        monkeypatch.setattr(daily_run, "active_run_ids", {"run-1"})
         assert client.delete("/api/me", headers=BOB).status_code == 409
         assert db.get_user("bob") is not None
 
-        monkeypatch.setattr(tasks, "active_run_ids", set())
+        monkeypatch.setattr(daily_run, "active_run_ids", set())
         assert client.delete("/api/me", headers=BOB).status_code == 200
 
     def test_search_is_scoped(self):
