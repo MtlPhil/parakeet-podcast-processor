@@ -252,6 +252,62 @@ class Retriever:
         return result
 
 
+# Counting by meaning: the transcript passages nearest a counting question,
+# each episode's best one reranked, kept above RELATED_MIN_SCORE. Not
+# calibrated on real counts yet (supported citations score a median 0.9).
+RELATED_CANDIDATES = 300
+RELATED_MAX_EPISODES = 40
+RELATED_MIN_SCORE = 0.5
+
+
+def related_episodes(
+    retriever: "Retriever",
+    question: str,
+    username: Optional[str],
+    filters: Optional[Dict[str, Any]] = None,
+    exclude: Optional[set] = None,
+) -> List[Dict[str, Any]]:
+    """Episodes whose transcript discusses what ``question`` asks about, in
+    any words: their best passage by meaning, reranked against the question,
+    best first; those in ``exclude`` (already counted by their words) left
+    out. Needs both models; [] without them."""
+    if retriever.embedder is None or retriever.reranker is None:
+        return []
+    with model_use():
+        [vector] = retriever.embedder.embed([question])
+    hits = retriever.db.vector_search(
+        vector,
+        retriever.embedder.model,
+        username,
+        {**(filters or {}), "kinds": ["transcript"]},
+        RELATED_CANDIDATES,
+    )
+    chunks = retriever.db.get_chunks([i for i, _ in hits])
+    best: Dict[int, Dict[str, Any]] = {}
+    for chunk_id, _ in hits:  # nearest first: an episode's first is its best
+        chunk = chunks.get(chunk_id)
+        if not chunk or chunk["episode_id"] in (exclude or set()):
+            continue
+        if is_ad_passage(chunk):
+            continue
+        best.setdefault(chunk["episode_id"], chunk)
+        if len(best) >= RELATED_MAX_EPISODES:
+            break
+    if not best:
+        return []
+    passages = list(best.values())
+    with model_use():
+        scores = retriever.reranker.score(
+            question, [f"{passage_label(p)}\n{p['text']}" for p in passages]
+        )
+    kept = [
+        {**p, "rerank_score": score}
+        for p, score in zip(passages, scores)
+        if score >= RELATED_MIN_SCORE
+    ]
+    return sorted(kept, key=lambda p: -p["rerank_score"])
+
+
 # Broad questions (overview, comparison, counting) look at episodes rather
 # than single passages: up to this many episodes, each with its summary and
 # its best passages.

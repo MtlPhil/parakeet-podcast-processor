@@ -40,6 +40,7 @@ from .retriever import (
     broaden,
     clean_title,
     passage_label,
+    related_episodes,
 )
 from .websearch import format_web_passages, web_source
 from .writer import _detect_language
@@ -47,7 +48,7 @@ from .writer import _detect_language
 logger = logging.getLogger(__name__)
 
 UNDERSTAND_PROMPT_VERSION = "understand-v5"
-ANSWER_PROMPT_VERSION = "answer-v6"
+ANSWER_PROMPT_VERSION = "answer-v7"
 
 # Below this reranker score (0 to 1) the best passage is taken as unrelated
 # and the question as not covered by the library. To be calibrated on the
@@ -158,7 +159,10 @@ _COUNT_RULES = """
 - An episode count comes before the passages: every episode whose \
 transcript mentions the words searched for. Take numbers and lists of \
 episodes from it, not from the passages, and say it counts episodes that \
-mention those words. Cite passages only for what was said."""
+mention those words. Cite passages only for what was said.
+- Episodes listed as "also discussing it without those words" were found by \
+meaning: give their number separately ("and N more discuss it without \
+naming it"), never added to the count."""
 
 # Episodes listed in the answer prompt's count; the page shows more.
 COUNT_PROMPT_EPISODES = 30
@@ -252,11 +256,25 @@ def format_mentions(mentions: Dict[str, Any]) -> str:
         lines.append(f"- and {mentions['episodes'] - len(lines)} more")
     terms = ", ".join(clean_title(t, 60) for t in mentions["terms"])
     body = _FENCE_RE.sub("", "\n".join(lines))
-    return (
+    block = (
         f"Episode count: {mentions['episodes']} episodes of the library mention "
         f"{terms} ({mentions['passages']} transcript passages), newest first\n"
         f"<<<\n{body}\n>>>"
     )
+    related = mentions.get("related") or []
+    if related:
+        lines = [
+            f"- {e['date'] or 'undated'}, {clean_title(e['podcast_title'], 80)}: "
+            f"{clean_title(e['episode_title'], 120)}"
+            for e in related[:COUNT_PROMPT_EPISODES]
+        ]
+        related_body = _FENCE_RE.sub("", "\n".join(lines))
+        block += (
+            f"\n\nAlso discussing it without those words (found by meaning, "
+            f"not counted above): {len(related)} episodes\n"
+            f"<<<\n{related_body}\n>>>"
+        )
+    return block
 
 
 def estimate_tokens(text: str) -> int:
@@ -704,10 +722,14 @@ class Asker:
         finally:
             logger.debug("Support check took %.1fs", time.monotonic() - t)
 
-    def count_mentions(self, understanding: Understanding) -> Optional[Dict[str, Any]]:
+    def count_mentions(
+        self, understanding: Understanding, use_models: bool = False
+    ) -> Optional[Dict[str, Any]]:
         """The episodes whose transcript mentions what a counting question
-        counts, within its filters; None when it counts nothing. Never fails
-        the answer."""
+        counts, within its filters; None when it counts nothing. With the
+        models, also ``related``: episodes that discuss it in other words
+        (``retriever.related_episodes``), kept apart from the count. Never
+        fails the answer."""
         terms = [t for t in understanding.mentions if tokenize(t)]
         if not terms:
             return None
@@ -718,10 +740,39 @@ class Asker:
         except Exception:
             logger.exception("Counting mentions of %s failed", terms)
             return None
+        related: List[Dict[str, Any]] = []
+        if use_models:
+            try:
+                related = related_episodes(
+                    self.retriever,
+                    understanding.question,
+                    self.username,
+                    understanding.filters,
+                    exclude={r["episode_id"] for r in rows},
+                )
+            except Exception as e:  # ModelsPaused, Ollama down: words only
+                logger.warning("Counting by meaning skipped: %s", e)
         return {
             "terms": terms,
             "episodes": len(rows),
             "passages": sum(r["passages"] for r in rows),
+            "related": [
+                {
+                    "episode_id": p["episode_id"],
+                    "podcast_title": p["podcast_title"],
+                    "episode_title": p["episode_title"],
+                    "date": (
+                        p["episode_date"].strftime("%Y-%m-%d")
+                        if hasattr(p.get("episode_date"), "strftime")
+                        else None
+                    ),
+                    "start_s": p.get("start_s"),
+                    "end_s": p.get("end_s"),
+                    "text": p["text"][:300],
+                    "score": round(p["rerank_score"], 3),
+                }
+                for p in related
+            ],
             "list": [
                 {
                     "episode_id": r["episode_id"],
@@ -790,7 +841,7 @@ class Asker:
         )
         timings.update({f"retrieve_{k}": v for k, v in retrieval.timings.items()})
         # Counted with the filters the search kept (see _retrieve).
-        mentions = self.count_mentions(understanding)
+        mentions = self.count_mentions(understanding, use_models)
         count_block = format_mentions(mentions) if mentions else ""
         # Episodes that mention it answer a count even when no passage
         # convinces the reranker.
