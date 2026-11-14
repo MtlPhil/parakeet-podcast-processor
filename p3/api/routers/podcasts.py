@@ -9,7 +9,7 @@ import zipfile
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 
 from p3.api.auth import current_username
@@ -17,6 +17,8 @@ from p3.api.deps import attachment, get_db
 from p3.api.job_queue import job_runner
 from p3.api.models import (
     BulkPodcastCreate,
+    DirectoryCategory,
+    DirectoryShow,
     FetchAction,
     PodcastCreate,
     PodcastOut,
@@ -54,6 +56,43 @@ def list_podcasts(username: str = Depends(current_username)):
         followed = p.pop("followed_at", None) or p["created_at"]
         p["added_at"] = min(followed, p["created_at"]) if is_owner else followed
     return podcasts
+
+
+@router.get("/discover/categories", response_model=list[DirectoryCategory])
+def directory_categories(_username: str = Depends(current_username)):
+    """The podcast directory's categories, to browse by."""
+    from p3.directory import CATEGORIES
+
+    return [{"id": i, "name": n} for i, n in CATEGORIES.items()]
+
+
+@router.get("/discover", response_model=list[DirectoryShow])
+def discover(
+    q: str = Query("", max_length=200),
+    genre: Optional[int] = Query(None),
+    country: str = Query("us", max_length=2),
+    username: str = Depends(current_username),
+):
+    """Podcasts from Apple's directory: those matching ``q`` (in ``genre``
+    when given), or with no ``q`` the category's top chart. Each says
+    whether the user already follows it."""
+    from p3 import directory
+
+    term = q.strip()
+    if not term and genre is None:
+        raise HTTPException(400, "Search for a podcast or pick a category")
+    if genre is not None and genre not in directory.CATEGORIES:
+        raise HTTPException(400, "Unknown category")
+    try:
+        shows = (
+            directory.search(term, country, genre)
+            if term
+            else directory.top(genre or 0, country)
+        )
+    except directory.DirectoryError as e:
+        raise HTTPException(502, str(e))
+    followed = {p["rss_url"] for p in get_db().get_all_podcasts(username)}
+    return [{**s, "in_library": s["feed_url"] in followed} for s in shows]
 
 
 @router.get("/preview", response_model=SourcePreview)
