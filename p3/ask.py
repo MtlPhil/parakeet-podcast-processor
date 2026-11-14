@@ -41,12 +41,13 @@ from .retriever import (
     clean_title,
     passage_label,
 )
+from .websearch import format_web_passages, web_source
 from .writer import _detect_language
 
 logger = logging.getLogger(__name__)
 
 UNDERSTAND_PROMPT_VERSION = "understand-v5"
-ANSWER_PROMPT_VERSION = "answer-v5"
+ANSWER_PROMPT_VERSION = "answer-v6"
 
 # Below this reranker score (0 to 1) the best passage is taken as unrelated
 # and the question as not covered by the library. To be calibrated on the
@@ -136,6 +137,16 @@ _KIND_IN_PROMPT = {
     "notes": "the episode's show notes (from the publisher)",
 }
 
+_WEB_RULES = """
+- Passages numbered [W1], [W2]... come from a web search, not from the \
+person's podcasts. Cite them as [W1], and say in the sentence that it comes \
+from the web and which site ("on the web, Reuters reports..."). Never \
+present a web passage as something said in an episode, nor an episode as \
+a web source.
+- Answer from the podcasts first, then add what the web passages add, \
+correct or bring up to date, saying so. When only the web covers the \
+question, say the library doesn't, then answer from the web."""
+
 _BROAD_RULES = """
 - This question is broad: the passages are grouped by episode (each \
 episode's summary, then its most relevant passages). Organize the answer by \
@@ -197,6 +208,7 @@ _STOPPED = {
 }
 
 _CITATION_RE = re.compile(r"\[\s*(\d+(?:\s*[-–,;]\s*\d+)*)\s*\]")
+_WEB_CITATION_RE = re.compile(r"\[\s*W\s*(\d+)\s*\]", re.IGNORECASE)
 _MAX_CITATION = 999
 _FENCE_RE = re.compile(r"[<>]{3,}")
 
@@ -304,6 +316,22 @@ def validate_citations(answer: str, passage_count: int) -> Dict[str, Any]:
     return {"answer": cleaned, "cited": cited, "invalid": invalid}
 
 
+def validate_web_citations(answer: str, passage_count: int) -> Dict[str, Any]:
+    """The web passage numbers ``answer`` cites ([W1]...), written the same
+    way, and the answer without any outside 1..passage_count."""
+    cited: List[int] = []
+
+    def keep(match: "re.Match[str]") -> str:
+        n = int(match.group(1))
+        if not 1 <= n <= passage_count:
+            return ""
+        if n not in cited:
+            cited.append(n)
+        return f"[W{n}]"
+
+    return {"answer": _WEB_CITATION_RE.sub(keep, answer), "cited": cited}
+
+
 # Below this reranker score a cited passage likely doesn't back its sentence.
 # Calibrated on real answers: supported pairs score a median 0.90, and the
 # clearest overstated citation found by review scored 0.001.
@@ -402,9 +430,11 @@ class Asker:
         abstain_threshold: float = ABSTAIN_THRESHOLD,
         default_language: str = "en",
         min_free_memory: int = 0,
+        web_searcher: Any = None,
     ):
         """``default_language`` (the user's setting) is used when the
-        question's own language can't be told."""
+        question's own language can't be told. ``web_searcher``
+        (``p3.websearch``) searches the web for questions asked with it."""
         self.db = db
         self.retriever = retriever
         self.llm = llm if llm is not None and llm.is_configured else None
@@ -417,6 +447,7 @@ class Asker:
         # (0: no check). On a 16 GB Mac gemma4:12b beside the Ask models has
         # taken free memory down to 1%.
         self.min_free_memory = min_free_memory
+        self.web_searcher = web_searcher
 
     def _room_for_local_model(self) -> bool:
         if (
@@ -720,6 +751,7 @@ class Asker:
         use_models: bool = True,
         filters: Optional[Dict[str, Any]] = None,
         cancel: Optional[threading.Event] = None,
+        web: bool = False,
     ) -> Iterator[Dict[str, Any]]:
         """Run a question end to end, yielding events: ``status`` (stage),
         ``sources`` (the passages, numbered), ``token`` (answer text), then
@@ -728,7 +760,8 @@ class Asker:
         model and returns keyword search results. ``filters`` (podcast_ids,
         after, before), chosen by the user, replace those read from the
         question. Setting ``cancel`` stops the answer where it is (mode
-        ``stopped``)."""
+        ``stopped``). ``web`` also searches the web (``web_searcher``): its
+        passages are numbered W1... and come back as ``web_sources``."""
         timings: Dict[str, float] = {}
         started = time.monotonic()
 
@@ -772,8 +805,29 @@ class Asker:
         # The stored record lists exactly the passages the model is given.
         retrieval.passages = passages
 
+        web_passages: List[Dict[str, Any]] = []
+        web_error = None
+        if web and self.web_searcher is not None and use_models and self.llm:
+            yield {"event": "status", "stage": "searching_web"}
+            t = time.monotonic()
+            try:
+                web_passages = self.web_searcher.search(
+                    understanding.question, language
+                )
+            except Exception as e:
+                logger.warning("Web search failed: %s", e)
+                web_error = str(e)
+            timings["web_search"] = time.monotonic() - t
+        elif web:
+            web_error = (
+                "web search is not set up" if self.web_searcher is None else None
+            )
+        # The web can answer what the library doesn't cover.
+        covered = covered or bool(web_passages)
+
         mode = "answer"
         answer = ""
+        web_cited: List[int] = []
         cited: List[int] = []
         invalid: List[int] = []
         weak: List[Dict[str, Any]] = []
@@ -797,6 +851,9 @@ class Asker:
             "sources": [
                 source_of(n, p, False) for n, p in enumerate(passages, start=1)
             ],
+            "web_sources": [
+                web_source(n, p, False) for n, p in enumerate(web_passages, start=1)
+            ],
         }
 
         if mode == "answer":
@@ -806,13 +863,17 @@ class Asker:
                 "{language}", _LANGUAGE_NAMES[language]
             ).replace(
                 "{broad}",
-                (_BROAD_RULES if broad else "") + (_COUNT_RULES if count_block else ""),
+                (_BROAD_RULES if broad else "")
+                + (_COUNT_RULES if count_block else "")
+                + (_WEB_RULES if web_passages else ""),
             )
+            web_block = format_web_passages(web_passages)
             user = (
                 f"Today is {date.today().isoformat()}.\n"
                 f"Question: {understanding.question}\n\n"
                 + (f"{count_block}\n\n" if count_block else "")
-                + f"Passages:\n\n{format_passages(passages)}"
+                + f"Passages:\n\n{format_passages(passages) or '(none)'}"
+                + (f"\n\nWeb passages:\n\n{web_block}" if web_block else "")
             )
             parts: List[str] = []
             try:
@@ -827,6 +888,8 @@ class Asker:
                     checked["cited"],
                     checked["invalid"],
                 )
+                web_checked = validate_web_citations(answer, len(web_passages))
+                answer, web_cited = web_checked["answer"], web_checked["cited"]
                 weak = self._weak_citations(answer, passages)
                 if cancel is not None and cancel.is_set():
                     mode = "stopped"
@@ -848,16 +911,25 @@ class Asker:
 
         timings["total"] = time.monotonic() - started
         sources = [source_of(n, p, n in cited) for n, p in enumerate(passages, start=1)]
+        web_sources = [
+            web_source(n, p, n in web_cited)
+            for n, p in enumerate(web_passages, start=1)
+        ]
         yield {
             "event": "done",
             "mode": mode,
             "answer": answer,
             "language": language,
             "sources": sources,
+            "web_sources": web_sources,
+            "web_error": web_error,
             "cited": cited,
             "invalid_citations": invalid,
             "weak_citations": weak,
-            "uncited_answer": mode == "answer" and not cited and bool(passages),
+            "uncited_answer": mode == "answer"
+            and not cited
+            and not web_cited
+            and bool(passages or web_passages),
             "scope": {**self._scope_of(understanding), "mentions": mentions},
             "understanding": {
                 "question": understanding.question,

@@ -27,6 +27,7 @@ const formatTime = (seconds) => {
 const STAGES = {
   understanding: 'Reading the question…',
   searching: 'Searching your library…',
+  searching_web: 'Searching the web…',
   answering: 'Writing the answer…',
 };
 
@@ -126,14 +127,65 @@ function Citation({ source, weak, flagged, onFlag }) {
   );
 }
 
+// A [Wn] citation: a web page, kept apart from the podcasts' passages.
+function WebCitation({ source }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const close = (e) => {
+      if (e.type === 'keydown' ? e.key === 'Escape' : !ref.current?.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', close);
+    document.addEventListener('keydown', close);
+    return () => {
+      document.removeEventListener('pointerdown', close);
+      document.removeEventListener('keydown', close);
+    };
+  }, [open]);
+  return (
+    <span ref={ref} className="relative inline-block">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        aria-label={`Web source ${source.n}: ${source.site}`}
+        className="align-super text-[10px] font-semibold rounded px-1 mx-0.5 text-emerald-800 bg-emerald-50 hover:bg-emerald-100"
+      >
+        W{source.n}
+      </button>
+      {open && (
+        <span
+          role="dialog"
+          className="absolute z-20 left-0 top-full mt-1 w-72 max-w-[80vw] bg-white border border-gray-200 rounded-lg shadow-lg p-3 text-xs text-gray-700 font-normal block"
+        >
+          <a href={source.url} target="_blank" rel="noopener noreferrer" className="font-medium text-emerald-800 hover:underline block break-words">
+            {source.site}: {source.title} ↗
+          </a>
+          <span className="block text-gray-500 mt-1">From the web, not your podcasts.</span>
+          <span className="block mt-1 break-words">
+            {source.text.length > 240 ? `${source.text.slice(0, 240)}…` : source.text}
+          </span>
+        </span>
+      )}
+    </span>
+  );
+}
+
 // Answer text (Markdown, see MarkdownText) with [n] citations turned into
-// popovers of their sources.
-function AnswerText({ text, sources, weak, flagged, onFlag }) {
+// popovers of their sources, and [Wn] into popovers of web pages.
+function AnswerText({ text, sources, webSources, weak, flagged, onFlag }) {
+  const byWeb = Object.fromEntries((webSources || []).map((s) => [s.n, s]));
   const byNumber = Object.fromEntries((sources || []).map((s) => [s.n, s]));
   const weakNumbers = new Set((weak || []).map((w) => w.n));
   const flags = new Set(flagged || []);
   const withCitations = (run) =>
-    run.split(/(\[\d+\])/g).map((part, i) => {
+    run.split(/(\[W?\d+\])/g).map((part, i) => {
+      const web = /^\[W(\d+)\]$/.exec(part);
+      if (web) {
+        const page = byWeb[Number(web[1])];
+        return page ? <WebCitation key={i} source={page} /> : part;
+      }
       const match = /^\[(\d+)\]$/.exec(part);
       const source = match && byNumber[Number(match[1])];
       if (!source) return part;
@@ -191,6 +243,30 @@ function SourceCard({ source }) {
   );
 }
 
+// Web pages the answer drew on, listed apart from the podcasts' passages.
+function WebSources({ sources, mode }) {
+  const shown = mode === 'answer' ? (sources || []).filter((s) => s.cited) : sources || [];
+  if (!shown.length) return null;
+  return (
+    <div className="mt-4">
+      <h3 className="text-xs font-semibold text-emerald-800 uppercase tracking-wide mb-2">From the web</h3>
+      <ul className="space-y-2">
+        {shown.map((s) => (
+          <li key={s.n} className="border border-emerald-200 bg-emerald-50/40 rounded-lg p-3 flex gap-2">
+            <span className="text-xs font-semibold text-emerald-800 bg-emerald-100 rounded px-1.5 py-0.5 shrink-0 h-fit">W{s.n}</span>
+            <div className="min-w-0">
+              <a href={s.url} target="_blank" rel="noopener noreferrer" className="text-xs font-medium text-emerald-800 hover:underline break-words">
+                {s.site}: {s.title} ↗
+              </a>
+              <p className="text-xs text-gray-600 mt-1 break-words">{s.text}</p>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function Sources({ sources, mode }) {
   const [showOthers, setShowOthers] = useState(false);
   if (!sources?.length) return null;
@@ -245,6 +321,10 @@ const asMarkdown = (question, message) => {
     const quote = s.text.split('\n').map((line) => `> ${escapeMd(line)}`).join('\n');
     return `[${s.n}] ${escapeMd(sourceLine(s))}${badge} — <${window.location.origin}${sourceLink(s)}>\n${quote}`;
   });
+  const web = (message.webSources || [])
+    .filter((s) => s.cited)
+    .map((s) => `[W${s.n}] ${escapeMd(`${s.site}: ${s.title}`)} (web) — <${s.url}>\n> ${escapeMd(s.text)}`);
+  sources.push(...web);
   const asked = new Date().toISOString().slice(0, 10);
   const warning = message.uncited ? '\n\n*This answer cites no passage.*' : '';
   return `## ${escapeMd(message.standalone || question)}\n\n*Asked ${asked}, from my podcast library.*\n\n${neutralizeLinks(message.answer)}${warning}\n\n${sources.join('\n\n')}\n`;
@@ -346,6 +426,7 @@ function AssistantMessage({ message, question }) {
         <AnswerText
           text={message.answer}
           sources={message.sources}
+          webSources={message.webSources}
           weak={message.weak}
           flagged={flagged}
           onFlag={message.id ? flag : null}
@@ -357,12 +438,16 @@ function AssistantMessage({ message, question }) {
           passage that may not support its sentence: check it before relying on it.
         </p>
       )}
+      {message.webError && (
+        <p className="text-xs text-amber-700 mt-2">The web search failed ({message.webError}); this answer uses your podcasts only.</p>
+      )}
       {message.uncited && (
         <p className="text-xs text-amber-700 mt-2">
           This answer cites no passage: check it against the sources before relying on it.
         </p>
       )}
       <Sources sources={message.sources} mode={message.mode} />
+      <WebSources sources={message.webSources} mode={message.mode} />
       <ScopeLine scope={message.scope} />
       <MentionList mentions={message.scope?.mentions} />
       {message.id && (
@@ -432,6 +517,7 @@ const fromStored = (m) => ({
   uncited: (m.mode || 'answer') === 'answer' && m.role === 'assistant' && !m.citations?.some((c) => c.cited),
   rating: m.rating,
   flagged: m.flagged || [],
+  webSources: m.web_sources || [],
 });
 
 export default function Ask() {
@@ -450,6 +536,23 @@ export default function Ask() {
   const [podcasts, setPodcasts] = useState([]);
   const [filters, setFilters] = useState({ podcast: '', after: '', before: '' });
   const [showFilters, setShowFilters] = useState(false);
+  // "Also search the web": per viewer, off by default (it sends the question
+  // to the web search the admin set up).
+  const [webOn, setWebOn] = useState(() => {
+    try {
+      return localStorage.getItem('p3.ask.web') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const toggleWeb = () => {
+    setWebOn(!webOn);
+    try {
+      localStorage.setItem('p3.ask.web', webOn ? '0' : '1');
+    } catch {
+      // Private window: the choice lasts for this page only.
+    }
+  };
   const activeFilters = Boolean(filters.podcast || filters.after || filters.before);
   const bottomRef = useRef(null);
   const abortRef = useRef(null);
@@ -529,7 +632,7 @@ export default function Ask() {
             // Stored already: from here the page can be left and come back.
             if (event.thread_id !== threadId) setParams({ thread: event.thread_id }, { replace: !threadId });
           } else if (event.event === 'status') setStage(event.stage);
-          else if (event.event === 'sources') update({ sources: event.sources });
+          else if (event.event === 'sources') update({ sources: event.sources, webSources: event.web_sources });
           else if (event.event === 'token') {
             streamed += event.text;
             update({ answer: streamed });
@@ -539,6 +642,8 @@ export default function Ask() {
               id: event.message_id,
               answer: event.answer,
               sources: event.sources,
+              webSources: event.web_sources,
+              webError: event.web_error,
               mode: event.mode,
               scope: event.scope,
               standalone: event.understanding?.question,
@@ -559,6 +664,7 @@ export default function Ask() {
           podcast_ids: filters.podcast ? [Number(filters.podcast)] : undefined,
           after: filters.after || undefined,
           before: filters.before || undefined,
+          web: webOn || undefined,
         }
       );
       // The connection dropped before the answer ended: it is still being
@@ -713,6 +819,19 @@ export default function Ask() {
             >
               {activeFilters ? 'Filters on' : 'Filters'}
             </button>
+            {status?.web_search && (
+              <label
+                className="flex items-center gap-1 text-gray-600"
+                title={
+                  status.web_search === 'gemini'
+                    ? 'Sends your question to Google Search through Gemini'
+                    : 'Sends your question to the SearXNG search server set up for P3'
+                }
+              >
+                <input type="checkbox" checked={webOn} onChange={toggleWeb} />
+                Also search the web
+              </label>
+            )}
             {activeFilters && (
               <button
                 type="button"

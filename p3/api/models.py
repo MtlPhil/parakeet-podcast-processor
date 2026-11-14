@@ -355,6 +355,9 @@ class AskRequest(BaseModel):
     )
     after: Optional[date] = Field(None, description="Episodes from this date")
     before: Optional[date] = Field(None, description="Episodes up to this date")
+    web: bool = Field(
+        False, description="Also search the web (the shared web_search setting)"
+    )
 
 
 class AskRating(BaseModel):

@@ -215,6 +215,29 @@ function SharedSettings() {
           <option value="anthropic">Anthropic (Claude)</option>
         </select>
       </Field>
+      <Field
+        label="Web search for Ask"
+        htmlFor="web-search"
+        help={'Lets people tick "Also search the web" under a question. It sends their question (nothing else) to the search below; web pages are cited apart from podcasts.'}
+      >
+        <select id="web-search" value={s.web_search || ''} onChange={(e) => set('web_search', e.target.value)} className={inputClass}>
+          <option value="">Off</option>
+          <option value="gemini">Google Search through Gemini (needs the Gemini API key)</option>
+          <option value="searxng">A SearXNG server</option>
+        </select>
+      </Field>
+      {s.web_search === 'searxng' && (
+        <Field label="SearXNG address" htmlFor="searxng-url" help="Its JSON output must be enabled (search.formats: json in its settings).">
+          <input
+            id="searxng-url"
+            type="url"
+            placeholder="http://localhost:8888"
+            value={s.searxng_url || ''}
+            onChange={(e) => set('searxng_url', e.target.value)}
+            className={inputClass}
+          />
+        </Field>
+      )}
       <Field label="Default max episodes per feed" htmlFor="shared-max">
         <input
           id="shared-max"
