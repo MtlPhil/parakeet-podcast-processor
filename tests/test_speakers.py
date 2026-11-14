@@ -619,3 +619,46 @@ def test_ask_ranks_sponsor_reads_last(db):
     found = Retriever(db, FakeEmbedder(), FakeReranker()).retrieve("bank rates", None)
     transcript = [p for p in found.passages if p["kind"] == "transcript"]
     assert [p["speakers"] for p in transcript] == ["Étienne Crevier", "Ad"]
+
+
+class TestWhatDidTheySay:
+    def _asked(self, db, speaker):
+        from p3.ask import Asker
+        from p3.retriever import Retriever
+        from tests.test_ask import FakeEmbedder, FakeLLM, FakeReranker
+
+        episode = _episode(db)
+        _stored(
+            episode,
+            db,
+            [
+                (0, 30, "A", "Bank rates went up, the host said."),
+                (200, 230, "B", "Rates will fall, the bank says."),
+            ],
+        )
+        db.replace_episode_speakers(
+            episode,
+            {
+                "A": {"name": "Étienne Crevier", "role": "host", "seconds": 30},
+                "B": {"name": "Joëlle Pineau", "role": "guest", "seconds": 30},
+            },
+        )
+        db.update_episode_status(episode, "processed")
+        index_episode(db, episode, FakeEmbedder())
+        llm = FakeLLM(
+            understanding={"question": "What did she say on bank rates?"}
+            | {"speaker": speaker}
+        )
+        asker = Asker(db, Retriever(db, FakeEmbedder(), FakeReranker()), llm, None)
+        return asker.ask("What did she say on bank rates?")
+
+    def test_only_passages_the_person_speaks_in(self, db):
+        done = self._asked(db, "joelle pineau")
+        assert [s["speakers"] for s in done["sources"]] == ["Joëlle Pineau"]
+        assert done["scope"]["speakers"] == ["Joëlle Pineau"]
+        assert done["scope"]["inferred"] is True
+
+    def test_a_name_nobody_has_searches_everything(self, db):
+        done = self._asked(db, "Lenny")
+        assert done["scope"]["speakers"] == []
+        assert len(done["sources"]) > 1

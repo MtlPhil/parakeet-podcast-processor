@@ -45,7 +45,7 @@ from .writer import _detect_language
 
 logger = logging.getLogger(__name__)
 
-UNDERSTAND_PROMPT_VERSION = "understand-v4"
+UNDERSTAND_PROMPT_VERSION = "understand-v5"
 ANSWER_PROMPT_VERSION = "answer-v5"
 
 # Below this reranker score (0 to 1) the best passage is taken as unrelated
@@ -80,10 +80,12 @@ English and French when they differ, plus common spellings of names,
 the name or term whose mentions to count, as its spellings and translations \
 (e.g. ["Nvidia", "NVDA"]), else [],
   "podcasts": names of podcasts the question limits itself to, or [],
+  "speaker": the person whose own words the question asks about ("what did \
+X say", "according to X", "X's view on"), as the question names them, else null,
   "after": "YYYY-MM-DD" when the question limits itself to after a date, else null,
   "before": "YYYY-MM-DD" when it limits itself to before a date, else null
 }
-Only set podcasts/after/before when the question asks for that limit."""
+Only set podcasts/speaker/after/before when the question asks for that limit."""
 
 _ANSWER_SYSTEM = """You answer questions about a person's podcast library \
 using only the numbered passages given to you: transcript excerpts, episode \
@@ -561,6 +563,9 @@ class Asker:
             # A podcast the user doesn't have can't narrow the search to nothing.
             if ids:
                 filters["podcast_ids"] = ids
+        speakers = self._speakers_named(data.get("speaker"))
+        if speakers:
+            filters["speakers"] = speakers
         for key in ("after", "before"):
             value = data.get(key)
             try:
@@ -568,6 +573,19 @@ class Asker:
             except ValueError:
                 pass  # missing, or not a real date ("2026-02-30")
         return filters
+
+    def _speakers_named(self, asked: Any) -> List[str]:
+        """The library's speaker names that ``asked`` names: all its words are
+        words of the name ("Pineau" names "Joëlle Pineau"). Nobody (the
+        person never spoke in a transcript with speakers) means no filter."""
+        words = set(tokenize(str(asked or "")))
+        if not words:
+            return []
+        return [
+            name
+            for name in self.db.speaker_names(self.username)
+            if words <= set(tokenize(name))
+        ]
 
     def _retrieve(self, understanding: Understanding, use_models: bool, **limits):
         """Search with the question's filters; without them when they leave
@@ -630,6 +648,7 @@ class Asker:
             ],
             "after": filters.get("after"),
             "before": filters.get("before"),
+            "speakers": filters.get("speakers", []),
             "inferred": bool(filters) and not filters.get("chosen"),
             "chosen": bool(filters.get("chosen")),
             "episodes_indexed": stats["episodes"],
