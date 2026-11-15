@@ -2,6 +2,7 @@
 passages, the [W1] citations, and the Ask API with web search (stand-ins
 only: no network)."""
 
+import errno
 import os
 
 import pytest
@@ -151,6 +152,28 @@ def test_searxng_refusals_say_what_to_change(monkeypatch, status, said):
     monkeypatch.setattr(websearch.httpx, "get", lambda *a, **k: Refused())
     with pytest.raises(RuntimeError, match=said):
         websearch.SearxngWebSearch("http://s").search("q")
+
+
+def test_no_route_to_host_points_at_local_network_permission(monkeypatch):
+    def unreachable(*a, **k):
+        try:
+            raise OSError(errno.EHOSTUNREACH, "No route to host")
+        except OSError as e:
+            raise websearch.httpx.ConnectError(str(e)) from e
+
+    monkeypatch.setattr(websearch.httpx, "get", unreachable)
+    with pytest.raises(RuntimeError, match="Local Network"):
+        websearch.SearxngWebSearch("http://s").search("q")
+
+
+def test_other_connection_errors_say_only_that(monkeypatch):
+    def refused(*a, **k):
+        raise websearch.httpx.ConnectError("Connection refused")
+
+    monkeypatch.setattr(websearch.httpx, "get", refused)
+    with pytest.raises(RuntimeError, match="didn't answer") as e:
+        websearch.SearxngWebSearch("http://s").search("q")
+    assert "Local Network" not in str(e.value)
 
 
 def test_the_setting_picks_the_searcher(monkeypatch, tmp_path):

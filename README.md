@@ -105,7 +105,10 @@ P³ ships as both a command-line tool (`p3`) and a web app (FastAPI + React).
   web (set up by an admin in Settings: Google Search through Gemini, or a
   SearXNG server) and cites web pages as [W1], [W2]..., listed apart from
   the podcasts. Only the question is sent. Google Search through Gemini
-  has its own quota, which a free Gemini key may not include.
+  has its own quota, which a free Gemini key may not include. When P3 runs
+  as a background service, macOS may block it from reaching a SearXNG
+  server on another machine until it is allowed under Privacy & Security >
+  Local Network; the search error says so.
 - **Exports.** Daily digests as Markdown, JSON or email-ready HTML (the
   summaries' section titles and lists kept), plus
   per-episode transcripts as Markdown (single file or a zip per podcast).
