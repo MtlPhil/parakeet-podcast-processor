@@ -31,9 +31,11 @@ item, docs updated with each:
    host; the digest, `p3 write`, LinkedIn posts, Ask and Gemini's requests
    are tested on recordings of real models, and the transcription backends
    on what the real speech engines returned (which found av 19 breaking
-   faster-whisper, now kept below it).
-2. Next, Web app: frontend tests (a JavaScript test framework, starting with
-   `MarkdownText` and the pages' pure logic).
+   faster-whisper, now kept below it); the frontend has tests (Vitest:
+   `MarkdownText`, the Podcasts sort, tags, the page language, the API
+   client), run by CI.
+2. Next, Web app: tests of the frontend's components in a DOM (forms,
+   pickers, the job progress), with Testing Library.
 
 On hold: secrets in the keychain and timing transcription on Linux and
 Windows (no machine to test on); real Anthropic and OpenAI requests
@@ -109,7 +111,11 @@ and the installer, not the language.
 
 ## Web app
 
-- **Frontend tests.** No JavaScript test framework is set up yet.
+- **Frontend tests.** Done: Vitest in a Node environment, on `MarkdownText`
+  (rendered to static markup) and the logic outside components (the
+  Podcasts sort, tags, `languageOf`, the API client with `fetch` stubbed).
+  Still to do: components that need a DOM and user events (jsdom and
+  Testing Library), and the pages' logic still inside components.
 
 ## Testing
 

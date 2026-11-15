@@ -805,6 +805,7 @@ uv run pytest tests/ -v              # full suite, no network or models needed
 uv run black . && uv run isort .     # formatting
 uv run mypy p3/                      # type checking
 cd frontend && npm run lint          # frontend lint
+cd frontend && npm test              # frontend tests (Vitest)
 ```
 
 After changing dependencies in `pyproject.toml`, run `uv lock` and commit
@@ -812,10 +813,11 @@ After changing dependencies in `pyproject.toml`, run `uv lock` and commit
 
 GitHub Actions runs all of these on every push to `main` and on pull requests
 (`.github/workflows/ci.yml`): formatting checks, mypy and the test suite on
-both an Apple Silicon macOS runner and Linux, and ESLint plus a production
-build for the frontend. A second workflow (`.github/workflows/install.yml`)
-runs `install.sh` on an Apple Silicon runner, then an update over it and the
-uninstaller, whenever the installer or the dependencies change, and weekly.
+both an Apple Silicon macOS runner and Linux, and ESLint, the Vitest tests
+and a production build for the frontend. A second workflow
+(`.github/workflows/install.yml`) runs `install.sh` on an Apple Silicon
+runner, then an update over it and the uninstaller, whenever the installer
+or the dependencies change, and weekly.
 
 Tests cover the database layer, API endpoints (through `TestClient` against a
 temporary database), the job queue and task wrappers, text-processing helpers
