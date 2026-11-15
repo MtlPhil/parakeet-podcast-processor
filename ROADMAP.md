@@ -25,8 +25,8 @@ item, docs updated with each:
    the summary prompt asks for a set format (bold section titles, short
    paragraphs or lists, Takeaways last).
 2. Next, Content and analysis: investment theses, drafted weekly by the
-   daily run (decided 2026-11-14). Companies to a CRM was dropped the same
-   day.
+   daily run, as decided under "Content and analysis" below (2026-11-14).
+   Companies to a CRM was dropped the same day.
 3. Testing: recorded-fixture integration tests, an end-to-end smoke test,
    a CI job for `install.sh`.
 
@@ -109,10 +109,18 @@ and the installer, not the language.
 ## Content and analysis
 
 - **Investment-thesis generation.** Turn recurring themes across episodes into
-  structured investment or research theses. Decided 2026-11-14: automatic
-  and weekly, the daily run finding themes that recur across several of the
-  past week's episodes, drafting a thesis for each and listing them in the
-  report email.
+  structured investment or research theses. Decided 2026-11-14:
+  - Monday's daily run drafts them from the previous Monday to Sunday.
+  - A theme qualifies when at least 3 of the week's episodes, from at least
+    2 podcasts, discuss it; at most 3 theses a week.
+  - Opt-in per user (a new personal setting, off by default, like the daily
+    LinkedIn drafts), from their own library, with their writing LLM.
+  - Each thesis: claim, evidence by episode (linked), bull and bear points,
+    open questions; in the user's language with the French adaptation, as
+    the writer does for posts.
+  - Saved as Markdown in the user's content folder, shown in a "Theses" tab
+    on the Content page beside LinkedIn and blog posts, and listed in that
+    Monday's report email.
 
 ## Testing
 
