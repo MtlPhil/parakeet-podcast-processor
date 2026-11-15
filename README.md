@@ -481,18 +481,24 @@ GTK or Qt on Linux). Closing the window stops it, so nothing runs, including
 the daily run, while the app is closed. The library lives in your
 application data folder (`~/Library/Application Support/P3` on macOS,
 `%LOCALAPPDATA%\P3` on Windows, `~/.local/share/P3` on Linux); set `P3_HOME`
-to use another, such as an existing `~/P3`. Only one P³ can have a library
-open: stop the background service before opening the same library in the app.
+to use another, such as the installer's `~/Parakeet`. Only one P³ can have a
+library open: stop the background service before opening the same library in
+the app. To keep the service running (for a phone, or the daily run) and still
+have P³ in a window of its own, install the web app instead (below).
 
 This is the launcher only. There is no installer or signed download yet: it
 needs Python and the steps above.
 
-### On a phone
+### On a phone or a computer
 
 The web app can be added to a phone's home screen (Share → Add to Home
 Screen on iOS, Install app on Android) and then opens full-screen like an
 app. It still talks to the P³ server on your computer, so the phone must be
 able to reach it.
+
+On a computer, Safari's File → Add to Dock (macOS 14 or newer), or Install
+P3 in Chrome and Edge, does the same: P³ in a window of its own with its
+icon, on the same server, which keeps running when the window is closed.
 
 ### Container
 
