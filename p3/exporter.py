@@ -23,6 +23,20 @@ def _inline_html(text: str) -> str:
     return _BOLD.sub(r"<strong>\1</strong>", escape(text))
 
 
+def plain_text(text: str) -> str:
+    """A summary or synopsis without its Markdown marks (bold, "#"), for
+    places that show it as plain text: search snippets, Ask's passages.
+    Lines and "- " list points are kept."""
+    lines = []
+    for raw in text.split("\n"):
+        line = raw.strip()
+        heading = _HEADING.match(line)
+        if heading:
+            line = (heading.group(1) or heading.group(2)).rstrip(":")
+        lines.append(_BOLD.sub(r"\1", line))
+    return "\n".join(lines)
+
+
 def markdown_html(text: str) -> str:
     """A summary or synopsis as HTML (emails, the HTML export), every piece
     escaped. The model

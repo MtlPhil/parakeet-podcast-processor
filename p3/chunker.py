@@ -17,6 +17,8 @@ from collections import Counter
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from .exporter import plain_text
+
 TARGET_SECONDS = 60.0
 # A passage also ends at this length, for segments without useful timing.
 MAX_CHARS = 1500
@@ -104,7 +106,8 @@ QUOTE_MATCH = 0.6
 
 
 def clean_summary(text: str) -> str:
-    return _PREAMBLE_RE.sub("", text, count=1).strip()
+    """A summary as a passage: without the model's preamble or Markdown."""
+    return plain_text(_PREAMBLE_RE.sub("", text, count=1)).strip()
 
 
 def locate_quote(quote: str, passages: List[Dict[str, Any]]) -> Optional[Dict]:

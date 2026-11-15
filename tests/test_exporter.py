@@ -187,3 +187,10 @@ class TestShownLanguage:
         assert localized(row, "original")["full_summary"] == "FR"
         row["episode_language"] = "en"
         assert localized(row, "original")["full_summary"] == "EN"
+
+
+def test_plain_text_drops_the_markdown_marks():
+    from p3.exporter import plain_text
+
+    summary = "**The rate path:**\nThe bank **hikes**.\n\n## Takeaways\n- Twice"
+    assert plain_text(summary) == "The rate path\nThe bank hikes.\n\nTakeaways\n- Twice"

@@ -920,6 +920,12 @@ def test_quotes_get_their_transcript_moment_and_summaries_lose_preambles():
     }
     summary_chunk = next(c for c in chunks.values() if c["kind"] == "summary")
     assert summary_chunk["text"] == "The bank hikes."
+
+    summary["full_summary"] = "**The rate path**\nThe bank **hikes**.\n- Twice"
+    chunk = next(
+        c for c in build_chunks(episode, segments, summary) if c["kind"] == "summary"
+    )
+    assert chunk["text"] == "The rate path\nThe bank hikes.\n- Twice"
     quotes = [c for c in chunks.values() if c["kind"] == "quote"]
     assert quotes[0]["start_s"] == 0 and quotes[1]["start_s"] is None
 
