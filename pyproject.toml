@@ -17,6 +17,8 @@ dependencies = [
     "feedparser>=6.0.0",
     "requests>=2.31.0",
     "faster-whisper>=1.2.0; sys_platform == 'linux' or sys_platform == 'win32'",
+    # faster-whisper 1.2.1 opens audio with an argument av 19 removed.
+    "av>=11,<19; sys_platform == 'linux' or sys_platform == 'win32'",
     "mlx-whisper>=0.4.3; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "pyyaml>=6.0",
     "rich>=13.0.0",
