@@ -43,7 +43,9 @@ P³ ships as both a command-line tool (`p3`) and a web app (FastAPI + React).
 
 - **Feed ingestion.** Add podcasts by RSS URL or Apple Podcasts link. New
   episodes are downloaded with retry and backoff and normalized to 16 kHz mono
-  audio with `ffmpeg`.
+  audio with `ffmpeg`. Episodes you add or fetch yourself in the web app go
+  on through the whole chain (transcript, summary, French, Ask's index)
+  without waiting for the daily run.
 - **YouTube sources.** Add a YouTube channel (new uploads are fetched like a
   feed) or a single video. A playlist URL adds each of its videos as its own
   standalone source. Audio is downloaded with

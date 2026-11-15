@@ -393,3 +393,66 @@ class TestPipeline:
         pipeline, db, *_ = env
         job = self._run(db, pipeline.task_full_pipeline, 999)
         assert (job["status"], job["error"]) == ("failed", "Episode 999 not found")
+
+
+class TestFetchThenProcess:
+    """A fetch the user started queues a full pipeline for the podcast's
+    unprocessed episodes; a daily run's fetch leaves that to the run."""
+
+    @pytest.fixture
+    def env(self, monkeypatch, tmp_path):
+        from p3.api.tasks import pipeline
+        from p3.downloader import PodcastDownloader
+
+        db, enqueued = _bulk_env(monkeypatch, tmp_path)
+        monkeypatch.setattr(pipeline, "user_settings", lambda username: {})
+        db.ensure_user("ann")
+        show = db.add_podcast("Show", "http://example.com/show")
+        other = db.add_podcast("Other", "http://example.com/other")
+        db.subscribe("ann", show)
+        db.subscribe("ann", other)
+        done = db.add_episode(show, "Done", None, "http://example.com/done.mp3")
+        db.link_episode("ann", done)
+        db.update_episode_status(done, "processed")
+        elsewhere = db.add_episode(other, "Else", None, "http://example.com/else.mp3")
+        db.link_episode("ann", elsewhere)
+        db.update_episode_status(elsewhere, "downloaded")
+        fetched = []
+
+        def process_feed(self, url, guids=None):
+            eid = db.add_episode(show, "New", None, "http://example.com/new.mp3")
+            db.link_episode("ann", eid)
+            db.update_episode_status(eid, "downloaded")
+            fetched.append(eid)
+            return 1
+
+        monkeypatch.setattr(PodcastDownloader, "process_feed", process_feed)
+        yield db, show, enqueued, fetched
+        db.close()
+
+    def test_a_manual_fetch_processes_what_it_fetched(self, env):
+        from p3.api.tasks import pipeline
+
+        db, show, enqueued, fetched = env
+        job = db.create_job("fetch", podcast_id=show, username="ann")
+
+        pipeline.task_fetch(job, show, None, None, "ann")
+
+        assert db.get_job(job)["status"] == "completed"
+        assert [(name, args[1]) for name, args in enqueued] == [
+            ("task_full_pipeline", fetched[0])
+        ]
+        (pipeline_job,) = [j for j in db.get_active_jobs("ann")]
+        assert pipeline_job["job_type"] == "full_pipeline"
+        assert pipeline_job["run_id"] is None
+
+    def test_a_daily_run_fetch_queues_nothing(self, env):
+        from p3.api.tasks import pipeline
+
+        db, show, enqueued, fetched = env
+        job = db.create_job("fetch", podcast_id=show, username="ann", run_id="run1")
+
+        pipeline.task_fetch(job, show, None, None, "ann")
+
+        assert db.get_job(job)["status"] == "completed"
+        assert enqueued == []

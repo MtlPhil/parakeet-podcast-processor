@@ -152,9 +152,28 @@ def task_fetch(
             message=message,
             error="\n".join(downloader.problems) or None,
         )
+        # A fetch the user started goes on through the whole chain. A daily
+        # run's fetches don't: the run's own pipeline step follows them.
+        job = db.get_job(job_id)
+        if not (job and job.get("run_id")):
+            _process_fetched(db, podcast_id, username)
     except Exception as e:
         logger.exception("Fetch task failed")
         db.update_job(job_id, status="failed", error=str(e))
+
+
+def _process_fetched(db, podcast_id: int, username: str | None) -> None:
+    """Queue a full pipeline for each of the podcast's episodes the user
+    still has unprocessed (the ones just fetched, and older ones the daily
+    run would otherwise take: unprocessed_episodes)."""
+    from p3.api.tasks.daily_run import unprocessed_episodes
+
+    episodes = [
+        e for e in unprocessed_episodes(db, username) if e["podcast_id"] == podcast_id
+    ]
+    job_ids = queue_step_jobs(db, episodes, "pipeline", username=username)
+    if job_ids:
+        logger.info("Queued %d fetched episode(s) for processing", len(job_ids))
 
 
 # ------------------------------------------------------------------
