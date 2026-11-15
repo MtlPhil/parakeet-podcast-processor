@@ -4,7 +4,7 @@ What is planned and not built yet. The first section says where the work
 stands and in what order it continues; then the agreed direction, in order;
 the rest is a backlog grouped by area, not ordered by priority.
 
-## Where things stand (2026-11-14)
+## Where things stand (2026-11-15)
 
 Working through the rest of this file in this order, one pull request per
 item, docs updated with each:
@@ -35,13 +35,16 @@ item, docs updated with each:
    `MarkdownText`, the Podcasts sort, tags, the page language, the API
    client), run by CI, and its shared components and the job follower are
    tested in a DOM (jsdom and Testing Library).
-2. Next, Desktop app: open an existing `~/P3` library from `p3-app`
-   without setting `P3_HOME` by hand.
+2. Next: Ask's evaluation with and without the research step, then
+   Ollama's tool calling against it, once there are stored answers to
+   grade. Nothing else is unblocked.
 
 On hold: secrets in the keychain and timing transcription on Linux and
 Windows (no machine to test on); real Anthropic and OpenAI requests
 (waiting on someone with a key); downloading the library again so older
-episodes get speakers; the desktop app.
+episodes get speakers; the desktop app (decided 2026-11-15: until there is
+a signed installer it gives nothing over the web app installed from the
+browser, which keeps the server running for the phone and the daily run).
 
 ## Direction
 
@@ -95,18 +98,25 @@ and the installer, not the language.
        tool calling against it before giving local models the tools.
 4. **A desktop app.** Done: `p3-app` opens P³ in a native window with the
    server inside it, and the web app can be installed on a phone's home
-   screen. Still to do:
+   screen or a computer's Dock. On hold (2026-11-15): without a signed
+   installer the app still needs Python and a checkout, and someone with
+   those gets the same window from the installer plus Add to Dock, with the
+   server left running for their phone and the daily run. The installer
+   comes first; the rest waits on it. Still to do:
    - Installers. Today the app needs Python and a checkout. A double-click
      download per OS means bundling Python, the speech models' libraries and
      ffmpeg (PyInstaller or Briefcase), then signing and notarizing, which
      needs an Apple Developer ID and a Windows certificate.
    - The daily run while the window is closed (a tray icon, or a login
      item).
-   - Opening an existing `~/P3` library from the app without setting
-     `P3_HOME` by hand, and handing over from the background service.
+   - Opening an existing library (the installer's `~/Parakeet`) from the
+     app without setting `P3_HOME` by hand. If the background service has
+     it open, connect to that service rather than stop it: stopping it
+     would cut off the phone while the window is open.
    - Open `p3-app` on macOS, Windows and Linux once: the launcher is tested,
      but no window has been opened on any of them.
-   - Install the web app on a phone's home screen once; it is untried.
+   - Install the web app on a phone's home screen and a computer's Dock
+     once; both are untried.
    - A native iPhone app ([docs/ios-app-plan.md](docs/ios-app-plan.md)),
      deferred until after.
 
