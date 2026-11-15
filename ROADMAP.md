@@ -21,9 +21,12 @@ item, docs updated with each:
    unsupported); broad questions get a research step in which a hosted
    model calls read-only tools (search again, list episodes, read
    summaries, count mentions) before the answer, on tool calls for every
-   provider; a show's hosts are recognized by voice in its later episodes.
-2. Next, Content and analysis: the summary's format, companies to a CRM,
-   investment theses.
+   provider; a show's hosts are recognized by voice in its later episodes;
+   the summary prompt asks for a set format (bold section titles, short
+   paragraphs or lists, Takeaways last).
+2. Next, Content and analysis: investment theses, drafted weekly by the
+   daily run (decided 2026-11-14). Companies to a CRM was dropped the same
+   day.
 3. Testing: recorded-fixture integration tests, an end-to-end smoke test,
    a CI job for `install.sh`.
 
@@ -105,14 +108,11 @@ and the installer, not the language.
 
 ## Content and analysis
 
-- **Company extraction for CRM.** Push the "companies mentioned" list to a CRM
-  or spreadsheet.
 - **Investment-thesis generation.** Turn recurring themes across episodes into
-  structured investment or research theses.
-- **The summary's format.** The summary prompt asks for no headings, which
-  the local model often ignores; every display (episode page, emails, HTML
-  export) now shows its titles and lists. Either ask for that format in the
-  prompt, or keep tolerating both.
+  structured investment or research theses. Decided 2026-11-14: automatic
+  and weekly, the daily run finding themes that recur across several of the
+  past week's episodes, drafting a thesis for each and listing them in the
+  report email.
 
 ## Testing
 

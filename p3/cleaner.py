@@ -214,7 +214,9 @@ Transcript:
 # Short (~300 word) overview for a quick read. The long-form study notes
 # (_SECTION_NOTES_PROMPT) complement it rather than replace it.
 _SHORT_SUMMARY_PROMPT = (
-    """Write a summary of this podcast episode in about 300 words. This is not a marketing blurb or episode synopsis (the kind of thing you'd find on the podcast's website); skip scene-setting like "In this episode, X sits down with Y to discuss...". Go straight into substance: what the episode covers, the main arguments or claims made, and the concrete takeaways. Return only the summary text, no headings or commentary.
+    """Write a summary of this podcast episode in about 300 words. This is not a marketing blurb or episode synopsis (the kind of thing you'd find on the podcast's website); skip scene-setting like "In this episode, X sits down with Y to discuss...". Go straight into substance: what the episode covers, the main arguments or claims made, and the concrete takeaways.
+
+Format it as two to four short sections. Start each section with a title of a few words in bold on a line of its own (for example **The main argument**), then a short paragraph or a list of points, each on its own line starting with "- ". Make the last section **Takeaways**, a list of two to four points. Use bold only for those titles; no "#" headings, no title for the whole summary, and no introduction or commentary before or after it.
 
 """
     + _AD_RULE

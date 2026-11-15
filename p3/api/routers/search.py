@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from p3.api.auth import current_username
 from p3.api.deps import get_db
 from p3.api.models import SearchResult
+from p3.exporter import plain_text
 
 router = APIRouter(prefix="/api/search", tags=["search"])
 
@@ -111,7 +112,7 @@ def search(
                 "status": row["status"],
                 "title_match": row["title_match"],
                 "summary_snippet": (
-                    _snippet(row["summary_text"], query)
+                    _snippet(plain_text(row["summary_text"]), query)
                     if row["summary_match"]
                     else None
                 ),
