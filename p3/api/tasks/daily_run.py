@@ -317,7 +317,7 @@ def retry_report_email(username: str):
 MAX_BACKLOG_FAILURES = 3
 
 
-def unprocessed_episodes(db, username: str) -> list[dict]:
+def unprocessed_episodes(db, username: Optional[str]) -> list[dict]:
     """The user's episodes still unprocessed that have no job pending or
     running already, except one that failed MAX_BACKLOG_FAILURES times in a
     row."""
