@@ -314,3 +314,23 @@ class TestWhisperModelSetting:
 
     def test_default_is_turbo(self):
         assert AudioTranscriber(None).whisper_model == WHISPER_MODELS["turbo"]
+
+
+@pytest.mark.skipif(
+    not transcriber_module.FASTER_WHISPER_AVAILABLE,
+    reason="faster-whisper is installed on Linux and Windows",
+)
+def test_faster_whisper_can_read_audio(tmp_path):
+    """faster-whisper decodes the audio itself, through av, and av 19 broke
+    it: the first transcription failed on an argument av no longer takes."""
+    import wave
+
+    from faster_whisper.audio import decode_audio
+
+    path = tmp_path / "silence.wav"
+    with wave.open(str(path), "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(16000)
+        audio.writeframes(b"\x00\x00" * 8000)
+    assert len(decode_audio(str(path))) == 8000
