@@ -5,7 +5,7 @@ The question set and results are derived from the library, so they live in
 gitignored ``data/eval/``. A question is a dict::
 
     {"id": "q001", "question": "...", "language": "en" | "fr",
-     "stratum": "lookup" | "no_answer" | ...,
+     "stratum": "lookup" | "no_answer" | "broad" | ...,
      "relevant": [{"episode_id": 12, "start_s": 300.0, "end_s": 360.0}],
      "reference": "the expected answer, if known"}
 
@@ -16,6 +16,15 @@ repo root (the server must be stopped, or point --db at a copy)::
     python -m p3.eval_ask generate --db data/p3.duckdb --count 60
     python -m p3.eval_ask retrieval --db data/p3.duckdb
     python -m p3.eval_ask answers --db data/p3.duckdb   # slow: asks every question
+
+Broad questions ("what have my podcasts said about X?") are where the research
+step runs, with a hosted answer model; compare answers with and without it::
+
+    python -m p3.eval_ask generate --broad 15        # added to the question set
+    python -m p3.eval_ask answers --stratum broad --provider gemini --out with.json
+    python -m p3.eval_ask answers --stratum broad --provider gemini --no-research \
+        --out without.json
+    python -m p3.eval_ask compare with.json without.json
 """
 
 import argparse
@@ -230,6 +239,57 @@ def generate_questions(
                 ],
                 "reference": str(data.get("answer") or "").strip(),
                 "source_chunk": chunk_id,
+                "generated": True,
+            }
+        )
+    return questions
+
+
+def generate_broad_questions(
+    db: P3Database, count: int, min_episodes: int = 3, max_episodes: int = 12
+) -> List[Dict[str, Any]]:
+    """``count`` broad questions, one per company that the summaries of
+    between ``min_episodes`` and ``max_episodes`` indexed episodes name (more
+    than that and no answer could cite them all). Those episodes are the
+    relevant ones, so an answer is graded on how many of them it cites."""
+    rows = db.conn.execute(
+        "SELECT episode_id, startups FROM summaries "
+        "WHERE episode_id IN (SELECT DISTINCT episode_id FROM chunks) "
+        "ORDER BY episode_id"
+    ).fetchall()
+    episodes: Dict[str, set] = {}
+    spellings: Dict[str, Dict[str, int]] = {}
+    for episode_id, startups in rows:
+        try:
+            listed = json.loads(startups or "[]")
+        except ValueError:
+            continue
+        for company in listed if isinstance(listed, list) else []:
+            name = str(
+                (company.get("name") if isinstance(company, dict) else company) or ""
+            ).strip()
+            if not name:
+                continue
+            key = name.casefold()
+            episodes.setdefault(key, set()).add(episode_id)
+            forms = spellings.setdefault(key, {})
+            forms[name] = forms.get(name, 0) + 1
+    picked = sorted(
+        (k for k, ids in episodes.items() if min_episodes <= len(ids) <= max_episodes),
+        key=lambda k: (-len(episodes[k]), k),
+    )[:count]
+    questions = []
+    for i, key in enumerate(picked, start=1):
+        forms = spellings[key]
+        # The most used spelling; on a tie, a capitalized one.
+        name = max(forms, key=lambda f: (forms[f], f[:1].isupper(), f))
+        questions.append(
+            {
+                "id": f"b{i:03d}",
+                "question": f"What have my podcasts said about {name}?",
+                "language": "en",
+                "stratum": "broad",
+                "relevant": [{"episode_id": e} for e in sorted(episodes[key])],
                 "generated": True,
             }
         )
@@ -483,11 +543,26 @@ def _answer_row(asker: Any, judge: LLMClient, item: Dict[str, Any]) -> Dict[str,
         "cited": len(done.get("cited") or []),
         "invalid_citations": len(done.get("invalid_citations") or []),
     }
+    if row["stratum"] == "broad":
+        row.update(_breadth(item, done))
     if row["stratum"] == "no_answer":
         row["declined"] = done.get("mode") == "not_covered"
     elif done.get("mode") == "answer":
         row.update(judge_answer(judge, item, done))
     return row
+
+
+def _breadth(item: Dict[str, Any], done: Dict[str, Any]) -> Dict[str, Any]:
+    """How much of the library a broad answer drew on: the share of the
+    relevant episodes it cites, and whether the research step ran."""
+    relevant = {t["episode_id"] for t in item.get("relevant") or []}
+    cited = {s["episode_id"] for s in done.get("sources") or [] if s.get("cited")}
+    return {
+        "scope": (done.get("understanding") or {}).get("scope"),
+        "researched": "research" in (done.get("retrieval") or {}),
+        "episodes_cited": len(cited),
+        "episode_recall": len(cited & relevant) / len(relevant) if relevant else None,
+    }
 
 
 def _answer_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -496,6 +571,8 @@ def _answer_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     no_answer = [
         r for r in rows if r.get("stratum") == "no_answer" and "error" not in r
     ]
+
+    broad = [r for r in rows if r.get("stratum") == "broad" and "error" not in r]
 
     def mean(values: List[float]) -> Optional[float]:
         return statistics.fmean(values) if values else None
@@ -514,6 +591,20 @@ def _answer_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             [1.0 if r.get("declined") else 0.0 for r in no_answer]
         ),
         "errors": sum(1 for r in rows if "error" in r),
+        "broad": {
+            "n": len(broad),
+            "treated_as_broad": sum(1 for r in broad if r.get("scope") == "broad"),
+            "researched": sum(1 for r in broad if r.get("researched")),
+            "episode_recall": mean(
+                [
+                    r["episode_recall"]
+                    for r in broad
+                    if r.get("episode_recall") is not None
+                ]
+            ),
+            "episodes_cited": mean([float(r["episodes_cited"]) for r in broad]),
+            "seconds": mean([r["seconds"] for r in broad if r.get("seconds")]),
+        },
         **claim_summary(rows),
         "questions": rows,
     }
@@ -561,18 +652,47 @@ def compare(
     return paired_bootstrap([a[q] for q in shared], [b[q] for q in shared])
 
 
-def _judge(args) -> Optional[LLMClient]:
-    """The judge chosen on the command line, or None (the answering model)."""
-    if not args.judge_provider:
-        return None
+def compare_answers(before: Dict[str, Any], after: Dict[str, Any]) -> Dict[str, Any]:
+    """Paired bootstrap, over the questions both answer runs graded, of each
+    answer metric (broad questions' episode recall, correctness, support)."""
+
+    def per_question(result: Dict[str, Any], key: str) -> Dict[str, float]:
+        return {
+            q["id"]: float(q[key])
+            for q in result["questions"]
+            if q.get(key) is not None
+        }
+
+    out: Dict[str, Any] = {}
+    for key in ("episode_recall", "correct", "supported"):
+        a, b = per_question(before, key), per_question(after, key)
+        shared = sorted(set(a) & set(b))
+        if shared:
+            out[key] = {
+                "n": len(shared),
+                **paired_bootstrap([a[q] for q in shared], [b[q] for q in shared]),
+            }
+    return out
+
+
+def _configured_llm(
+    provider: str, model: Optional[str], num_ctx: Optional[int] = None
+) -> LLMClient:
+    """An LLM named on the command line, its model from the settings when
+    not given."""
     from .api.deps import read_config
     from .llm import resolve_provider_and_model
 
     settings = dict(read_config(paths.config_file()).get("settings", {}))
-    provider, model = resolve_provider_and_model(
-        settings, args.judge_provider, args.judge_model
-    )
-    return LLMClient(provider, model)
+    provider, model = resolve_provider_and_model(settings, provider, model)
+    return LLMClient(provider, model, num_ctx=num_ctx)
+
+
+def _judge(args) -> Optional[LLMClient]:
+    """The judge chosen on the command line, or None (the answering model)."""
+    if not args.judge_provider:
+        return None
+    return _configured_llm(args.judge_provider, args.judge_model)
 
 
 def _retriever(db: P3Database, rerank: bool) -> Retriever:
@@ -589,7 +709,35 @@ def main(argv: Optional[List[str]] = None):
     parser.add_argument("--db", default=str(paths.database()))
     parser.add_argument("--questions", default=str(QUESTIONS_FILE))
     parser.add_argument("--count", type=int, default=60)
-    parser.add_argument("--model", default=None, help="Ollama model for generation")
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="Ollama model for generation; answers: the answering model",
+    )
+    parser.add_argument(
+        "--broad",
+        type=int,
+        default=None,
+        metavar="N",
+        help="generate: add N broad questions to the question set, in place of "
+        "the generated broad ones, instead of writing lookups",
+    )
+    parser.add_argument(
+        "--provider",
+        default=None,
+        help="answers: the answering LLM (ollama, openai, gemini, anthropic); "
+        "default: Ollama. Broad questions get the research step with a hosted one",
+    )
+    parser.add_argument(
+        "--no-research",
+        action="store_true",
+        help="answers: keep broad questions on the fixed pipeline",
+    )
+    parser.add_argument(
+        "--stratum",
+        default=None,
+        help="answers: ask only the questions of this stratum (e.g. broad)",
+    )
     parser.add_argument("--no-rerank", action="store_true")
     parser.add_argument(
         "--judge-provider",
@@ -618,12 +766,27 @@ def main(argv: Optional[List[str]] = None):
 
     if args.command == "compare":
         before, after = (json.loads(Path(f).read_text()) for f in args.files)
-        print(json.dumps(compare(before, after), indent=2))
+        compared = (
+            compare_answers(before, after)
+            if "answered" in before
+            else compare(before, after)
+        )
+        print(json.dumps(compared, indent=2))
         return
 
     db = P3Database(args.db)
     try:
-        if args.command == "generate":
+        if args.command == "generate" and args.broad:
+            path = Path(args.out or args.questions)
+            kept = [
+                q
+                for q in (load_questions(path) if path.exists() else [])
+                if not (q.get("stratum") == "broad" and q.get("generated"))
+            ]
+            broad = generate_broad_questions(db, args.broad)
+            write_json(path, kept + broad)
+            print(f"Added {len(broad)} broad questions to {path}")
+        elif args.command == "generate":
             from .llm import DEFAULT_OLLAMA_MODEL
 
             llm = LLMClient("ollama", args.model or DEFAULT_OLLAMA_MODEL)
@@ -636,15 +799,36 @@ def main(argv: Optional[List[str]] = None):
             from .ask import Asker
             from .llm import DEFAULT_OLLAMA_MODEL
 
-            llm = LLMClient("ollama", args.model or DEFAULT_OLLAMA_MODEL, num_ctx=8192)
+            if args.provider:
+                llm = _configured_llm(args.provider, args.model, num_ctx=8192)
+            else:
+                llm = LLMClient(
+                    "ollama", args.model or DEFAULT_OLLAMA_MODEL, num_ctx=8192
+                )
             judge = _judge(args) or llm
             if args.stored:
                 result = evaluate_stored(db, judge, args.stored)
             else:
-                asker = Asker(db, _retriever(db, not args.no_rerank), llm, None)
-                result = evaluate_answers(
-                    asker, judge, load_questions(Path(args.questions))
+                asker = Asker(
+                    db,
+                    _retriever(db, not args.no_rerank),
+                    llm,
+                    None,
+                    research=not args.no_research,
                 )
+                questions = load_questions(Path(args.questions))
+                if args.stratum:
+                    questions = [
+                        q
+                        for q in questions
+                        if q.get("stratum", "lookup") == args.stratum
+                    ]
+                result = evaluate_answers(asker, judge, questions)
+                result["run"] = {
+                    "llm": f"{llm.provider}:{llm.model}",
+                    "research": not args.no_research,
+                    "stratum": args.stratum,
+                }
             out = Path(
                 args.out
                 or EVAL_DIR / "results" / f"answers-{datetime.now():%Y%m%d-%H%M}.json"

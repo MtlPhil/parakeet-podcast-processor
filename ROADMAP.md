@@ -34,10 +34,12 @@ item, docs updated with each:
    faster-whisper, now kept below it); the frontend has tests (Vitest:
    `MarkdownText`, the Podcasts sort, tags, the page language, the API
    client), run by CI, and its shared components and the job follower are
-   tested in a DOM (jsdom and Testing Library).
-2. Next: Ask's evaluation with and without the research step, then
-   Ollama's tool calling against it, once there are stored answers to
-   grade. Nothing else is unblocked.
+   tested in a DOM (jsdom and Testing Library); the desktop app is on hold;
+   Ask's evaluation can compare answers with and without the research
+   step, on broad questions it generates from the companies several
+   episodes name.
+2. Next: run that comparison on the library with Gemini, then try
+   Ollama's tool calling against it. Nothing else is unblocked.
 
 On hold: secrets in the keychain and timing transcription on Linux and
 Windows (no machine to test on); real Anthropic and OpenAI requests
@@ -93,9 +95,11 @@ and the installer, not the language.
      - Run the claim judge on real answers once there are some
        (`python -m p3.eval_ask answers --stored 50 --judge-provider gemini`)
        and act on what it finds.
-     - Tools for the model: done for broad questions with a hosted model.
-       Left: run the evaluation with and without research, and try Ollama's
-       tool calling against it before giving local models the tools.
+     - Tools for the model: done for broad questions with a hosted model,
+       and the evaluation compares answers with and without them
+       (`generate --broad`, `answers --stratum broad --provider gemini
+       [--no-research]`, `compare`). Left: run it, and try Ollama's tool
+       calling against it before giving local models the tools.
 4. **A desktop app.** Done: `p3-app` opens P³ in a native window with the
    server inside it, and the web app can be installed on a phone's home
    screen or a computer's Dock. On hold (2026-11-15): without a signed

@@ -473,3 +473,84 @@ def test_with_nothing_found_the_closest_passages_stay(db):
     assert done["mode"] == "not_covered"
     assert done["sources"]  # the closest passages, as without research
     assert "The first search found 0 passages" in llm.tool_messages[0][0]["content"]
+
+
+# ----------------------------------------------------------------------
+# Evaluating answers with and without research
+# ----------------------------------------------------------------------
+
+
+def test_broad_questions_come_from_companies_several_episodes_name(db):
+    from p3.eval_ask import generate_broad_questions
+
+    e1, e2 = _library(db)
+    db.add_summary(e1, [], [], [], ["Acme", "Globex"], "S1")
+    db.add_summary(e2, [], [], [], ["acme", "Initech"], "S2")
+    p = db.add_podcast("Not indexed", "http://example.com/n")
+    e3 = db.add_episode(p, "Unindexed", datetime(2026, 10, 2), "http://x/3")
+    db.add_summary(e3, [], [], [], ["Acme", "Globex"], "S3")
+
+    questions = generate_broad_questions(db, 5, min_episodes=2)
+    assert [q["question"] for q in questions] == [
+        "What have my podcasts said about Acme?"
+    ]
+    assert questions[0]["stratum"] == "broad"
+    assert questions[0]["relevant"] == [{"episode_id": e1}, {"episode_id": e2}]
+    assert generate_broad_questions(db, 5, min_episodes=2, max_episodes=1) == []
+
+
+def test_broad_answers_are_graded_on_the_episodes_they_cite(db):
+    from p3.eval_ask import evaluate_answers
+
+    e1, e2 = _library(db)
+
+    class Judge:
+        provider, model, is_configured = "fake", "judge", True
+
+        def chat(self, system, user, max_tokens=300):
+            return '{"correct": 2, "supported": 1.0, "unsupported": []}'
+
+    question = {
+        "id": "b001",
+        "question": "How did rates and phones come up?",
+        "stratum": "broad",
+        "relevant": [{"episode_id": e1}, {"episode_id": e2}],
+    }
+    runs = {}
+    for research in (True, False):
+        llm = ToolLLM([[("search_passages", {"query": "new phone camera"})]])
+        asker = _asker(db, llm)
+        asker.research = research
+        runs[research] = (evaluate_answers(asker, Judge(), [question]), llm)
+
+    with_research, llm = runs[True]
+    row = with_research["questions"][0]
+    assert row["scope"] == "broad" and row["researched"] is True
+    assert row["episodes_cited"] >= 1
+    assert row["episode_recall"] == row["episodes_cited"] / 2
+    assert with_research["broad"]["n"] == 1
+    assert with_research["broad"]["researched"] == 1
+    assert llm.tool_messages
+
+    without, llm = runs[False]
+    assert without["questions"][0]["researched"] is False
+    assert without["broad"]["researched"] == 0 and llm.tool_messages == []
+
+
+def test_two_answer_runs_are_compared_question_by_question():
+    from p3.eval_ask import compare_answers
+
+    def run(recalls):
+        return {
+            "answered": len(recalls),
+            "questions": [
+                {"id": f"b{i}", "episode_recall": r, "correct": 2, "supported": 1.0}
+                for i, r in enumerate(recalls)
+            ]
+            + [{"id": "q1", "stratum": "no_answer", "declined": True}],
+        }
+
+    compared = compare_answers(run([0.2] * 20), run([0.6] * 20))
+    assert compared["episode_recall"]["n"] == 20
+    assert compared["episode_recall"]["low"] > 0
+    assert compared["correct"]["mean_diff"] == 0.0

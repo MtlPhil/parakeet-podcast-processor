@@ -473,10 +473,13 @@ class Asker:
         default_language: str = "en",
         min_free_memory: int = 0,
         web_searcher: Any = None,
+        research: bool = True,
     ):
         """``default_language`` (the user's setting) is used when the
         question's own language can't be told. ``web_searcher``
-        (``p3.websearch``) searches the web for questions asked with it."""
+        (``p3.websearch``) searches the web for questions asked with it.
+        ``research`` False keeps broad questions on the fixed pipeline (for
+        the evaluation's comparison)."""
         self.db = db
         self.retriever = retriever
         self.llm = llm if llm is not None and llm.is_configured else None
@@ -490,6 +493,7 @@ class Asker:
         # taken free memory down to 1%.
         self.min_free_memory = min_free_memory
         self.web_searcher = web_searcher
+        self.research = research
 
     def _room_for_local_model(self) -> bool:
         if (
@@ -550,7 +554,8 @@ class Asker:
         """Whether broad questions get the research step (p3/ask_tools.py):
         a hosted answer model that takes tools."""
         return (
-            self.llm is not None
+            self.research
+            and self.llm is not None
             and self.llm.provider in TOOL_PROVIDERS
             and hasattr(self.llm, "chat_tools")
         )
