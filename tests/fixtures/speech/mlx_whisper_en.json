@@ -1,0 +1,267 @@
+{
+ "text": " Welcome to Workbench Radio, I'm Maya Okafor. Today we talk about fixing old bikes. Thanks Maya. Most old bikes only need a new chain, and a steel frame lasts for decades.",
+ "segments": [
+  {
+   "id": 0,
+   "seek": 0,
+   "start": 0.0,
+   "end": 5.34,
+   "text": " Welcome to Workbench Radio, I'm Maya Okafor. Today we talk about fixing old bikes.",
+   "tokens": [
+    50365,
+    4027,
+    281,
+    6603,
+    47244,
+    17296,
+    11,
+    286,
+    478,
+    21695,
+    422,
+    2330,
+    2994,
+    13,
+    2692,
+    321,
+    751,
+    466,
+    19442,
+    1331,
+    16035,
+    13,
+    50633
+   ],
+   "temperature": 0.0,
+   "avg_logprob": -0.11508211882218071,
+   "compression_ratio": 1.2878787878787878,
+   "no_speech_prob": 1.566837046391989e-12,
+   "words": [
+    {
+     "word": " Welcome",
+     "start": 0.0,
+     "end": 0.3,
+     "probability": 0.95458984375
+    },
+    {
+     "word": " to",
+     "start": 0.3,
+     "end": 0.52,
+     "probability": 0.99853515625
+    },
+    {
+     "word": " Workbench",
+     "start": 0.52,
+     "end": 0.96,
+     "probability": 0.97314453125
+    },
+    {
+     "word": " Radio,",
+     "start": 0.96,
+     "end": 1.38,
+     "probability": 0.98046875
+    },
+    {
+     "word": " I'm",
+     "start": 1.72,
+     "end": 2.0,
+     "probability": 0.9990234375
+    },
+    {
+     "word": " Maya",
+     "start": 2.0,
+     "end": 2.18,
+     "probability": 0.78369140625
+    },
+    {
+     "word": " Okafor.",
+     "start": 2.18,
+     "end": 2.86,
+     "probability": 0.984375
+    },
+    {
+     "word": " Today",
+     "start": 3.1,
+     "end": 3.44,
+     "probability": 0.99951171875
+    },
+    {
+     "word": " we",
+     "start": 3.44,
+     "end": 3.62,
+     "probability": 0.99853515625
+    },
+    {
+     "word": " talk",
+     "start": 3.62,
+     "end": 3.9,
+     "probability": 1.0
+    },
+    {
+     "word": " about",
+     "start": 3.9,
+     "end": 4.2,
+     "probability": 1.0
+    },
+    {
+     "word": " fixing",
+     "start": 4.2,
+     "end": 4.58,
+     "probability": 0.99853515625
+    },
+    {
+     "word": " old",
+     "start": 4.58,
+     "end": 4.9,
+     "probability": 0.99951171875
+    },
+    {
+     "word": " bikes.",
+     "start": 4.9,
+     "end": 5.34,
+     "probability": 1.0
+    }
+   ]
+  },
+  {
+   "id": 1,
+   "seek": 0,
+   "start": 5.66,
+   "end": 10.98,
+   "text": " Thanks Maya. Most old bikes only need a new chain, and a steel frame lasts for decades.",
+   "tokens": [
+    50651,
+    2561,
+    21695,
+    13,
+    4534,
+    1331,
+    16035,
+    787,
+    643,
+    257,
+    777,
+    5021,
+    11,
+    293,
+    257,
+    8269,
+    3920,
+    20669,
+    337,
+    7878,
+    13,
+    50926
+   ],
+   "temperature": 0.0,
+   "avg_logprob": -0.11508211882218071,
+   "compression_ratio": 1.2878787878787878,
+   "no_speech_prob": 1.566837046391989e-12,
+   "words": [
+    {
+     "word": " Thanks",
+     "start": 5.66,
+     "end": 6.02,
+     "probability": 0.99951171875
+    },
+    {
+     "word": " Maya.",
+     "start": 6.02,
+     "end": 6.3,
+     "probability": 0.97998046875
+    },
+    {
+     "word": " Most",
+     "start": 6.58,
+     "end": 6.84,
+     "probability": 0.99951171875
+    },
+    {
+     "word": " old",
+     "start": 6.84,
+     "end": 7.08,
+     "probability": 1.0
+    },
+    {
+     "word": " bikes",
+     "start": 7.08,
+     "end": 7.4,
+     "probability": 1.0
+    },
+    {
+     "word": " only",
+     "start": 7.4,
+     "end": 7.7,
+     "probability": 1.0
+    },
+    {
+     "word": " need",
+     "start": 7.7,
+     "end": 7.98,
+     "probability": 1.0
+    },
+    {
+     "word": " a",
+     "start": 7.98,
+     "end": 8.08,
+     "probability": 1.0
+    },
+    {
+     "word": " new",
+     "start": 8.08,
+     "end": 8.26,
+     "probability": 1.0
+    },
+    {
+     "word": " chain,",
+     "start": 8.26,
+     "end": 8.72,
+     "probability": 0.99951171875
+    },
+    {
+     "word": " and",
+     "start": 8.92,
+     "end": 9.18,
+     "probability": 0.99951171875
+    },
+    {
+     "word": " a",
+     "start": 9.18,
+     "end": 9.32,
+     "probability": 0.99951171875
+    },
+    {
+     "word": " steel",
+     "start": 9.32,
+     "end": 9.56,
+     "probability": 1.0
+    },
+    {
+     "word": " frame",
+     "start": 9.56,
+     "end": 9.92,
+     "probability": 0.99951171875
+    },
+    {
+     "word": " lasts",
+     "start": 9.92,
+     "end": 10.34,
+     "probability": 0.9990234375
+    },
+    {
+     "word": " for",
+     "start": 10.34,
+     "end": 10.58,
+     "probability": 0.99755859375
+    },
+    {
+     "word": " decades.",
+     "start": 10.58,
+     "end": 10.98,
+     "probability": 1.0
+    }
+   ]
+  }
+ ],
+ "language": "en"
+}

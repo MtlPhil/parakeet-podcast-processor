@@ -1,0 +1,386 @@
+{
+ "sentences": [
+  {
+   "text": " Welcome to Workbench Radio, I'm Maya Okafor.",
+   "start": 0.0,
+   "end": 3.2800000000000002,
+   "confidence": 0.9819483639841017,
+   "tokens": [
+    {
+     "text": " W",
+     "start": 0.0,
+     "end": 0.08
+    },
+    {
+     "text": "el",
+     "start": 0.08,
+     "end": 0.16
+    },
+    {
+     "text": "c",
+     "start": 0.16,
+     "end": 0.24
+    },
+    {
+     "text": "ome",
+     "start": 0.24,
+     "end": 0.32
+    },
+    {
+     "text": " to",
+     "start": 0.32,
+     "end": 0.48
+    },
+    {
+     "text": " W",
+     "start": 0.48,
+     "end": 0.64
+    },
+    {
+     "text": "ork",
+     "start": 0.64,
+     "end": 0.8
+    },
+    {
+     "text": "ben",
+     "start": 0.8,
+     "end": 0.9600000000000001
+    },
+    {
+     "text": "ch",
+     "start": 0.96,
+     "end": 1.1199999999999999
+    },
+    {
+     "text": " R",
+     "start": 1.12,
+     "end": 1.2000000000000002
+    },
+    {
+     "text": "ad",
+     "start": 1.2,
+     "end": 1.3599999999999999
+    },
+    {
+     "text": "io",
+     "start": 1.36,
+     "end": 1.52
+    },
+    {
+     "text": ",",
+     "start": 1.52,
+     "end": 1.6
+    },
+    {
+     "text": " I",
+     "start": 1.6,
+     "end": 1.6800000000000002
+    },
+    {
+     "text": "'",
+     "start": 1.68,
+     "end": 1.76
+    },
+    {
+     "text": "m",
+     "start": 1.76,
+     "end": 1.84
+    },
+    {
+     "text": " Ma",
+     "start": 1.84,
+     "end": 2.0
+    },
+    {
+     "text": "ya",
+     "start": 2.0,
+     "end": 2.08
+    },
+    {
+     "text": " O",
+     "start": 2.4,
+     "end": 2.56
+    },
+    {
+     "text": "ka",
+     "start": 2.56,
+     "end": 2.64
+    },
+    {
+     "text": "for",
+     "start": 2.8000000000000003,
+     "end": 2.9600000000000004
+    },
+    {
+     "text": ".",
+     "start": 3.12,
+     "end": 3.2800000000000002
+    }
+   ]
+  },
+  {
+   "text": " Today we talk about fixing old bikes.",
+   "start": 3.2800000000000002,
+   "end": 5.6000000000000005,
+   "confidence": 0.9996404265458759,
+   "tokens": [
+    {
+     "text": " Toda",
+     "start": 3.2800000000000002,
+     "end": 3.4400000000000004
+    },
+    {
+     "text": "y",
+     "start": 3.44,
+     "end": 3.52
+    },
+    {
+     "text": " we",
+     "start": 3.6,
+     "end": 3.7600000000000002
+    },
+    {
+     "text": " tal",
+     "start": 3.7600000000000002,
+     "end": 3.9200000000000004
+    },
+    {
+     "text": "k",
+     "start": 3.92,
+     "end": 4.08
+    },
+    {
+     "text": " about",
+     "start": 4.08,
+     "end": 4.24
+    },
+    {
+     "text": " fi",
+     "start": 4.24,
+     "end": 4.4
+    },
+    {
+     "text": "x",
+     "start": 4.4,
+     "end": 4.5600000000000005
+    },
+    {
+     "text": "ing",
+     "start": 4.5600000000000005,
+     "end": 4.720000000000001
+    },
+    {
+     "text": " ol",
+     "start": 4.72,
+     "end": 4.8
+    },
+    {
+     "text": "d",
+     "start": 4.8,
+     "end": 4.96
+    },
+    {
+     "text": " b",
+     "start": 4.96,
+     "end": 5.12
+    },
+    {
+     "text": "ik",
+     "start": 5.12,
+     "end": 5.2
+    },
+    {
+     "text": "es",
+     "start": 5.2,
+     "end": 5.36
+    },
+    {
+     "text": ".",
+     "start": 5.36,
+     "end": 5.6000000000000005
+    }
+   ]
+  },
+  {
+   "text": " Thanks Maya.",
+   "start": 5.6000000000000005,
+   "end": 6.640000000000001,
+   "confidence": 0.9836802321651668,
+   "tokens": [
+    {
+     "text": " Th",
+     "start": 5.6000000000000005,
+     "end": 5.680000000000001
+    },
+    {
+     "text": "an",
+     "start": 5.68,
+     "end": 5.84
+    },
+    {
+     "text": "ks",
+     "start": 5.84,
+     "end": 5.92
+    },
+    {
+     "text": " Ma",
+     "start": 6.0,
+     "end": 6.16
+    },
+    {
+     "text": "ya",
+     "start": 6.16,
+     "end": 6.32
+    },
+    {
+     "text": ".",
+     "start": 6.48,
+     "end": 6.640000000000001
+    }
+   ]
+  },
+  {
+   "text": " Most old bikes only need a new chain, and a steel frame lasts for decades.",
+   "start": 6.640000000000001,
+   "end": 11.44,
+   "confidence": 0.9966947747047958,
+   "tokens": [
+    {
+     "text": " M",
+     "start": 6.640000000000001,
+     "end": 6.720000000000001
+    },
+    {
+     "text": "ost",
+     "start": 6.72,
+     "end": 6.88
+    },
+    {
+     "text": " ol",
+     "start": 6.88,
+     "end": 6.96
+    },
+    {
+     "text": "d",
+     "start": 6.96,
+     "end": 7.2
+    },
+    {
+     "text": " b",
+     "start": 7.2,
+     "end": 7.28
+    },
+    {
+     "text": "ik",
+     "start": 7.28,
+     "end": 7.44
+    },
+    {
+     "text": "es",
+     "start": 7.44,
+     "end": 7.6000000000000005
+    },
+    {
+     "text": " only",
+     "start": 7.6000000000000005,
+     "end": 7.840000000000001
+    },
+    {
+     "text": " need",
+     "start": 7.84,
+     "end": 8.0
+    },
+    {
+     "text": " a",
+     "start": 8.0,
+     "end": 8.16
+    },
+    {
+     "text": " ne",
+     "start": 8.16,
+     "end": 8.24
+    },
+    {
+     "text": "w",
+     "start": 8.24,
+     "end": 8.48
+    },
+    {
+     "text": " cha",
+     "start": 8.48,
+     "end": 8.64
+    },
+    {
+     "text": "in",
+     "start": 8.64,
+     "end": 8.8
+    },
+    {
+     "text": ",",
+     "start": 8.8,
+     "end": 8.96
+    },
+    {
+     "text": " and",
+     "start": 8.96,
+     "end": 9.120000000000001
+    },
+    {
+     "text": " a",
+     "start": 9.120000000000001,
+     "end": 9.280000000000001
+    },
+    {
+     "text": " ste",
+     "start": 9.28,
+     "end": 9.52
+    },
+    {
+     "text": "el",
+     "start": 9.52,
+     "end": 9.68
+    },
+    {
+     "text": " fra",
+     "start": 9.68,
+     "end": 9.92
+    },
+    {
+     "text": "me",
+     "start": 9.92,
+     "end": 10.16
+    },
+    {
+     "text": " last",
+     "start": 10.16,
+     "end": 10.32
+    },
+    {
+     "text": "s",
+     "start": 10.32,
+     "end": 10.56
+    },
+    {
+     "text": " for",
+     "start": 10.56,
+     "end": 10.72
+    },
+    {
+     "text": " dec",
+     "start": 10.72,
+     "end": 11.040000000000001
+    },
+    {
+     "text": "ades",
+     "start": 11.040000000000001,
+     "end": 11.360000000000001
+    },
+    {
+     "text": ".",
+     "start": 11.36,
+     "end": 11.44
+    }
+   ]
+  }
+ ]
+}
