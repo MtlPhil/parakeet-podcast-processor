@@ -24,9 +24,9 @@ item, docs updated with each:
    provider; a show's hosts are recognized by voice in its later episodes;
    the summary prompt asks for a set format (bold section titles, short
    paragraphs or lists, Takeaways last); an end-to-end smoke test runs
-   `p3 fetch`, `transcribe`, `digest` and `export` on a sample feed.
-2. Next, Testing: recorded-fixture integration tests, a CI job for
-   `install.sh`.
+   `p3 fetch`, `transcribe`, `digest` and `export` on a sample feed; CI
+   runs `install.sh` on a macOS runner (install, update, uninstall).
+2. Next, Testing: recorded-fixture integration tests.
 
 On hold: secrets in the keychain and timing transcription on Linux and
 Windows (no machine to test on); real Anthropic and OpenAI requests
@@ -108,4 +108,3 @@ and the installer, not the language.
 
 - Integration coverage for the CLI commands, transcription backends and LLM
   request paths, using recorded fixtures rather than live services.
-- A CI job that runs `install.sh` on a macOS runner.
