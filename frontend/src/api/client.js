@@ -4,7 +4,7 @@ const BASE = '/api';
 // URLs ignore that header, so it is applied via the <a download> attribute.
 // The real name comes percent-encoded in filename*; filename is its ASCII
 // approximation.
-function filenameFromResponse(res, fallback) {
+export function filenameFromResponse(res, fallback) {
   const header = res.headers.get('Content-Disposition') || '';
   const encoded = /filename\*=UTF-8''([^;]+)/i.exec(header);
   if (encoded) {
