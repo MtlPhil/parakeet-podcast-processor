@@ -822,7 +822,9 @@ temporary database), the job queue and task wrappers, text-processing helpers
 in the cleaner and writer, the exporters, the LLM client's configuration logic,
 and the RSS and YouTube download paths with the network mocked out, plus an
 end-to-end run of `p3 fetch`, `transcribe`, `digest` and `export` on a sample
-feed. The speech engines are replaced by stand-ins. The LLM and embedding
+feed. The speech engines are replayed from what mlx-whisper, Parakeet and
+faster-whisper returned on short recorded clips (`tests/test_recorded_speech.py`;
+`tests/fixtures/speech/record.py` records them again). The LLM and embedding
 requests of the digest, `p3 write`, LinkedIn posts, Ask and Gemini's chat,
 streaming and tool calls go out through P³'s own request code and are
 answered from recordings of real models (`tests/test_recorded.py`, replayed

@@ -29,8 +29,11 @@ item, docs updated with each:
    manual fetch goes on through the whole chain; a step-by-step guide to
    trying P³ on Linux or Windows, with the container finding Ollama on its
    host; the digest, `p3 write`, LinkedIn posts, Ask and Gemini's requests
-   are tested on recordings of real models.
-2. Next, Testing: the transcription backends on recorded model outputs.
+   are tested on recordings of real models, and the transcription backends
+   on what the real speech engines returned (which found av 19 breaking
+   faster-whisper, now kept below it).
+2. Next, Web app: frontend tests (a JavaScript test framework, starting with
+   `MarkdownText` and the pages' pure logic).
 
 On hold: secrets in the keychain and timing transcription on Linux and
 Windows (no machine to test on); real Anthropic and OpenAI requests
@@ -113,5 +116,7 @@ and the installer, not the language.
 - Integration coverage on recorded fixtures rather than live services.
   Done: the LLM and embedding request paths (Ollama and Gemini) and the
   CLI's `digest`, `write` and `export-transcript`
-  (`tests/test_recorded.py`). Still to do: the transcription backends
-  (mlx-whisper, Parakeet, faster-whisper) on their recorded output.
+  (`tests/test_recorded.py`), and the transcription backends (mlx-whisper,
+  Parakeet, faster-whisper) on their recorded output
+  (`tests/test_recorded_speech.py`). Language detection itself is not
+  replayed (it runs MLX on the audio).
