@@ -16,7 +16,8 @@ machine. OpenAI and Gemini are supported as optional hosted backends.
 on an NVIDIA GPU if there is one; Parakeet is Apple Silicon only. This path
 is new: it is covered by tests with a stand-in model, and has not yet been
 run on real episodes or timed. The quickest way to try it is the
-[container](#container). The one-command installer is still Mac only.
+[container](#container); [docs/linux-and-windows.md](docs/linux-and-windows.md)
+walks through it step by step. The one-command installer is still Mac only.
 
 P³ ships as both a command-line tool (`p3`) and a web app (FastAPI + React).
 
