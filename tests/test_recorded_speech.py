@@ -11,6 +11,7 @@ is not replayed: it runs MLX code on the audio.
 """
 
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -54,13 +55,12 @@ def engines(monkeypatch):
     calls: dict = {}
     for flag in ("WHISPER_AVAILABLE", "PARAKEET_AVAILABLE", "FASTER_WHISPER_AVAILABLE"):
         monkeypatch.setattr(transcriber_module, flag, False)
-    # What unload_models touches when MLX is there.
-    monkeypatch.setattr(
-        transcriber_module,
-        "mx",
-        SimpleNamespace(clear_cache=lambda: None),
-        raising=False,
-    )
+    # What unload_models touches when MLX is there; with Parakeet alone it
+    # imports mlx.core itself, which isn't installed off the Mac.
+    mx = SimpleNamespace(clear_cache=lambda: None)
+    monkeypatch.setattr(transcriber_module, "mx", mx, raising=False)
+    monkeypatch.setitem(sys.modules, "mlx", SimpleNamespace(core=mx))
+    monkeypatch.setitem(sys.modules, "mlx.core", mx)
     monkeypatch.setattr(
         transcriber_module,
         "ModelHolder",
