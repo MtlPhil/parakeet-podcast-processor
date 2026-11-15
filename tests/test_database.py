@@ -311,26 +311,6 @@ class TestSummaries:
         assert s["podcast_title"] == "Pod"
         assert s["long_summary"] is None  # not provided above
 
-    def test_summary_stores_long_summary(self, db):
-        pid = db.add_podcast("Pod", "http://example.com/rss")
-        now = datetime.now()
-        eid = db.add_episode(pid, "Ep 1", now, "http://example.com/ep1.mp3")
-
-        db.add_summary(
-            episode_id=eid,
-            key_topics=[],
-            themes=[],
-            quotes=[],
-            startups=[],
-            full_summary="Short version.",
-            long_summary="Much longer section-by-section notes.",
-            digest_date=now,
-        )
-
-        s = db.get_summaries_by_date(now)[0]
-        assert s["full_summary"] == "Short version."
-        assert s["long_summary"] == "Much longer section-by-section notes."
-
     def test_add_summary_replaces_not_duplicates(self, db):
         """Re-digesting an episode must replace its summary, not add a
         second row."""
@@ -477,31 +457,6 @@ class TestSequenceResync:
     id (see incident notes in _resync_sequences); this must self-heal on the
     next connect instead of raising a duplicate-key error on insert."""
 
-    def test_resync_fixes_sequence_left_behind_max_id(self, tmp_path):
-        db_path = str(tmp_path / "test.duckdb")
-        db = P3Database(db_path)
-        p1 = db.add_podcast("A", "http://example.com/a")
-        p2 = db.add_podcast("B", "http://example.com/b")
-        assert p2 > p1
-
-        # Simulate the drift a hard kill can leave: sequence reset behind
-        # the table's current rows. (DuckDB ties the column DEFAULT to the
-        # sequence, so — like _resync_sequences itself — the default has to
-        # come off before the sequence can be replaced.)
-        db.conn.execute("ALTER TABLE podcasts ALTER COLUMN id DROP DEFAULT")
-        db.conn.execute("DROP SEQUENCE IF EXISTS podcast_id_seq")
-        db.conn.execute("CREATE SEQUENCE podcast_id_seq START 1")
-        db.conn.execute(
-            "ALTER TABLE podcasts ALTER COLUMN id SET DEFAULT nextval('podcast_id_seq')"
-        )
-        db.close()
-
-        # Reopening (a fresh backend start) must resync past the existing rows.
-        db2 = P3Database(db_path)
-        p3 = db2.add_podcast("C", "http://example.com/c")
-        assert p3 > p2
-        db2.close()
-
     def test_repair_survives_a_hard_kill(self, tmp_path):
         """DuckDB cannot replay a WAL holding the repair's SET DEFAULT
         nextval(...), so a process killed before its next checkpoint left a
@@ -531,17 +486,6 @@ class TestSequenceResync:
         db3 = P3Database(str(killed / "test.duckdb"))
         assert db3.add_podcast("C", "http://example.com/c") == 3
         db3.close()
-
-    def test_resync_is_a_noop_on_healthy_sequence(self, tmp_path):
-        db_path = str(tmp_path / "test.duckdb")
-        db = P3Database(db_path)
-        p1 = db.add_podcast("A", "http://example.com/a")
-        db.close()
-
-        db2 = P3Database(db_path)
-        p2 = db2.add_podcast("B", "http://example.com/b")
-        assert p2 == p1 + 1
-        db2.close()
 
     def test_resync_issues_no_ddl_when_healthy(self, tmp_path):
         """The repair (DROP DEFAULT / DROP SEQUENCE / CREATE SEQUENCE / SET

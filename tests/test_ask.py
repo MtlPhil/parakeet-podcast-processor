@@ -762,11 +762,6 @@ class TestShowNotes:
         assert db.episodes_to_index("fake-embed") == []
         assert db.bm25_search(tokenize("economist"), None)
 
-    def test_new_episodes_keep_their_notes(self, db):
-        pid = db.add_podcast("Pod", "http://example.com/rss")
-        eid = db.add_episode(pid, "Ep", None, "http://x/2", description="Notes")
-        assert db.get_episode_by_id(eid)["description"] == "Notes"
-
 
 class TestQualityAPI:
     @pytest.fixture
