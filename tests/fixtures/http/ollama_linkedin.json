@@ -1,0 +1,110 @@
+{
+ "exchanges": [
+  {
+   "request": {
+    "method": "POST",
+    "url": "http://localhost:11434/api/chat",
+    "body": {
+     "json": {
+      "model": "gemma4:12b",
+      "stream": false,
+      "options": {
+       "num_predict": 4000,
+       "repeat_penalty": 1.3,
+       "num_ctx": 32768
+      },
+      "keep_alive": 0.0,
+      "messages": [
+       {
+        "role": "system",
+        "content": "You are a professional writer creating LinkedIn posts that summarize podcast insights for a business audience."
+       },
+       {
+        "role": "user",
+        "content": "Write a LinkedIn post about this podcast episode.\n\nSource Material:\nSource 1: Tomás Reyes on fixing old bikes from Workbench Radio\nSummary: **Old bikes are worth fixing**\nTomás Reyes says most discarded bikes need a chain, not a replacement.\n\n**Takeaways**\n- Take an old bike to a community shop before buying a new one\nKey Topics: Bicycle repair, Right to repair\nThemes: Repair over replacement\nNotable Quotes: ['A chain costs twenty dollars and ten minutes.']\nCompanies Mentioned: \n\nRequirements:\n- Professional tone for a business/tech LinkedIn audience\n- 150-200 words\n- Strong hook in the first line\n- Reference the episode and podcast by name\n- Share the most interesting insight or argument, not a generic teaser\n- End with a short takeaway or a question inviting engagement\n- At most 3 relevant hashtags at the end, no hashtag spam\n\nReturn only the post text."
+       }
+      ],
+      "tools": [],
+      "think": false
+     }
+    }
+   },
+   "response": {
+    "status": 200,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+     "json": {
+      "model": "gemma4:12b",
+      "created_at": "2026-11-15T15:05:24.022616Z",
+      "message": {
+       "role": "assistant",
+       "content": "Stop treating discarded products as waste before you’ve explored their repair potential.\n\nIn a recent episode of Workbench Radio featuring Tomás Reyes, we dive into a critical perspective on product longevity: most \"broken\" bikes don't actually need to be replaced—they just need maintenance. \n\nReyes argues that the industry often overlooks simple fixes in favor of consumption-driven replacement cycles. Specifically, he highlights how many bicycles are abandoned simply because they lack proper upkeep; for instance, a worn chain can stall an entire machine’s utility when it only takes twenty dollars and ten minutes to resolve. This is more than just bicycle maintenance—it is a fundamental conversation about the \"Right to Repair\" and our responsibility as consumers/manufacturers to prioritize durability over disposal.\n\nBefore you click 'buy' on your next replacement, consider taking an old model to a community shop first. It’s often a matter of minor parts rather than major structural failure. \n\nCould adopting a repair-first mindset significantly reduce waste in other manufacturing sectors? Let me know your thoughts below.\n\n#RightToRepair #Sustainability #CircularEconomy"
+      },
+      "done": true,
+      "done_reason": "stop",
+      "total_duration": 33758560625,
+      "load_duration": 14939915459,
+      "prompt_eval_count": 235,
+      "prompt_eval_cached_count": 0,
+      "prompt_eval_duration": 2236079292,
+      "eval_count": 225,
+      "eval_duration": 16581059791
+     }
+    }
+   }
+  },
+  {
+   "request": {
+    "method": "POST",
+    "url": "http://localhost:11434/api/chat",
+    "body": {
+     "json": {
+      "model": "gemma4:12b",
+      "stream": false,
+      "options": {
+       "num_predict": 4000,
+       "repeat_penalty": 1.3,
+       "num_ctx": 32768
+      },
+      "keep_alive": 0.0,
+      "messages": [
+       {
+        "role": "system",
+        "content": "Tu es un rédacteur professionnel qui écrit en français québécois."
+       },
+       {
+        "role": "user",
+        "content": "Traduis et adapte le texte suivant (billet LinkedIn) en français québécois (pas le français de France : utilise le vocabulaire, les tournures et le registre du Québec). Garde le même sens, le même ton et une longueur similaire. Si le texte est déjà en français québécois, retourne-le tel quel.\n\nTexte original :\nStop treating discarded products as waste before you’ve explored their repair potential.\n\nIn a recent episode of Workbench Radio featuring Tomás Reyes, we dive into a critical perspective on product longevity: most \"broken\" bikes don't actually need to be replaced—they just need maintenance. \n\nReyes argues that the industry often overlooks simple fixes in favor of consumption-driven replacement cycles. Specifically, he highlights how many bicycles are abandoned simply because they lack proper upkeep; for instance, a worn chain can stall an entire machine’s utility when it only takes twenty dollars and ten minutes to resolve. This is more than just bicycle maintenance—it is a fundamental conversation about the \"Right to Repair\" and our responsibility as consumers/manufacturers to prioritize durability over disposal.\n\nBefore you click 'buy' on your next replacement, consider taking an old model to a community shop first. It’s often a matter of minor parts rather than major structural failure. \n\nCould adopting a repair-first mindset significantly reduce waste in other manufacturing sectors? Let me know your thoughts below.\n\n#RightToRepair #Sustainability #CircularEconomy\n\nRetourne uniquement le texte, sans commentaire."
+       }
+      ],
+      "tools": [],
+      "think": false
+     }
+    }
+   },
+   "response": {
+    "status": 200,
+    "content_type": "application/json; charset=utf-8",
+    "body": {
+     "json": {
+      "model": "gemma4:12b",
+      "created_at": "2026-11-15T15:06:05.954627Z",
+      "message": {
+       "role": "assistant",
+       "content": "Arrêtez de considérer les produits jetés comme des déchets avant d'avoir exploré leur potentiel de réparation.\n\nDans un épisode récent de Workbench Radio avec Tomás Reyes, on explore une perspective essentielle sur la durée de vie des objets : la plupart des vélos « brisés » n’ont pas besoin d'être remplacés — ils ont juste besoin d'un peu d'entretien.\n\nReyes soutient que l’industrie néglige souvent les réparations simples au profit de cycles de consommation qui poussent à racheter du neuf. Plus précisément, il souligne comment beaucoup de vélos sont abandonnés simplement par manque d'entretien ; par exemple, une chaîne usée peut rendre un vélo complètement inutilisable alors qu'il ne faut que vingt dollars et dix minutes pour régler le problème. Ça va au-delà de l’entretien de vélo — c’est une discussion fondamentale sur le « droit à la réparation » et notre responsabilité, en tant que consommateurs et manufacturiers, de prioriser la durabilité plutôt que le jetable.\n\nAvant d'acheter un nouveau modèle, pensez à apporter votre vieux vélo dans une boutique communautaire pour lui donner une deuxième chance. Souvent, c’est juste une petite pièce qui manque plutôt qu'une faille majeure.\n\nEst-ce qu'adopter un réflexe de réparation pourrait réduire considérablement les déchets dans d'autres secteurs manufacturiers ? Dites-moi ce que vous en pensez dans les commentaires ci-dessous.\n\n#DroitÀLaRéparation #DéveloppementDurable #ÉconomieCirculaire"
+      },
+      "done": true,
+      "done_reason": "stop",
+      "total_duration": 41909810000,
+      "load_duration": 14363305208,
+      "prompt_eval_count": 343,
+      "prompt_eval_cached_count": 0,
+      "prompt_eval_duration": 3291777542,
+      "eval_count": 325,
+      "eval_duration": 24252073500
+     }
+    }
+   }
+  }
+ ]
+}

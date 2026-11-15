@@ -822,8 +822,17 @@ temporary database), the job queue and task wrappers, text-processing helpers
 in the cleaner and writer, the exporters, the LLM client's configuration logic,
 and the RSS and YouTube download paths with the network mocked out, plus an
 end-to-end run of `p3 fetch`, `transcribe`, `digest` and `export` on a sample
-feed. The speech engines and the LLM are replaced by stand-ins: model
-inference and real LLM requests are not exercised.
+feed. The speech engines are replaced by stand-ins. The LLM and embedding
+requests of the digest, `p3 write`, LinkedIn posts, Ask and Gemini's chat,
+streaming and tool calls go out through P³'s own request code and are
+answered from recordings of real models (`tests/test_recorded.py`, replayed
+by `tests/cassette.py` at httpx's transport). After changing a prompt or a
+request, record them again with Ollama running (`gemma4:12b`, `bge-m3`) and
+a Gemini key:
+
+```bash
+P3_RECORD=1 uv run pytest tests/test_recorded.py
+```
 
 See [ROADMAP.md](ROADMAP.md) for planned work.
 

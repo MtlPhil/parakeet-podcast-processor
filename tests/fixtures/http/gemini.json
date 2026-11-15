@@ -1,0 +1,336 @@
+{
+ "exchanges": [
+  {
+   "request": {
+    "method": "POST",
+    "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent",
+    "body": {
+     "json": {
+      "systemInstruction": {
+       "parts": [
+        {
+         "text": "Answer in one short sentence."
+        }
+       ]
+      },
+      "contents": [
+       {
+        "role": "user",
+        "parts": [
+         {
+          "text": "What is a bicycle?"
+         }
+        ]
+       }
+      ],
+      "generationConfig": {
+       "maxOutputTokens": 2000,
+       "temperature": 0.2,
+       "thinkingConfig": {
+        "thinkingBudget": 0
+       }
+      }
+     }
+    }
+   },
+   "response": {
+    "status": 200,
+    "content_type": "application/json; charset=UTF-8",
+    "body": {
+     "json": {
+      "candidates": [
+       {
+        "content": {
+         "parts": [
+          {
+           "text": "A bicycle is a human-powered vehicle with two wheels, a frame, pedals, and handlebars for steering.",
+           "thoughtSignature": "EmkKZwFpFH0TnxA78QMV2jKWpEOzXZCtANb4UMsTwuBnvSKHRpP6l7akK+IQ35wgcHNBNE6wUgNP/YM6kGDL5urT3SdvmnClBzOWhSuCOv/5JNoc1XpZahruDIQf6HsORcoDe1V6hgTSmtM="
+          }
+         ],
+         "role": "model"
+        },
+        "finishReason": "STOP",
+        "index": 0
+       }
+      ],
+      "usageMetadata": {
+       "promptTokenCount": 12,
+       "candidatesTokenCount": 22,
+       "totalTokenCount": 34,
+       "promptTokensDetails": [
+        {
+         "modality": "TEXT",
+         "tokenCount": 12
+        }
+       ],
+       "serviceTier": "standard"
+      },
+      "modelVersion": "gemini-3.6-flash",
+      "responseId": "ns35av7jBsys0_gP0ur0kQ0"
+     }
+    }
+   }
+  },
+  {
+   "request": {
+    "method": "POST",
+    "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:streamGenerateContent",
+    "body": {
+     "json": {
+      "systemInstruction": {
+       "parts": [
+        {
+         "text": "Answer in one short sentence."
+        }
+       ]
+      },
+      "contents": [
+       {
+        "role": "user",
+        "parts": [
+         {
+          "text": "What is a wheel?"
+         }
+        ]
+       }
+      ],
+      "generationConfig": {
+       "maxOutputTokens": 2000,
+       "temperature": 0.2,
+       "thinkingConfig": {
+        "thinkingBudget": 0
+       }
+      }
+     }
+    }
+   },
+   "response": {
+    "status": 200,
+    "content_type": "text/event-stream",
+    "body": {
+     "text": "data: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \"A wheel\"}],\"role\": \"model\"},\"index\": 0}],\"usageMetadata\": {\"promptTokenCount\": 12,\"candidatesTokenCount\": 2,\"totalTokenCount\": 14,\"promptTokensDetails\": [{\"modality\": \"TEXT\",\"tokenCount\": 12}],\"serviceTier\": \"standard\"},\"modelVersion\": \"gemini-3.6-flash\",\"responseId\": \"n835asqDAZCrytMPs_rLmAM\"}\r\n\r\ndata: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \" is a circular component that rotates on an axle to allow heavy objects to roll easily across\"}],\"role\": \"model\"},\"index\": 0}],\"usageMetadata\": {\"promptTokenCount\": 12,\"candidatesTokenCount\": 19,\"totalTokenCount\": 31,\"promptTokensDetails\": [{\"modality\": \"TEXT\",\"tokenCount\": 12}],\"serviceTier\": \"standard\"},\"modelVersion\": \"gemini-3.6-flash\",\"responseId\": \"n835asqDAZCrytMPs_rLmAM\"}\r\n\r\ndata: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \" a surface.\"}],\"role\": \"model\"},\"index\": 0}],\"usageMetadata\": {\"promptTokenCount\": 12,\"candidatesTokenCount\": 22,\"totalTokenCount\": 34,\"promptTokensDetails\": [{\"modality\": \"TEXT\",\"tokenCount\": 12}],\"serviceTier\": \"standard\"},\"modelVersion\": \"gemini-3.6-flash\",\"responseId\": \"n835asqDAZCrytMPs_rLmAM\"}\r\n\r\ndata: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \"\",\"thoughtSignature\": \"EmkKZwFpFH0T1bGtWgV/Z6EWlEQujmR45o7o7dyxzxxckZDuhx1/i4whGfAgzkk6YZ+k9RlP35CRFu6JJcHOdd+8fEN+AvWtxbN5dLDiAs5d5PM8L6Gvlee2LDFVtvcTI3k+8O3eX7gNWuY=\"}],\"role\": \"model\"},\"finishReason\": \"STOP\",\"index\": 0}],\"usageMetadata\": {\"promptTokenCount\": 12,\"candidatesTokenCount\": 22,\"totalTokenCount\": 34,\"promptTokensDetails\": [{\"modality\": \"TEXT\",\"tokenCount\": 12}],\"serviceTier\": \"standard\"},\"modelVersion\": \"gemini-3.6-flash\",\"responseId\": \"n835asqDAZCrytMPs_rLmAM\"}\r\n\r\n"
+    }
+   }
+  },
+  {
+   "request": {
+    "method": "POST",
+    "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent",
+    "body": {
+     "json": {
+      "systemInstruction": {
+       "parts": [
+        {
+         "text": "You answer questions about a podcast library."
+        }
+       ]
+      },
+      "contents": [
+       {
+        "role": "user",
+        "parts": [
+         {
+          "text": "How many episodes mention bicycles? Call count_mentions."
+         }
+        ]
+       }
+      ],
+      "generationConfig": {
+       "maxOutputTokens": 1000,
+       "temperature": 0.2,
+       "thinkingConfig": {
+        "thinkingBudget": 0
+       }
+      },
+      "tools": [
+       {
+        "functionDeclarations": [
+         {
+          "name": "count_mentions",
+          "description": "How many episodes of the library mention a word.",
+          "parameters": {
+           "type": "object",
+           "properties": {
+            "word": {
+             "type": "string"
+            }
+           },
+           "required": [
+            "word"
+           ]
+          }
+         }
+        ]
+       }
+      ]
+     }
+    }
+   },
+   "response": {
+    "status": 200,
+    "content_type": "application/json; charset=UTF-8",
+    "body": {
+     "json": {
+      "candidates": [
+       {
+        "content": {
+         "parts": [
+          {
+           "functionCall": {
+            "name": "count_mentions",
+            "args": {
+             "word": "bicycles"
+            },
+            "id": "call_4126759836159610246"
+           },
+           "thoughtSignature": "EmkKZwFpFH0T9HO+Mf6ZGN5jLP/Q7x0HXWeQTbQSAXjtC/Mq9xXQTIHCv9dyViLXz0BVsbmm8SPQoaRID2PT4loYI7KcrHIasUV5T+ySFihmdT2m5p6Mhl9fVsh2WgrcJ4izIW2/LJLX+Pc="
+          }
+         ],
+         "role": "model"
+        },
+        "finishReason": "STOP",
+        "index": 0,
+        "finishMessage": "Model generated function call(s)."
+       }
+      ],
+      "usageMetadata": {
+       "promptTokenCount": 69,
+       "candidatesTokenCount": 18,
+       "totalTokenCount": 87,
+       "promptTokensDetails": [
+        {
+         "modality": "TEXT",
+         "tokenCount": 69
+        }
+       ],
+       "serviceTier": "standard"
+      },
+      "modelVersion": "gemini-3.6-flash",
+      "responseId": "oM35aqp_sOXk2g-xs4DxAQ"
+     }
+    }
+   }
+  },
+  {
+   "request": {
+    "method": "POST",
+    "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent",
+    "body": {
+     "json": {
+      "systemInstruction": {
+       "parts": [
+        {
+         "text": "You answer questions about a podcast library."
+        }
+       ]
+      },
+      "contents": [
+       {
+        "role": "user",
+        "parts": [
+         {
+          "text": "How many episodes mention bicycles? Call count_mentions."
+         }
+        ]
+       },
+       {
+        "role": "model",
+        "parts": [
+         {
+          "functionCall": {
+           "name": "count_mentions",
+           "args": {
+            "word": "bicycles"
+           },
+           "id": "call_4126759836159610246"
+          },
+          "thoughtSignature": "EmkKZwFpFH0T9HO+Mf6ZGN5jLP/Q7x0HXWeQTbQSAXjtC/Mq9xXQTIHCv9dyViLXz0BVsbmm8SPQoaRID2PT4loYI7KcrHIasUV5T+ySFihmdT2m5p6Mhl9fVsh2WgrcJ4izIW2/LJLX+Pc="
+         }
+        ]
+       },
+       {
+        "role": "user",
+        "parts": [
+         {
+          "functionResponse": {
+           "name": "count_mentions",
+           "response": {
+            "result": "{\"episodes\": 3}"
+           },
+           "id": "call_4126759836159610246"
+          }
+         }
+        ]
+       }
+      ],
+      "generationConfig": {
+       "maxOutputTokens": 1000,
+       "temperature": 0.2,
+       "thinkingConfig": {
+        "thinkingBudget": 0
+       }
+      },
+      "tools": [
+       {
+        "functionDeclarations": [
+         {
+          "name": "count_mentions",
+          "description": "How many episodes of the library mention a word.",
+          "parameters": {
+           "type": "object",
+           "properties": {
+            "word": {
+             "type": "string"
+            }
+           },
+           "required": [
+            "word"
+           ]
+          }
+         }
+        ]
+       }
+      ]
+     }
+    }
+   },
+   "response": {
+    "status": 200,
+    "content_type": "application/json; charset=UTF-8",
+    "body": {
+     "json": {
+      "candidates": [
+       {
+        "content": {
+         "parts": [
+          {
+           "text": "There are 3 episodes that mention bicycles.",
+           "thoughtSignature": "EmkKZwFpFH0TpQIWTkv6fZLz7LRP5VRJWkl3Akp3QLwDGVHmMYrxYyHLLPqFEVERcFm6AgF6OqHiZXOQG7LmlXc0V5zSSBHu3pOYD6CJpc4fKLM625t/NvodYBmc/fIN9Wwj8+Sl2AgY3SE="
+          }
+         ],
+         "role": "model"
+        },
+        "finishReason": "STOP",
+        "index": 0
+       }
+      ],
+      "usageMetadata": {
+       "promptTokenCount": 108,
+       "candidatesTokenCount": 9,
+       "totalTokenCount": 117,
+       "promptTokensDetails": [
+        {
+         "modality": "TEXT",
+         "tokenCount": 108
+        }
+       ],
+       "serviceTier": "standard"
+      },
+      "modelVersion": "gemini-3.6-flash",
+      "responseId": "oM35aqvPKvejuMYPjffdwQs"
+     }
+    }
+   }
+  }
+ ]
+}
