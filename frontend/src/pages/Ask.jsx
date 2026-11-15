@@ -559,6 +559,8 @@ const fromStored = (m) => ({
   webSources: m.web_sources || [],
 });
 
+const LOST = 'The connection was lost; the answer is still being written and will appear here.';
+
 export default function Ask() {
   const { me } = useMe();
   const [params, setParams] = useSearchParams();
@@ -572,6 +574,9 @@ export default function Ask() {
   const [error, setError] = useState(null);
   const [status, setStatus] = useState(null);
   const [showThreads, setShowThreads] = useState(false);
+  // Bumped when the stream drops mid-answer: loads the thread again, which
+  // checks back until the answer is stored.
+  const [reload, setReload] = useState(0);
   // Optional limits the user sets; empty means the question decides.
   const [podcasts, setPodcasts] = useState([]);
   const [filters, setFilters] = useState({ podcast: '', after: '', before: '' });
@@ -623,6 +628,7 @@ export default function Ask() {
               : stored
           );
           if (t.answering) timer = setTimeout(load, 4000);
+          else setError((e) => (e === LOST ? null : e)); // it has arrived
         })
         .catch((e) => setError(e.message));
     load();
@@ -630,9 +636,10 @@ export default function Ask() {
       cancelled = true;
       clearTimeout(timer);
     };
-    // Only when the thread changes; a running answer updates messages itself.
+    // Only when the thread changes (or a dropped stream asks again); a
+    // running answer updates messages itself.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [threadId]);
+  }, [threadId, reload]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: 'end' });
@@ -710,11 +717,16 @@ export default function Ask() {
           web: webOn || undefined,
         }
       );
-      // The connection dropped before the answer ended: it is still being
-      // written and stored server-side; reopening the thread shows it.
-      if (!finished) throw new Error('The connection was lost; the answer will appear when you reopen this conversation.');
+      // The stream ended before the answer did.
+      if (!finished) throw new Error(LOST);
     } catch (err) {
-      if (err.name !== 'AbortError') setError(err.message);
+      // The question is stored and the server reported no failure: the
+      // connection dropped (Safari says only "Load failed"). The answer is
+      // still being written server-side: load the thread again, which checks
+      // back until it's stored.
+      const dropped = stored && !finished && err.name !== 'AbortError';
+      if (err.name !== 'AbortError') setError(dropped ? LOST : err.message);
+      if (dropped) setReload((n) => n + 1);
       if (!stored) {
         // Refused (e.g. another answer is being written): take it back off.
         setMessages((prev) => prev.slice(0, -2));
