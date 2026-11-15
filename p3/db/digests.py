@@ -17,9 +17,10 @@ class Digests(Library):
                 "DELETE FROM transcripts WHERE episode_id = ?", (episode_id,)
             )
             # A new transcript's speaker labels needn't mean the same people.
-            self.conn.execute(
-                "DELETE FROM episode_speakers WHERE episode_id = ?", (episode_id,)
-            )
+            for table in ("episode_speakers", "speaker_voices"):
+                self.conn.execute(
+                    f"DELETE FROM {table} WHERE episode_id = ?", (episode_id,)
+                )
             if segments:
                 self.conn.executemany(
                     """
@@ -42,12 +43,23 @@ class Digests(Library):
                 )
 
     def store_transcript(
-        self, episode_id: int, segments: List[Dict[str, Any]], language: Optional[str]
+        self,
+        episode_id: int,
+        segments: List[Dict[str, Any]],
+        language: Optional[str],
+        voices: Optional[Dict[str, List[float]]] = None,
     ):
         """Store a finished transcription: the segments, the language
-        detected, and the episode's new status, together."""
+        detected, the voice of each speaker label ({label: embedding}, from
+        diarization) and the episode's new status, together."""
         with self.transaction():
             self.add_transcript_segments(episode_id, segments)
+            if voices:
+                self.conn.executemany(
+                    "INSERT INTO speaker_voices (episode_id, label, embedding) "
+                    "VALUES (?, ?, ?)",
+                    [(episode_id, label, v) for label, v in voices.items()],
+                )
             self.set_episode_language(episode_id, language)
             self.update_episode_status(episode_id, "transcribed")
 
@@ -88,6 +100,44 @@ class Digests(Library):
             row["label"]: {k: row[k] for k in ("name", "role", "seconds")}
             for row in self._fetchall_as_dicts(cursor)
         }
+
+    def get_speaker_voices(self, episode_id: int) -> Dict[str, List[float]]:
+        """{label: embedding} for an episode's speakers; {} for a transcript
+        stored without them."""
+        cursor = self.conn.execute(
+            "SELECT label, embedding FROM speaker_voices WHERE episode_id = ?",
+            (episode_id,),
+        )
+        return {
+            row["label"]: list(row["embedding"])
+            for row in self._fetchall_as_dicts(cursor)
+        }
+
+    def known_host_voices(
+        self, podcast_id: int, episode_id: int, limit: int = 50
+    ) -> List[Dict[str, Any]]:
+        """The voices of a podcast's named hosts in its other episodes, the
+        most recent first: [{name, episode_id, embedding}]. A host is a
+        label named with the role "host", by the naming LLM, by voice or by
+        an admin's rename."""
+        cursor = self.conn.execute(
+            """
+            SELECT s.name, v.episode_id, v.embedding
+            FROM speaker_voices v
+            JOIN episode_speakers s
+                ON s.episode_id = v.episode_id AND s.label = v.label
+            JOIN episodes e ON e.id = v.episode_id
+            WHERE e.podcast_id = ? AND e.id <> ?
+                AND s.role = 'host' AND s.name IS NOT NULL
+            ORDER BY e.date DESC NULLS LAST, e.id DESC
+            LIMIT ?
+        """,
+            (podcast_id, episode_id, limit),
+        )
+        rows = self._fetchall_as_dicts(cursor)
+        for row in rows:
+            row["embedding"] = list(row["embedding"])
+        return rows
 
     def get_transcripts_for_episode(self, episode_id: int) -> List[Dict[str, Any]]:
         """Get all transcript segments for an episode."""

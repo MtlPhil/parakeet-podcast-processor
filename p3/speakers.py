@@ -3,9 +3,10 @@
     audio -> diarize (pyannote: anonymous turns, SPEAKER_00, SPEAKER_01, ...)
           -> align (each transcript word gets the turn covering it; segments
              are split where the speaker changes)
-          -> name (one LLM call per episode, from the show notes, the
-             opening minutes and a few lines of each speaker; a name must
-             appear in that text)
+          -> name (a host whose voice was heard in the show's earlier
+             episodes is recognized by it; then one LLM call per episode,
+             from the show notes, the opening minutes and a few lines of
+             each speaker; a name must appear in that text)
 
 Diarization runs inside the transcription step, once the transcription
 models are unloaded and while the audio is still on disk (the digest deletes
@@ -19,10 +20,11 @@ import difflib
 import gc
 import importlib.util
 import logging
+import math
 import re
 import time
 import unicodedata
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .cleaner import _extract_json
 from .llm import LLMClient, resolve_provider_and_model
@@ -48,6 +50,13 @@ BLIP_SECONDS = 1.0
 # and turn edges are each off by a few tenths of a second.
 MIN_RUN_WORDS = 2
 MIN_RUN_SECONDS = 0.5
+
+# Two voices this close (cosine similarity of the diarization model's
+# speaker embeddings) are taken for the same person. Measured on four
+# episodes of one show: its host 0.77-0.955 across episodes (0.71 between
+# the two labels diarization split them into), different people 0.34 at
+# most (docs/ask-plan.md, Phase 7).
+VOICE_MATCH = 0.7
 
 ROLES = ("host", "guest", "ad", "intro", "other")
 # Labels shown for voices without a person's name.
@@ -80,8 +89,11 @@ class Diarizer:
         pipeline.to(torch.device(self._device))
         self._pipeline = pipeline
 
-    def diarize(self, audio_path: str) -> List[Dict[str, Any]]:
-        """The speaker turns of a WAV file: ``start``, ``end``, ``speaker``."""
+    def diarize(
+        self, audio_path: str
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, List[float]]]:
+        """The speaker turns of a WAV file (``start``, ``end``, ``speaker``)
+        and each speaker's voice: {label: embedding}."""
         import torchaudio
 
         self._load()
@@ -93,13 +105,16 @@ class Diarizer:
             {"start": float(s.start), "end": float(s.end), "speaker": str(label)}
             for s, _, label in annotation.itertracks(yield_label=True)
         ]
+        voices = _voices(
+            annotation.labels(), getattr(result, "speaker_embeddings", None)
+        )
         logger.info(
             "Diarized %.0f min in %.0f s: %d turns",
             waveform.shape[1] / rate / 60,
             time.monotonic() - t,
             len(turns),
         )
-        return turns
+        return turns, voices
 
     def release(self):
         if self._pipeline is None:
@@ -111,6 +126,19 @@ class Diarizer:
 
             torch.mps.empty_cache()
         logger.info("Released the diarization model")
+
+
+def _voices(labels: List[str], embeddings: Any) -> Dict[str, List[float]]:
+    """{label: embedding}, pyannote's embeddings being in ``labels`` order;
+    a speaker with too little speech for one (NaN) is left out."""
+    if embeddings is None:
+        return {}
+    voices = {}
+    for label, row in zip(labels, embeddings):
+        vector = [float(x) for x in row]
+        if all(math.isfinite(x) for x in vector):
+            voices[str(label)] = vector
+    return voices
 
 
 def make_diarizer(settings: Dict[str, Any]) -> Optional[Diarizer]:
@@ -494,21 +522,70 @@ def parse_names(
     return names
 
 
+def _cosine(a: List[float], b: List[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    norm = math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b))
+    return dot / norm if norm else 0.0
+
+
+def recognize_voices(
+    voices: Dict[str, List[float]], known: List[Dict[str, Any]]
+) -> Dict[str, str]:
+    """{label: host name} for the labels whose voice is within
+    ``VOICE_MATCH`` of a host's voice in another episode (``known``:
+    ``P3Database.known_host_voices``), the closest name if several. Two
+    labels may get the same name: diarization sometimes splits one voice
+    in two."""
+    recognized: Dict[str, str] = {}
+    for label, voice in voices.items():
+        best, name = VOICE_MATCH, None
+        for entry in known:
+            score = _cosine(voice, entry["embedding"])
+            if score >= best:
+                best, name = score, entry["name"]
+        if name:
+            logger.info("Recognized %s's voice in %s (%.2f)", name, label, best)
+            recognized[label] = name
+    return recognized
+
+
+def _recognized_hosts(db, episode_id: int, labels: List[str]) -> Dict[str, str]:
+    episode = db.get_episode_by_id(episode_id) or {}
+    voices = db.get_speaker_voices(episode_id)
+    voices = {label: v for label, v in voices.items() if label in labels}
+    if not voices or not episode.get("podcast_id"):
+        return {}
+    known = db.known_host_voices(episode["podcast_id"], episode_id)
+    return recognize_voices(voices, known) if known else {}
+
+
 def name_speakers(db, episode_id: int, llm) -> Dict[str, Dict[str, Any]]:
-    """Name an episode's speaker labels with one LLM call and store the
-    result (``P3Database.replace_episode_speakers``). Returns what was
-    stored; {} when the transcript has no speakers."""
+    """Name an episode's speaker labels and store the result
+    (``P3Database.replace_episode_speakers``): hosts whose voice is known
+    from the show's other episodes by voice, then the rest with one LLM
+    call (none when every voice was recognized). Returns what was stored;
+    {} when the transcript has no speakers."""
     segments = db.get_transcripts_for_episode(episode_id)
     stats = speaker_stats(segments)
     if not stats:
         return {}
-    names: Dict[str, Dict[str, Optional[str]]] = {}
-    if llm is not None and getattr(llm, "is_configured", False):
+    hosts = _recognized_hosts(db, episode_id, list(stats))
+    names: Dict[str, Dict[str, Optional[str]]] = {
+        label: {"name": name, "role": "host"} for label, name in hosts.items()
+    }
+    unnamed = [label for label in stats if label not in hosts]
+    if unnamed and llm is not None and getattr(llm, "is_configured", False):
         episode = db.get_episode_by_id(episode_id) or {}
         prompt = name_prompt(episode, segments, stats)
         try:
             reply = llm.chat(_NAME_SYSTEM, prompt, max_tokens=800)
-            names = parse_names(reply, list(stats), prompt)
+            taken = {_fold(name) for name in hosts.values()}
+            for label, entry in parse_names(reply, list(stats), prompt).items():
+                if label in hosts:
+                    continue
+                if entry["name"] and _fold(entry["name"]) in taken:
+                    entry = {"name": None, "role": entry["role"]}
+                names[label] = entry
         except Exception as e:
             logger.warning("Naming speakers of episode %d failed: %s", episode_id, e)
     rows = {

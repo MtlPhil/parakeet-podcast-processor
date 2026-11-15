@@ -400,6 +400,18 @@ class Schema(Connection):
             "ALTER TABLE ask_messages ADD COLUMN IF NOT EXISTS flagged VARCHAR"
         )
 
+    def _speaker_voices(self):
+        """Migration 7: each speaker label's voice fingerprint (the
+        diarization model's embedding), stored with the transcript, so a
+        show's host is recognized in its later episodes (p3/speakers.py)."""
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS speaker_voices (
+                episode_id INTEGER NOT NULL,
+                label VARCHAR NOT NULL,
+                embedding FLOAT[] NOT NULL
+            )
+        """)
+
     _MIGRATIONS = (
         _baseline,
         _ask_index,
@@ -407,6 +419,7 @@ class Schema(Connection):
         _episode_guid,
         _episode_speakers,
         _citation_flags,
+        _speaker_voices,
     )
 
     def _resync_sequences(self):

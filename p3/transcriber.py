@@ -15,7 +15,7 @@ TranscriptionError and leaves the episode as it was, so it can be retried.
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .database import P3Database
 from .settings import DEFAULT_PARAKEET_MODEL, DEFAULT_WHISPER_MODEL, SHARED_DEFAULTS
@@ -320,25 +320,28 @@ class AudioTranscriber:
         segments = [s for s in result["segments"] if s["text"]]
         if not segments:
             raise TranscriptionError("No speech was found in the audio")
+        voices: Dict[str, List[float]] = {}
         if self.diarizer is not None:
-            segments = self._with_speakers(audio_path, segments)
+            segments, voices = self._with_speakers(audio_path, segments)
 
-        self.db.store_transcript(episode_id, segments, result.get("language"))
+        self.db.store_transcript(episode_id, segments, result.get("language"), voices)
         logger.info("Transcribed: %s", episode["title"])
 
     def _with_speakers(
         self, audio_path: str, segments: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
-        """``segments`` split by speaker; unchanged if diarization fails.
-        Only one model is in memory at a time: the transcription models go
-        first, the diarization model after."""
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, List[float]]]:
+        """``segments`` split by speaker, and each speaker's voice; unchanged
+        and no voices if diarization fails. Only one model is in memory at a
+        time: the transcription models go first, the diarization model
+        after."""
         from .speakers import assign_speakers
 
         self.unload_models()
         try:
-            return assign_speakers(segments, self.diarizer.diarize(audio_path))
+            turns, voices = self.diarizer.diarize(audio_path)
+            return assign_speakers(segments, turns), voices
         except Exception as e:
             logger.warning("Diarization failed, storing without speakers: %s", e)
-            return segments
+            return segments, {}
         finally:
             self.diarizer.release()

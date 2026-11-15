@@ -15,11 +15,13 @@ from p3.chunker import transcript_chunks
 from p3.database import P3Database
 from p3.indexer import index_episode
 from p3.speakers import (
+    _voices,
     assign_speakers,
     clean_turns,
     display_names,
     name_speakers,
     parse_names,
+    recognize_voices,
     speaker_stats,
     speaker_text,
 )
@@ -333,6 +335,125 @@ class TestStorage:
         assert db.get_episode_speakers(episode) == {}
 
 
+class TestHostVoices:
+    """A host named in one episode is recognized by voice in the next."""
+
+    HOST = [1.0, 0.0, 0.0]
+    GUEST = [0.0, 1.0, 0.0]
+
+    def _show(self, db):
+        podcast = db.add_podcast("Les Dérangeants", "http://example.com/feed")
+        episodes = [
+            db.add_episode(podcast, f"Ép. {n}", datetime(2026, 10, n), f"http://x/{n}")
+            for n in (1, 2)
+        ]
+        return podcast, episodes
+
+    def _transcribed(self, db, episode, voices):
+        db.store_transcript(
+            episode,
+            [
+                {"start": 0, "end": 30, "speaker": "SPEAKER_00", "text": "Bonjour."},
+                {"start": 30, "end": 90, "speaker": "SPEAKER_01", "text": "Merci."},
+            ],
+            "fr",
+            voices,
+        )
+
+    def test_a_known_host_is_named_by_voice_and_the_llm_names_the_rest(self, db):
+        _, (first, second) = self._show(db)
+        self._transcribed(db, first, {"SPEAKER_00": self.HOST})
+        db.replace_episode_speakers(
+            first, {"SPEAKER_00": {"name": "Étienne Crevier", "role": "host"}}
+        )
+        # In the second episode the host is the other label, and the model
+        # wrongly gives the host's name to the guest's voice.
+        self._transcribed(
+            db, second, {"SPEAKER_01": [0.98, 0.1, 0.0], "SPEAKER_00": self.GUEST}
+        )
+        llm = FakeLLM(
+            {
+                "SPEAKER_00": {"name": "Étienne Crevier", "role": "host"},
+                "SPEAKER_01": {"name": "Merci", "role": "guest"},
+            }
+        )
+        stored = name_speakers(db, second, llm)
+        assert stored["SPEAKER_01"]["name"] == "Étienne Crevier"
+        assert stored["SPEAKER_01"]["role"] == "host"
+        assert stored["SPEAKER_00"]["name"] is None  # one label per name
+
+    def test_no_llm_call_when_every_voice_is_known(self, db):
+        _, (first, second) = self._show(db)
+        self._transcribed(
+            db, first, {"SPEAKER_00": self.HOST, "SPEAKER_01": self.GUEST}
+        )
+        db.replace_episode_speakers(
+            first,
+            {
+                "SPEAKER_00": {"name": "Étienne Crevier", "role": "host"},
+                "SPEAKER_01": {"name": "Dominique Gagnon", "role": "host"},
+            },
+        )
+        self._transcribed(
+            db, second, {"SPEAKER_00": self.GUEST, "SPEAKER_01": self.HOST}
+        )
+        llm = FakeLLM({})
+        stored = name_speakers(db, second, llm)
+        assert llm.prompts == []
+        assert stored["SPEAKER_00"]["name"] == "Dominique Gagnon"
+        assert stored["SPEAKER_01"]["name"] == "Étienne Crevier"
+
+    def test_only_named_hosts_of_the_same_show_are_remembered(self, db):
+        podcast, (first, second) = self._show(db)
+        other = db.add_podcast("Autre", "http://example.com/other")
+        elsewhere = db.add_episode(other, "Ép.", None, "http://y/1")
+        self._transcribed(
+            db, first, {"SPEAKER_00": self.HOST, "SPEAKER_01": self.GUEST}
+        )
+        db.replace_episode_speakers(
+            first,
+            {
+                "SPEAKER_00": {"name": None, "role": "host"},
+                "SPEAKER_01": {"name": "Joëlle Pineau", "role": "guest"},
+            },
+        )
+        self._transcribed(db, elsewhere, {"SPEAKER_00": self.HOST})
+        db.replace_episode_speakers(
+            elsewhere, {"SPEAKER_00": {"name": "Quelqu'un", "role": "host"}}
+        )
+        assert db.known_host_voices(podcast, second) == []
+
+    def test_unlike_voices_are_not_matched(self):
+        known = [{"name": "Étienne Crevier", "embedding": [1.0, 0.0]}]
+        assert recognize_voices({"A": [0.0, 1.0]}, known) == {}
+        assert recognize_voices({"A": [1.0, 0.01]}, known) == {"A": "Étienne Crevier"}
+
+    def test_a_host_split_in_two_labels_gets_both(self):
+        known = [
+            {"name": "Étienne Crevier", "embedding": [1.0, 0.0, 0.0]},
+            {"name": "Joëlle Pineau", "embedding": [0.0, 1.0, 0.0]},
+        ]
+        voices = {"A": [0.9, 0.3, 0.0], "B": [0.8, 0.0, 0.5], "C": [0.0, 0.0, 1.0]}
+        assert recognize_voices(voices, known) == {
+            "A": "Étienne Crevier",
+            "B": "Étienne Crevier",
+        }
+
+    def test_a_voice_too_short_to_embed_is_left_out(self):
+        nan = float("nan")
+        assert _voices(["A", "B"], [[0.5, 0.5], [nan, nan]]) == {"A": [0.5, 0.5]}
+        assert _voices(["A"], None) == {}
+
+    def test_a_new_transcript_forgets_its_voices(self, db):
+        _, (first, _) = self._show(db)
+        self._transcribed(db, first, {"SPEAKER_00": self.HOST})
+        _stored(first, db, [(0, 5, "A", "Hi.")])
+        assert db.get_speaker_voices(first) == {}
+        self._transcribed(db, first, {"SPEAKER_00": self.HOST})
+        db.purge_episode(first)
+        assert db.get_speaker_voices(first) == {}
+
+
 class TestWhereNamesShow:
     ROWS = [
         (0, 10, "A", "Bienvenue aux Dérangeants."),
@@ -445,7 +566,7 @@ class TestTranscriber:
         class FakeDiarizer:
             def diarize(self, path):
                 events.append("diarize")
-                return [_turn(0, 1.5, "A"), _turn(1.5, 4, "B")]
+                return [_turn(0, 1.5, "A"), _turn(1.5, 4, "B")], {"A": [1.0, 0.0]}
 
             def release(self):
                 events.append("release")
@@ -461,8 +582,9 @@ class TestTranscriber:
                 "words": _words(0, "Hi", "there.") + _words(1.5, "Hello", "you."),
             }
         ]
-        out = transcriber._with_speakers("a.wav", segments)
+        out, voices = transcriber._with_speakers("a.wav", segments)
         assert events == ["unload", "diarize", "release"]
+        assert voices == {"A": [1.0, 0.0]}
         assert [(s["speaker"], s["text"]) for s in out] == [
             ("A", "Hi there."),
             ("B", "Hello you."),
@@ -481,13 +603,13 @@ class TestTranscriber:
         transcriber = self._transcriber(db, Broken())
         transcriber.unload_models = lambda: None
         segments = [{"start": 0, "end": 1, "text": "Hi.", "words": []}]
-        assert transcriber._with_speakers("a.wav", segments) == segments
+        assert transcriber._with_speakers("a.wav", segments) == (segments, {})
         assert released == [True]
 
     def test_a_transcription_is_stored_with_its_speakers(self, db, tmp_path):
         class FakeDiarizer:
             def diarize(self, path):
-                return [_turn(0, 1.5, "A"), _turn(1.5, 4, "B")]
+                return [_turn(0, 1.5, "A"), _turn(1.5, 4, "B")], {"A": [0.5, 0.25]}
 
             def release(self):
                 pass
@@ -517,6 +639,7 @@ class TestTranscriber:
             ("A", "Salut toi."),
             ("B", "Bonjour vous."),
         ]
+        assert db.get_speaker_voices(episode) == {"A": [0.5, 0.25]}
         assert db.get_episode_by_id(episode)["status"] == "transcribed"
 
 
