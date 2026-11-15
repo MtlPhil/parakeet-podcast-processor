@@ -21,11 +21,10 @@ item, docs updated with each:
    unsupported); broad questions get a research step in which a hosted
    model calls read-only tools (search again, list episodes, read
    summaries, count mentions) before the answer, on tool calls for every
-   provider.
-2. Next, Speakers: remembering a show's host voice across episodes.
-3. Content and analysis: the summary's format, companies to a CRM,
+   provider; a show's hosts are recognized by voice in its later episodes.
+2. Next, Content and analysis: the summary's format, companies to a CRM,
    investment theses.
-4. Testing: recorded-fixture integration tests, an end-to-end smoke test,
+3. Testing: recorded-fixture integration tests, an end-to-end smoke test,
    a CI job for `install.sh`.
 
 On hold: secrets in the keychain and timing transcription on Linux and
@@ -70,10 +69,9 @@ and the installer, not the language.
      streamed and whole (the README's "LLM providers" shows how). Both are
      tested only with stand-ins; an OpenAI-compatible server (Ollama's)
      answered real ones.
-   - Speakers: done (diarization, names, citations that say who spoke).
-     Still to do: remembering a show's
-     host voice across episodes; speakers for episodes digested before,
-     whose audio is gone.
+   - Speakers: done (diarization, names, citations that say who spoke, a
+     show's hosts recognized by voice across episodes). Still to do:
+     speakers for episodes digested before, whose audio is gone.
    - Ask, from [docs/ask-plan.md](docs/ask-plan.md):
      - Check the attribution rules on a real broad question, answered by
        Gemini (decided 2026-11-14: answers by the writing LLM, Gemini on this

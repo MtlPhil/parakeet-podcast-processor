@@ -100,7 +100,7 @@ class Library(Schema):
         """,
             (podcast_id,),
         )
-        for table in ("transcripts", "episode_speakers"):
+        for table in ("transcripts", "episode_speakers", "speaker_voices"):
             self.conn.execute(
                 f"DELETE FROM {table} WHERE episode_id IN "
                 "(SELECT id FROM episodes WHERE podcast_id = ?)",
@@ -454,6 +454,7 @@ class Library(Schema):
             for table in (
                 "transcripts",
                 "episode_speakers",
+                "speaker_voices",
                 "summaries",
                 "jobs",
                 "chunk_terms",
