@@ -1,5 +1,5 @@
-"""The daily run: its chain of steps, the report email and its retries,
-and the backlog queued after it."""
+"""The daily run: its chain of steps (every unprocessed episode included),
+the report email and its retries."""
 
 import logging
 import smtplib
@@ -135,21 +135,15 @@ def daily_queue_fetches(run_id: str, username: str):
     job_runner.enqueue_priority(daily_queue_pipelines, run_id, username)
 
 
-def _run_since(db, run_id: str):
-    """When the run's first job was created (database clock), or None."""
-    created = [j["created_at"] for j in db.get_jobs_by_run(run_id) if j["created_at"]]
-    return min(created) if created else None
-
-
 def daily_queue_pipelines(run_id: str, username: str):
     """Daily run step: a full pipeline job, ahead of all other work, for each
-    episode this run's fetches brought into the user's library. Older
-    unprocessed episodes (the backlog) are left for after the report."""
+    of the user's unprocessed episodes (see unprocessed_episodes): the ones
+    this run's fetches brought in and older ones (picked by hand, failed
+    before), so the report covers them all."""
     db = get_db()
-    since = _run_since(db, run_id)
-    episodes = db.get_episodes_added_since(since, username) if since else []
+    episodes = unprocessed_episodes(db, username)
     job_ids = queue_step_jobs(db, episodes, "pipeline", run_id, username, priority=True)
-    logger.info("Daily run: queued %d new episode(s) for processing", len(job_ids))
+    logger.info("Daily run: queued %d episode(s) for processing", len(job_ids))
     job_runner.enqueue_priority(daily_queue_content, run_id, username)
 
 
@@ -230,7 +224,7 @@ def _all_fetches_failed(db, run_id: str) -> bool:
 
 def daily_finish(run_id: str, username: str):
     """Daily run step: mark the run finished, then email the user the run's
-    report if they asked for it.
+    report if they asked for it, then queue Ask's catch-up index job.
 
     If no feed could be read, the run is retried in RETRY_MINUTES instead
     (see scheduler.run_if_due), up to MAX_RUN_ATTEMPTS runs a day; the last
@@ -261,7 +255,7 @@ def daily_finish(run_id: str, username: str):
         if error:
             _schedule_email_retry(db, run_id, username, _unreachable(error))
     finally:
-        queue_backlog(db, username)
+        _queue_index_catch_up(db, username)
 
 
 def _unreachable(error: Exception) -> bool:
@@ -317,16 +311,16 @@ def retry_report_email(username: str):
         db.set_state(run_key("email_attempts", username), "")
 
 
-# The backlog stops retrying an episode whose pipeline failed this many
+# The daily run stops retrying an episode whose pipeline failed this many
 # times in a row (a broken audio file fails the same way every time). It
 # can still be run by hand, and a success starts the count over.
 MAX_BACKLOG_FAILURES = 3
 
 
-def queue_backlog(db, username: str) -> list[str]:
-    """After the report: a normal-lane pipeline job for each of the user's
-    episodes still unprocessed that has no job pending or running already,
-    unless it failed MAX_BACKLOG_FAILURES times in a row."""
+def unprocessed_episodes(db, username: str) -> list[dict]:
+    """The user's episodes still unprocessed that have no job pending or
+    running already, except one that failed MAX_BACKLOG_FAILURES times in a
+    row."""
     busy = {j["episode_id"] for j in db.get_active_jobs(username)}
     failures = db.failed_in_a_row()
     episodes = []
@@ -341,15 +335,11 @@ def queue_backlog(db, username: str) -> list[str]:
             )
             continue
         episodes.append(e)
-    job_ids = queue_step_jobs(db, episodes, "pipeline", None, username)
-    if job_ids:
-        logger.info("Queued %d backlog episode(s) for %s", len(job_ids), username)
-    _queue_index_catch_up(db, username)
-    return job_ids
+    return episodes
 
 
 def _queue_index_catch_up(db, username: str) -> None:
-    """Queue an index job behind the backlog when episodes are missing from
+    """Queue an index job after the run when episodes are missing from
     the Ask index (an embedding that failed, show notes found by a later
     fetch), unless one is already waiting. The job is the user's whose run
     queued it, so it shows in their job list."""

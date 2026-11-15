@@ -120,9 +120,9 @@ P³ ships as both a command-line tool (`p3`) and a web app (FastAPI + React).
   user has their own podcasts, episodes, posts, writing tone and settings;
   an episode two users follow is downloaded and processed once.
 - **Daily run.** Every day at 4:00 (each user can change the time or turn it
-  off), the user's podcasts are fetched and new episodes transcribed and
-  summarized, optionally followed by LinkedIn drafts, a digest export and an
-  emailed report. A run that could read no feed (no network) is tried again
+  off), the user's podcasts are fetched and every unprocessed episode (new,
+  or downloaded earlier) transcribed and summarized, optionally followed by
+  LinkedIn drafts, a digest export and an emailed report covering them all. A run that could read no feed (no network) is tried again
   every 15 minutes, a few times, and a report that couldn't be sent for lack
   of network goes out once it is back (within a day).
 - **Disk cleanup.** An episode's audio is deleted once it is digested; the
@@ -759,7 +759,7 @@ API endpoints never do heavy work inline. They create a `jobs` row and enqueue
 a task on a single worker thread (`job_queue.py`). Tasks run strictly one at a
 time, because loading several ML models at once can exhaust memory on a laptop.
 The queue has two lanes: a daily run's jobs go ahead of everything else, and
-the backlog and work started from the web app wait until it is done.
+work started from the web app waits until it is done.
 The frontend polls `/api/jobs/{id}` for progress. Jobs left pending or running
 by a previous process are marked as failed on startup, and they can be retried.
 
