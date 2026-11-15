@@ -16,6 +16,7 @@ Two searchers, chosen by the shared ``web_search`` setting:
 Only the question (as the question step rewrote it) is sent. Asked per
 question: the page has an "Also search the web" switch, off by default."""
 
+import errno
 import logging
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
@@ -114,6 +115,18 @@ def grounded_passages(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     return passages[:MAX_WEB_PASSAGES]
 
 
+def _host_unreachable(error: BaseException) -> bool:
+    """Whether ``error`` comes from "No route to host", which is also how
+    macOS refuses a process without Local Network permission (P3 started by
+    launchd gets none), though the host answers from Terminal."""
+    seen: Optional[BaseException] = error
+    while seen is not None:
+        if isinstance(seen, OSError) and seen.errno == errno.EHOSTUNREACH:
+            return True
+        seen = seen.__cause__ or seen.__context__
+    return False
+
+
 class SearxngWebSearch:
     name = "searxng"
 
@@ -129,6 +142,12 @@ class SearxngWebSearch:
                 timeout=_TIMEOUT,
             )
         except httpx.HTTPError as e:
+            if _host_unreachable(e):
+                raise RuntimeError(
+                    f"SearXNG didn't answer: {e}. If this Mac reaches it otherwise, "
+                    "macOS is blocking P3 from the local network: allow it in "
+                    "System Settings > Privacy & Security > Local Network"
+                ) from e
             raise RuntimeError(f"SearXNG didn't answer: {e}") from e
         if response.status_code == 403:
             raise RuntimeError(
