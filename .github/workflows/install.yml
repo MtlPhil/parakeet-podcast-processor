@@ -1,0 +1,83 @@
+name: Installer
+
+# Runs install.sh on an Apple Silicon Mac: a fresh install, an update over
+# it, then the uninstaller. Weekly too, because the installer downloads the
+# latest uv, deno and Node LTS, which can change under it.
+on:
+  push:
+    branches: [main]
+    paths:
+      - install.sh
+      - bin/**
+      - pyproject.toml
+      - uv.lock
+      - frontend/package.json
+      - frontend/package-lock.json
+      - .github/workflows/install.yml
+  pull_request:
+    paths:
+      - install.sh
+      - bin/**
+      - pyproject.toml
+      - uv.lock
+      - frontend/package.json
+      - frontend/package-lock.json
+      - .github/workflows/install.yml
+  schedule:
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+
+jobs:
+  install:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install from this checkout
+        run: |
+          echo "P3_HOME=$RUNNER_TEMP/Parakeet" >> "$GITHUB_ENV"
+          echo "P3_SOURCE=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+          echo "P3_LABEL=com.parakeet.p3-ci" >> "$GITHUB_ENV"
+          echo "P3_NO_OPEN=1" >> "$GITHUB_ENV"
+          P3_HOME="$RUNNER_TEMP/Parakeet" P3_SOURCE="$GITHUB_WORKSPACE" \
+            P3_LABEL=com.parakeet.p3-ci P3_NO_OPEN=1 bash install.sh
+
+      - name: Check the install
+        run: |
+          set -euo pipefail
+          PORT=$(grep -E '^P3_PORT=' "$P3_HOME/config/server.env" | cut -d= -f2)
+          # Its own accounts, none yet: the setup wizard comes first.
+          curl -fsS "http://127.0.0.1:$PORT/api/auth/status" | tee status.json
+          python3 -c 'import json; s = json.load(open("status.json")); assert s["mode"] == "local" and s["setup_needed"], s'
+          curl -fsS "http://127.0.0.1:$PORT/" | grep -q '<div id="root">'
+          "$P3_HOME/tools/bin/ffmpeg" -hide_banner -version | head -1
+          "$P3_HOME/tools/bin/deno" --version | head -1
+          "$P3_HOME/.venv/bin/python" -c 'from p3.transcriber import PARAKEET_AVAILABLE, WHISPER_AVAILABLE; assert PARAKEET_AVAILABLE and WHISPER_AVAILABLE'
+          launchctl print "gui/$(id -u)/$P3_LABEL" | grep -E 'state = running'
+
+      - name: Update over it, keeping the settings
+        run: |
+          set -euo pipefail
+          echo "# kept by the update" >> "$P3_HOME/config/feeds.yaml"
+          bash install.sh | tee update.log
+          grep -q "updating the existing install" update.log
+          grep -q "Keeping your settings" update.log
+          grep -q "# kept by the update" "$P3_HOME/config/feeds.yaml"
+          PORT=$(grep -E '^P3_PORT=' "$P3_HOME/config/server.env" | cut -d= -f2)
+          curl -fsS "http://127.0.0.1:$PORT/api/auth/status"
+
+      - name: Uninstall
+        run: |
+          set -euo pipefail
+          PORT=$(grep -E '^P3_PORT=' "$P3_HOME/config/server.env" | cut -d= -f2)
+          "$P3_HOME/bin/p3-uninstall"
+          ! launchctl print "gui/$(id -u)/$P3_LABEL" >/dev/null 2>&1
+          ! curl -fsS -m 2 "http://127.0.0.1:$PORT/api/auth/status" >/dev/null 2>&1
+          test -d "$P3_HOME/data"  # the library is kept unless the user says so
+
+      - name: Logs
+        if: failure()
+        run: |
+          tail -n 100 "$P3_HOME/logs/install.log" || true
+          tail -n 100 "$P3_HOME/logs/p3.log" || true
