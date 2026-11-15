@@ -25,8 +25,12 @@ item, docs updated with each:
    the summary prompt asks for a set format (bold section titles, short
    paragraphs or lists, Takeaways last); an end-to-end smoke test runs
    `p3 fetch`, `transcribe`, `digest` and `export` on a sample feed; CI
-   runs `install.sh` on a macOS runner (install, update, uninstall).
-2. Next, Testing: recorded-fixture integration tests.
+   runs `install.sh` on a macOS runner (install, update, uninstall); a
+   manual fetch goes on through the whole chain; a step-by-step guide to
+   trying P³ on Linux or Windows, with the container finding Ollama on its
+   host; the digest, `p3 write`, LinkedIn posts, Ask and Gemini's requests
+   are tested on recordings of real models.
+2. Next, Testing: the transcription backends on recorded model outputs.
 
 On hold: secrets in the keychain and timing transcription on Linux and
 Windows (no machine to test on); real Anthropic and OpenAI requests
@@ -106,5 +110,8 @@ and the installer, not the language.
 
 ## Testing
 
-- Integration coverage for the CLI commands, transcription backends and LLM
-  request paths, using recorded fixtures rather than live services.
+- Integration coverage on recorded fixtures rather than live services.
+  Done: the LLM and embedding request paths (Ollama and Gemini) and the
+  CLI's `digest`, `write` and `export-transcript`
+  (`tests/test_recorded.py`). Still to do: the transcription backends
+  (mlx-whisper, Parakeet, faster-whisper) on their recorded output.
