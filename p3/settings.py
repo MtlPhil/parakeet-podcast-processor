@@ -5,9 +5,12 @@ These cover work done once per episode for everyone. A user's own settings
 (language, tone, daily run) are in ``p3.api.deps.USER_SETTING_DEFAULTS``.
 """
 
+import os
 from typing import Any, Mapping
 
-DEFAULT_OLLAMA_URL = "http://localhost:11434"
+# P3_OLLAMA_URL gives another default, read at startup: the container sets
+# it, since its own localhost is not the machine Ollama runs on.
+DEFAULT_OLLAMA_URL = os.environ.get("P3_OLLAMA_URL") or "http://localhost:11434"
 DEFAULT_PARAKEET_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
 DEFAULT_WHISPER_MODEL = "turbo"
 

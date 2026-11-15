@@ -505,9 +505,11 @@ docker run -d -p 8000:8000 -v p3-library:/library p3
 
 Open <http://localhost:8000>; the first visit creates the admin account. The
 `/library` volume holds everything: database, audio, settings, generated
-files and the downloaded speech models. To use a local Ollama, set its URL
-in Settings to one the container can reach (on Docker Desktop,
-`http://host.docker.internal:11434`). For an NVIDIA GPU, add `--gpus all`;
+files and the downloaded speech models. A local Ollama is looked for at
+`http://host.docker.internal:11434`, the machine itself on Docker Desktop
+(the `P3_OLLAMA_URL` environment variable; Settings can give another). On
+Linux, run with `--network host -e P3_OLLAMA_URL=http://localhost:11434`
+instead. For an NVIDIA GPU, add `--gpus all`;
 the image carries no CUDA libraries of its own, so this needs a base image
 that does and is untested.
 

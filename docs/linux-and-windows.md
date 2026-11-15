@@ -52,10 +52,11 @@ The build takes a few minutes. Then start P³:
 | Machine | Command |
 |---|---|
 | Windows, or Linux with Gemini | `docker run -d --name p3 --restart unless-stopped -p 8000:8000 -v p3-library:/library p3` |
-| Linux with Ollama | `docker run -d --name p3 --restart unless-stopped --network host -v p3-library:/library p3` |
+| Linux with Ollama | `docker run -d --name p3 --restart unless-stopped --network host -e P3_OLLAMA_URL=http://localhost:11434 -v p3-library:/library p3` |
 
-On Linux, `--network host` lets P³ reach Ollama at `localhost`, where Ollama
-listens by default. Everything P³ keeps (database, settings, transcripts,
+On Windows, P³ finds Ollama on the machine by itself. On Linux,
+`--network host` lets it reach Ollama at `localhost`, where Ollama listens
+by default. Everything P³ keeps (database, settings, transcripts,
 downloaded models) is in the `p3-library` volume. It survives updates and
 restarts.
 
@@ -64,22 +65,16 @@ restarts.
 Open <http://localhost:8000>. The setup page walks you through:
 
 1. **Your account.** The first account is the admin.
-2. **Summaries.** Choose Gemini and paste the key, or, on Linux, choose
-   Ollama and pick the model. With Ollama on Windows, skip this page: the
-   container reaches Ollama at another address, set after the setup (below).
+2. **Summaries.** Choose Gemini and paste the key, or choose Ollama and
+   pick the model.
 3. **Transcription.** Leave "Use Parakeet" as it is (it is Mac only and is
    skipped here). Keep Whisper quality at **Balanced** for the first test.
 4. **Daily digest, who can open P³.** Skip, or set them as you like.
 5. **Your podcasts.** Set "Episodes per podcast" (on the Transcription
-   page) to 1 first, so the test is a single episode. With Ollama on
-   Windows, skip this page too and add the podcast once Ollama is set.
+   page) to 1 first, so the test is a single episode.
 
-**Ollama on Windows:** open Settings, and under Shared settings set the
-summarizing provider to Ollama, the model to `gemma4:12b` and the Ollama URL
-to `http://host.docker.internal:11434`, then save. Add your podcast from
-Add Podcast.
-
-The Whisper model can be changed later in the same place.
+The Whisper model and the Ollama URL can be changed later in Settings
+(Shared settings).
 
 ## 5. Watch the first episode
 

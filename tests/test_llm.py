@@ -549,3 +549,42 @@ class TestStreaming:
         with pytest.raises((RuntimeError, llm.httpx.TransportError)):
             next(stream)
         assert seen.posts == 0
+
+
+class TestOllamaUrl:
+    """P3_OLLAMA_URL is the Ollama address when the settings give none (the
+    container's: its localhost is not the machine Ollama runs on)."""
+
+    def _url(self, settings, env_url):
+        import os
+        import subprocess
+        import sys
+
+        env = {k: v for k, v in os.environ.items() if k != "P3_OLLAMA_URL"}
+        if env_url:
+            env["P3_OLLAMA_URL"] = env_url
+        code = (
+            "from p3.settings import setting; "
+            f"print(setting({settings!r}, 'ollama_base_url'))"
+        )
+        done = subprocess.run(
+            [sys.executable, "-c", code],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return done.stdout.strip()
+
+    def test_localhost_by_default(self):
+        assert self._url({}, None) == "http://localhost:11434"
+
+    def test_the_environment_gives_the_default(self):
+        url = "http://host.docker.internal:11434"
+        assert self._url({}, url) == url
+
+    def test_a_saved_setting_wins(self):
+        settings = {"ollama_base_url": "http://mac:11434"}
+        assert self._url(settings, "http://host.docker.internal:11434") == (
+            "http://mac:11434"
+        )

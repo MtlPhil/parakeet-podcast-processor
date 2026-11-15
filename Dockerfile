@@ -32,8 +32,12 @@ COPY config/feeds.yaml.example config/
 RUN uv sync --frozen --no-dev --extra web --no-cache
 COPY --from=web /web/dist frontend/dist
 
+# Ollama runs on the machine itself, which Docker Desktop (Windows, macOS)
+# names host.docker.internal; on Linux, run with --network host and
+# -e P3_OLLAMA_URL=http://localhost:11434 instead.
 ENV P3_HOME=/library \
     P3_AUTH=local \
+    P3_OLLAMA_URL=http://host.docker.internal:11434 \
     PATH="/app/.venv/bin:$PATH" \
     HF_HOME=/library/models
 VOLUME /library
