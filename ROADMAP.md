@@ -33,9 +33,10 @@ item, docs updated with each:
    on what the real speech engines returned (which found av 19 breaking
    faster-whisper, now kept below it); the frontend has tests (Vitest:
    `MarkdownText`, the Podcasts sort, tags, the page language, the API
-   client), run by CI.
-2. Next, Web app: tests of the frontend's components in a DOM (forms,
-   pickers, the job progress), with Testing Library.
+   client), run by CI, and its shared components and the job follower are
+   tested in a DOM (jsdom and Testing Library).
+2. Next, Desktop app: open an existing `~/P3` library from `p3-app`
+   without setting `P3_HOME` by hand.
 
 On hold: secrets in the keychain and timing transcription on Linux and
 Windows (no machine to test on); real Anthropic and OpenAI requests
@@ -114,8 +115,11 @@ and the installer, not the language.
 - **Frontend tests.** Done: Vitest in a Node environment, on `MarkdownText`
   (rendered to static markup) and the logic outside components (the
   Podcasts sort, tags, `languageOf`, the API client with `fetch` stubbed).
-  Still to do: components that need a DOM and user events (jsdom and
-  Testing Library), and the pages' logic still inside components.
+  In a DOM (jsdom and Testing Library, per file): the account-deletion
+  confirmation, the episode picker, the tag field, the language toggle,
+  job progress, renaming speakers, and `useJobPoller` (its stream, falling
+  back to polling, a cleared job). Still to do: the pages themselves
+  (Ask's streamed answers, Settings, Add Podcast's preview).
 
 ## Testing
 
