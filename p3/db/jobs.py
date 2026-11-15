@@ -246,7 +246,7 @@ class Jobs(Digests):
         self, since: Optional[datetime], username: str
     ) -> List[Dict[str, Any]]:
         """A user's episodes that a pipeline or digest job outside any daily
-        run (backlog, or started by hand) finished after ``since`` (database
+        run (started by hand) finished after ``since`` (database
         clock; the last 24 hours if None), oldest first, with titles."""
         cursor = self.conn.execute(
             """

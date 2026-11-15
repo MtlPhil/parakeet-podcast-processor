@@ -6,7 +6,7 @@ task runs to completion before the next one starts. A single background thread
 owns all pipeline work; API handlers only enqueue.
 
 Two lanes: the daily run's work goes in the priority lane and everything
-else (backlog, work started from the web app) in the normal lane. The worker
+else (work started from the web app) in the normal lane. The worker
 always takes the next priority task first, so normal work waits on hold while
 a daily run is in progress. A task already running is never interrupted; the
 daily run starts as soon as it finishes.

@@ -8,7 +8,7 @@ without loading ML dependencies.
 - ``pipeline``: fetching, transcribing, digesting, the full pipeline
 - ``content``: exports, blog posts, LinkedIn posts, synopses
 - ``ask``: Ask's index and its evaluation
-- ``daily_run``: each user's daily run, its report and the backlog
+- ``daily_run``: each user's daily run and its report
 - ``common``: what they share
 
 Import names from the module that defines them (and patch them there in
