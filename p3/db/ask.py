@@ -107,6 +107,18 @@ class Ask(Search):
         with self._chunk_lock:
             return self._flag_repeated(podcast_id)
 
+    def show_transcript_passages(self, episode_id: int) -> List[Tuple[int, int, str]]:
+        """(id, episode id, text) of the indexed transcript passages of the
+        other episodes of this episode's show."""
+        rows = self.conn.execute(
+            "SELECT c.id, c.episode_id, c.text FROM chunks c "
+            "JOIN episodes e ON e.id = c.episode_id "
+            "WHERE c.kind = 'transcript' AND c.episode_id <> ? "
+            "AND e.podcast_id = (SELECT podcast_id FROM episodes WHERE id = ?)",
+            (episode_id, episode_id),
+        ).fetchall()
+        return [(r[0], r[1], r[2]) for r in rows]
+
     def delete_chunks(self, episode_id: int):
         self.conn.execute("DELETE FROM chunk_terms WHERE episode_id = ?", (episode_id,))
         self.conn.execute("DELETE FROM chunks WHERE episode_id = ?", (episode_id,))
