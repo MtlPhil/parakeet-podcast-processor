@@ -1361,12 +1361,38 @@ def test_each_cited_claim_gets_a_verdict_against_its_passage():
     }
     judge = ClaimJudge(["overstated", "nonsense"])
     rows = claim_verdicts(judge, "What about rates?", done)
-    assert [(r["n"], r["verdict"]) for r in rows] == [(1, "overstated"), (2, None)]
-    assert "Its passage [2] (Money Talk: The Bank of Canada, Host)" in judge.prompts[0]
+    assert [(r["n"], r["verdict"]) for r in rows] == [([1], "overstated"), ([2], None)]
+    assert rows[1]["passages"] == [
+        {
+            "n": 2,
+            "source": "Money Talk: The Bank of Canada, Host",
+            "text": "The host: inflation may be beaten.",
+        }
+    ]
+    assert "Passage [2] (Money Talk: The Bank of Canada, Host)" in judge.prompts[0]
     summary = claim_summary([{"id": "q1", "claims": rows}])
     assert summary["claims_judged"] == 1
     assert summary["claim_verdicts"]["overstated"] == 1.0
     assert summary["examples"][0]["why"] == "because 1"
+    assert "passages" not in summary["examples"][0]
+
+
+def test_a_sentence_citing_several_passages_is_judged_once_against_them_all():
+    from p3.eval_ask import claim_verdicts
+
+    done = {
+        "answer": "The shows discuss both rate cuts and a weaker dollar [1][2].",
+        "sources": [
+            _cited(1, "The bank cut rates by half a point."),
+            _cited(2, "The dollar fell against the euro."),
+        ],
+    }
+    judge = ClaimJudge(["supported"])
+    rows = claim_verdicts(judge, "What about the economy?", done)
+    assert [(r["n"], r["verdict"]) for r in rows] == [([1, 2], "supported")]
+    prompt = judge.prompts[0]
+    assert prompt.count("Claim ") == 1
+    assert "cut rates" in prompt and "dollar fell" in prompt
 
 
 def test_stored_answers_are_judged_without_asking_again(db):
