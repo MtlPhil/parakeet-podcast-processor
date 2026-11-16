@@ -1416,3 +1416,126 @@ def test_stored_answers_are_judged_without_asking_again(db):
     assert result["answers"] == 1  # the declined one isn't judged
     assert result["claim_verdicts"]["supported"] == 1.0
     assert "Question: Did the bank raise rates?" in judge.prompts[0]
+
+
+# ----------------------------------------------------------------------
+# Repeated passages: sponsor reads and sign-offs said in several episodes
+# ----------------------------------------------------------------------
+
+_AD = (
+    "This episode is brought to you by Blitzy, the autonomous software "
+    "platform for enterprise code. Visit blitzy dot com to see for yourself."
+)
+
+
+def test_a_passage_said_again_in_another_episode_is_repeated():
+    from p3.chunker import repeated_passages
+
+    rates = "The bank raised interest rates again, the governor said in Ottawa."
+    phones = "Phones got better cameras and a longer battery life this fall."
+    passages = [
+        (1, 10, rates),
+        (2, 10, _AD),
+        (3, 11, phones),
+        (4, 11, "Before we start: " + _AD),
+        # Half a read in a passage that is mostly conversation stays.
+        (
+            5,
+            12,
+            "Visit blitzy dot com to see for yourself. Then the guest talked "
+            "about her new book on the history of the Montreal metro system.",
+        ),
+    ]
+    # The same episode stored twice: its conversation isn't repeated, its
+    # ad read (also heard in episode 10) is.
+    music = [
+        "Music sales rose for vinyl records and cassettes in Montreal shops.",
+        "Streaming royalties still pay most artists less than a cent a play.",
+        "A new concert hall opens downtown next spring with a thousand seats.",
+    ]
+    for episode, first_id in ((20, 6), (21, 10)):
+        passages += [(first_id + i, episode, m) for i, m in enumerate(music)]
+        passages.append((first_id + 3, episode, _AD))
+    assert repeated_passages(passages) == {2, 4, 9, 13}
+    assert repeated_passages([(1, 10, _AD)]) == set()
+
+
+_TALK = {
+    1: [
+        "Bank rates went up again in Canada.",
+        "Mortgage holders in Toronto will pay more on renewal this year.",
+        "The governor expects inflation back at two percent by next summer.",
+    ],
+    2: [
+        "Apple released a new phone.",
+        "Its camera takes better pictures at night than last year's model.",
+        "The battery lasts a full day of video calls and streaming music.",
+    ],
+}
+
+
+def _show_episode(db, podcast, n, talk=None):
+    """An episode of mostly conversation (``_TALK[n]``) with the ad read."""
+    episode = db.add_episode(
+        podcast, f"Episode {n}", datetime(2026, 9, n), f"http://x/show/{n}"
+    )
+    lines = [talk] + _TALK[n][1:] if talk else _TALK[n]
+    db.add_transcript_segments(episode, _segments([*lines, _AD], length=200))
+    db.update_episode_status(episode, "processed")
+    return episode
+
+
+def test_ask_leaves_out_a_read_heard_in_several_episodes(db):
+    from p3.retriever import Retriever
+
+    podcast = db.add_podcast("Daily", "http://example.com/daily")
+    first = _show_episode(db, podcast, 1)
+    index_episode(db, first, FakeEmbedder())
+    retriever = Retriever(db, FakeEmbedder(), FakeReranker())
+    found = retriever.retrieve("blitzy enterprise code", None)
+    assert any("Blitzy" in p["text"] for p in found.passages)  # heard once
+    # The next episode reads it again: both copies leave the index's searches.
+    second = _show_episode(db, podcast, 2)
+    index_episode(db, second, FakeEmbedder())
+    found = retriever.retrieve("blitzy enterprise code", None)
+    assert not any("Blitzy" in p["text"] for p in found.passages)
+    assert db.mention_counts([["blitzy"]], None) == []
+    assert [r["episode_id"] for r in db.mention_counts([["rates"]], None)] == [first]
+    texts = [p["text"] for p in retriever.retrieve("bank rates", None).passages]
+    assert "Bank rates went up again in Canada." in texts
+
+
+def test_a_backfill_flags_each_show_once_after_its_episodes(db, monkeypatch):
+    from p3.indexer import index_pending
+
+    podcast = db.add_podcast("Daily", "http://example.com/daily")
+    for n in (1, 2):
+        _show_episode(db, podcast, n)
+    calls = []
+    flag = db.flag_repeated_passages
+    monkeypatch.setattr(
+        db, "flag_repeated_passages", lambda p: calls.append(p) or flag(p)
+    )
+    assert index_pending(db, FakeEmbedder())["indexed"] == 2
+    assert calls == [podcast]
+    assert db.mention_counts([["blitzy"]], None) == []
+
+
+def test_migration_8_flags_the_library_already_indexed(tmp_path):
+    path = str(tmp_path / "old.duckdb")
+    db = P3Database(path)
+    podcast = db.add_podcast("Daily", "http://example.com/daily")
+    for n in (1, 2):
+        index_episode(db, _show_episode(db, podcast, n), None)
+    # As a database from before migration 8 would be.
+    db.conn.execute("UPDATE chunks SET repeated = FALSE")
+    db.conn.execute("DELETE FROM schema_migrations WHERE version = 8")
+    db.close()
+    db = P3Database(path)
+    try:
+        flagged = db.conn.execute(
+            "SELECT text FROM chunks WHERE repeated ORDER BY id"
+        ).fetchall()
+        assert flagged == [(_AD,), (_AD,)]
+    finally:
+        db.close()

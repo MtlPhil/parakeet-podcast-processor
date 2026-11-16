@@ -236,10 +236,11 @@ class Retriever:
                 result.skipped["rerank"] = str(e)
             result.timings["rerank"] = time.monotonic() - t
 
-        # Sponsor reads and jingles go last, in their order: they match a
-        # question's words (a sponsor's name, the show's tagline) without
-        # saying anything about it.
-        ranked = sorted(ranked, key=lambda kv: is_ad_passage(chunks[kv[0]]))
+        # Sponsor reads and jingles labelled by speaker are left out: they
+        # match a question's words (a sponsor's name, the show's tagline)
+        # without saying anything about it. Repeated ones never get here
+        # (P3Database.flag_repeated_passages).
+        ranked = [kv for kv in ranked if not is_ad_passage(chunks[kv[0]])]
         episode_of = {i: c["episode_id"] for i, c in chunks.items()}
         for chunk_id, score in limit_per_episode(
             ranked, episode_of, top_k, per_episode

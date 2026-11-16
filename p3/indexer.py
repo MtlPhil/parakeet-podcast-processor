@@ -19,9 +19,17 @@ def embedding_text(chunk: Dict) -> str:
     )
 
 
-def index_episode(db: P3Database, episode_id: int, embedder: Optional[Embedder]) -> int:
+def index_episode(
+    db: P3Database,
+    episode_id: int,
+    embedder: Optional[Embedder],
+    flag_repeated: bool = True,
+) -> int:
     """(Re)index one episode. Without an embedder the passages are stored
-    for keyword search only. Returns the number of passages."""
+    for keyword search only. Its show's repeated passages are then flagged
+    again (``P3Database.flag_repeated_passages``): an ad read in this
+    episode also marks the same read in the earlier ones, unless
+    ``flag_repeated`` is False. Returns the number of passages."""
     episode = db.get_episode_by_id(episode_id)
     if not episode:
         raise ValueError(f"Episode {episode_id} not found")
@@ -32,9 +40,12 @@ def index_episode(db: P3Database, episode_id: int, embedder: Optional[Embedder])
     embeddings: Optional[List[List[float]]] = None
     if embedder is not None and chunks:
         embeddings = embedder.embed([embedding_text(c) for c in chunks])
-    return db.replace_chunks(
+    stored = db.replace_chunks(
         episode_id, chunks, embeddings, embedder.model if embedder else None
     )
+    if flag_repeated:
+        db.flag_repeated_passages(episode["podcast_id"])
+    return stored
 
 
 def index_pending(
@@ -48,15 +59,22 @@ def index_pending(
     can give way. Returns counts of episodes indexed and failed."""
     pending = db.episodes_to_index(embedder.model if embedder else None)
     done = failed = 0
+    shows = set()
     for i, episode_id in enumerate(pending):
         if should_stop and should_stop():
             break
         if progress:
             progress(i, len(pending), f"Indexing episode {episode_id}")
         try:
-            index_episode(db, episode_id, embedder)
+            index_episode(db, episode_id, embedder, flag_repeated=False)
             done += 1
+            episode = db.get_episode_by_id(episode_id)
+            if episode:
+                shows.add(episode["podcast_id"])
         except Exception as e:
             logger.warning("Indexing episode %d failed: %s", episode_id, e)
             failed += 1
+    # Once per show rather than after each of its episodes.
+    for podcast_id in shows:
+        db.flag_repeated_passages(podcast_id)
     return {"indexed": done, "failed": failed, "pending": len(pending)}

@@ -412,6 +412,41 @@ class Schema(Connection):
             )
         """)
 
+    def _repeated_passages(self):
+        """Migration 8: transcript passages mostly said again in another
+        episode of the same show (sponsor reads, sign-offs), which Ask leaves
+        out, flagged for the whole library."""
+        self.conn.execute(
+            "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS repeated BOOLEAN "
+            "DEFAULT FALSE"
+        )
+        podcasts = self.conn.execute(
+            "SELECT DISTINCT e.podcast_id FROM chunks c "
+            "JOIN episodes e ON e.id = c.episode_id"
+        ).fetchall()
+        for (podcast_id,) in podcasts:
+            self._flag_repeated(podcast_id)
+
+    def _flag_repeated(self, podcast_id: int) -> int:
+        """Set ``chunks.repeated`` for a show's transcript passages from
+        ``chunker.repeated_passages``. Returns how many are."""
+        from p3.chunker import repeated_passages
+
+        rows = self.conn.execute(
+            "SELECT c.id, c.episode_id, c.text FROM chunks c "
+            "JOIN episodes e ON e.id = c.episode_id "
+            "WHERE e.podcast_id = ? AND c.kind = 'transcript'",
+            (podcast_id,),
+        ).fetchall()
+        repeated = sorted(repeated_passages(rows))
+        with self.transaction():
+            self.conn.execute(
+                "UPDATE chunks SET repeated = (id IN (SELECT unnest(?::INTEGER[]))) "
+                "WHERE episode_id IN (SELECT id FROM episodes WHERE podcast_id = ?)",
+                [repeated, podcast_id],
+            )
+        return len(repeated)
+
     _MIGRATIONS = (
         _baseline,
         _ask_index,
@@ -420,6 +455,7 @@ class Schema(Connection):
         _episode_speakers,
         _citation_flags,
         _speaker_voices,
+        _repeated_passages,
     )
 
     def _resync_sequences(self):

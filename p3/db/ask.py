@@ -100,6 +100,13 @@ class Ask(Search):
             )
         return len(rows)
 
+    def flag_repeated_passages(self, podcast_id: int) -> int:
+        """Flag the show's transcript passages that are mostly said again in
+        another of its episodes (sponsor reads, sign-offs), which every Ask
+        search leaves out, and unflag the others. Returns how many are."""
+        with self._chunk_lock:
+            return self._flag_repeated(podcast_id)
+
     def delete_chunks(self, episode_id: int):
         self.conn.execute("DELETE FROM chunk_terms WHERE episode_id = ?", (episode_id,))
         self.conn.execute("DELETE FROM chunks WHERE episode_id = ?", (episode_id,))
@@ -164,13 +171,14 @@ class Ask(Search):
         """JOIN/WHERE text limiting ``c`` (chunks) to a user's episodes and
         the optional filters: ``podcast_ids``, ``after`` / ``before`` (dates,
         inclusive), ``language``, ``kinds``, ``speakers`` (names: passages
-        one of them speaks in). ``e`` is the episode."""
+        one of them speaks in). ``e`` is the episode. Repeated passages
+        (``flag_repeated_passages``) are always left out."""
         sql = "JOIN episodes e ON e.id = c.episode_id "
         params: List[Any] = []
         if username is not None:
             sql += "JOIN user_episodes ue ON ue.episode_id = e.id AND ue.username = ? "
             params.append(username)
-        where = ["1 = 1"]
+        where = ["NOT c.repeated"]
         filters = filters or {}
         # Keys other than the ones below (e.g. "chosen") are ignored.
         if filters.get("podcast_ids"):
