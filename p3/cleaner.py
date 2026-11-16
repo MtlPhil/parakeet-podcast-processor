@@ -201,7 +201,8 @@ Guidelines:
 - key_topics: Main subjects discussed (3-5 topics)
 - themes: Broader themes or patterns (2-4 themes)
 - quotes: Memorable, insightful quotes (2-3 max)
-- startups: Any companies, startups, or brands mentioned
+- startups: Companies, startups or brands the hosts discuss, never a \
+sponsor or advertiser
 
 """
     + _AD_RULE
@@ -406,16 +407,21 @@ class TranscriptCleaner:
         return re.sub(r"\s+", " ", text).strip()
 
     def _transcript(self, episode_id: int) -> str:
-        """An episode's transcript as the prompts read it: fillers removed by
-        regex, names spelled as the show writes them (_respell_names),
-        nothing else rewritten (the prompts skip ads themselves, see
-        _AD_RULE), and "Name: " starting each speaker's turn once the
-        speakers are named (speakers.speaker_text). Empty if the episode has
-        no transcript."""
+        """An episode's transcript as the prompts read it: without the
+        passages said again in the show's other episodes (sponsor reads,
+        sign-offs: chunker.without_repeated; the prompts are told to skip
+        the other ads, _AD_RULE), fillers removed by regex, names spelled as
+        the show writes them (_respell_names), nothing else rewritten, and
+        "Name: " starting each speaker's turn once the speakers are named
+        (speakers.speaker_text). Empty if the episode has no transcript."""
+        from .chunker import without_repeated
         from .speakers import display_names, speaker_text
 
         segments = self.db.get_transcripts_for_episode(episode_id)
         names = display_names(self.db.get_episode_speakers(episode_id))
+        segments = without_repeated(
+            segments, episode_id, self.db.show_transcript_passages(episode_id), names
+        )
         text = speaker_text(
             [{**s, "text": self._basic_clean_text(s["text"])} for s in segments],
             names,

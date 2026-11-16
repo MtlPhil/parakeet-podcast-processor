@@ -184,8 +184,13 @@ def transcript_chunks(
     ``text``, in order) into passages of about ``TARGET_SECONDS``, each
     starting with the last segment of the one before. ``names`` maps speaker
     labels to names (see ``_passage``)."""
+    return [_passage(group, names) for group in _segment_groups(segments)]
+
+
+def _segment_groups(segments: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+    """The segments of each passage ``transcript_chunks`` makes."""
     segments = [s for s in segments if (s.get("text") or "").strip()]
-    chunks: List[Dict[str, Any]] = []
+    chunks: List[List[Dict[str, Any]]] = []
     i = 0
     while i < len(segments):
         group = [segments[i]]
@@ -199,7 +204,7 @@ def transcript_chunks(
                 break
             group.append(segments[j])
             j += 1
-        chunks.append(_passage(group, names))
+        chunks.append(group)
         if j >= len(segments):
             break
         # Overlap: the next passage starts with this one's last segment,
@@ -280,6 +285,32 @@ def repeated_passages(passages: Sequence[Tuple[int, int, str]]) -> Set[int]:
         if own and elsewhere >= _REPEATED_SHARE * len(own):
             repeated.add(pid)
     return repeated
+
+
+def without_repeated(
+    segments: List[Dict[str, Any]],
+    episode_id: int,
+    show_passages: Sequence[Tuple[int, int, str]],
+    names: Optional[Dict[str, str]] = None,
+) -> List[Dict[str, Any]]:
+    """An episode's transcript segments without the passages mostly said
+    again in another episode of its show (``repeated_passages``: sponsor
+    reads, sign-offs). ``show_passages`` are the (id, episode id, text) of
+    the show's other transcript passages, as indexed. A segment shared with
+    a passage that isn't repeated stays."""
+    groups = _segment_groups(segments)
+    own = [
+        (-(i + 1), episode_id, _passage(group, names)["text"])
+        for i, group in enumerate(groups)
+    ]
+    repeated = repeated_passages(own + list(show_passages))
+    kept = {
+        id(s)
+        for i, group in enumerate(groups)
+        if -(i + 1) not in repeated
+        for s in group
+    }
+    return [s for s in segments if id(s) in kept]
 
 
 def build_chunks(

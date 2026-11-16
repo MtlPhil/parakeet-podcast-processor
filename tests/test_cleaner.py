@@ -438,6 +438,59 @@ class TestDigestWithoutRewrite:
         finally:
             db.close()
 
+    def test_a_read_heard_in_the_shows_other_episodes_is_left_out(self, tmp_path):
+        from p3.indexer import index_episode
+
+        ad = (
+            "This episode is brought to you by Acme, the soil sensor company "
+            "for modern farms. Visit acme dot com and use the code FARM."
+        )
+
+        def episode(pid, n, talk):
+            eid = db.add_episode(pid, f"Ep {n}", datetime.now(), f"http://x/{n}")
+            rows = [*talk, ad]
+            db.add_transcript_segments(
+                eid,
+                [
+                    {"text": t, "start": i * 200.0, "end": i * 200.0 + 60}
+                    for i, t in enumerate(rows)
+                ],
+            )
+            return eid
+
+        db = P3Database(str(tmp_path / "test.duckdb"))
+        try:
+            pid = db.add_podcast("Pod", "http://example.com/rss")
+            first = episode(
+                pid,
+                1,
+                [
+                    "We discuss soil health and cover crops on dairy farms.",
+                    "Clover fixes nitrogen and keeps the topsoil from washing away.",
+                    "Our guest has farmed the same fields near Sherbrooke for forty years.",
+                    "She stopped tilling in the nineties and her yields went up since.",
+                ],
+            )
+            cleaner = TranscriptCleaner(db=db, llm_provider="ollama")
+            # Heard in no other episode yet, the read stays (the prompts skip it).
+            assert "Acme" in cleaner._transcript(first)
+            index_episode(db, first, None)
+            second = episode(
+                pid,
+                2,
+                [
+                    "Today we talk about drip irrigation in dry summers.",
+                    "Tomatoes need less water than most growers give them.",
+                    "A moisture probe in each row tells you when to turn it on.",
+                    "Mulch keeps the ground cool and cuts evaporation by half in July.",
+                ],
+            )
+            text = cleaner._transcript(second)
+            assert "drip irrigation" in text and "Tomatoes" in text
+            assert "Acme" not in text
+        finally:
+            db.close()
+
     def test_synopsis_prompt_carries_the_ad_rule(self):
         from p3 import cleaner as cleaner_module
 
