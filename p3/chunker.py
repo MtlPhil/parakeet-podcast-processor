@@ -13,9 +13,10 @@ import html
 import json
 import re
 import unicodedata
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from itertools import combinations
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from .exporter import plain_text
 
@@ -236,6 +237,49 @@ def without_cold_open(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 continue
         kept.append(c)
     return kept
+
+
+# A transcript passage is repeated when at least ``_REPEATED_SHARE`` of its
+# runs of ``_SHINGLE`` words are also said in another episode of the same
+# show: a sponsor read, the show's sign-off. Real conversation is almost
+# never said twice. Two episodes are one episode stored twice, or a replay,
+# when more than ``_COPY_SHARE`` of the runs few episodes have (heard in at
+# most ``_COPY_MAX_EPISODES``; not the ads heard everywhere) are shared by
+# both: they don't count against each other.
+_COPY_SHARE = 0.6
+_COPY_MAX_EPISODES = 3
+
+
+def repeated_passages(passages: Sequence[Tuple[int, int, str]]) -> Set[int]:
+    """The ids of the passages, given as (id, episode id, text) for the
+    transcripts of one show, that are mostly said again in another of its
+    episodes."""
+    shingles = {pid: _shingles(text) for pid, _, text in passages}
+    episode_runs: Dict[int, set] = defaultdict(set)
+    for pid, episode, _ in passages:
+        episode_runs[episode] |= shingles[pid]
+    heard_in: Dict[tuple, Set[int]] = defaultdict(set)
+    for episode, runs in episode_runs.items():
+        for run in runs:
+            heard_in[run].add(episode)
+    shared: Counter = Counter()
+    rare: Counter = Counter()
+    for episodes in heard_in.values():
+        if len(episodes) <= _COPY_MAX_EPISODES:
+            rare.update(episodes)
+            shared.update(combinations(sorted(episodes), 2))
+    same: Dict[int, Set[int]] = {episode: {episode} for episode in episode_runs}
+    for (a, b), count in shared.items():
+        if count > _COPY_SHARE * min(rare[a], rare[b]):
+            same[a].add(b)
+            same[b].add(a)
+    repeated = set()
+    for pid, episode, _ in passages:
+        own = shingles[pid]
+        elsewhere = sum(1 for run in own if heard_in[run] - same[episode])
+        if own and elsewhere >= _REPEATED_SHARE * len(own):
+            repeated.add(pid)
+    return repeated
 
 
 def build_chunks(

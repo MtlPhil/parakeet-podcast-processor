@@ -717,7 +717,7 @@ class TestNamingLLM:
         assert cleaner.llm.provider == "ollama"
 
 
-def test_ask_ranks_sponsor_reads_last(db):
+def test_ask_leaves_out_sponsor_reads(db):
     from p3.retriever import Retriever
     from tests.test_ask import FakeEmbedder, FakeReranker
 
@@ -741,7 +741,7 @@ def test_ask_ranks_sponsor_reads_last(db):
     index_episode(db, episode, FakeEmbedder())
     found = Retriever(db, FakeEmbedder(), FakeReranker()).retrieve("bank rates", None)
     transcript = [p for p in found.passages if p["kind"] == "transcript"]
-    assert [p["speakers"] for p in transcript] == ["Étienne Crevier", "Ad"]
+    assert [p["speakers"] for p in transcript] == ["Étienne Crevier"]
 
 
 class TestWhatDidTheySay:
