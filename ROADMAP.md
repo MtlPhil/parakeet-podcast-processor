@@ -37,9 +37,14 @@ item, docs updated with each:
    tested in a DOM (jsdom and Testing Library); the desktop app is on hold;
    Ask's evaluation can compare answers with and without the research
    step, on broad questions it generates from the companies several
-   episodes name.
-2. Next: run that comparison on the library with Gemini, then try
-   Ollama's tool calling against it. Nothing else is unblocked.
+   episodes name; run on the library with Gemini 3.8 Flash, research
+   cites about three times as many of the relevant episodes; the judge
+   checks a sentence against all its passages together; the answer prompt
+   keeps quotation marks for exact words; sponsor reads (passages said
+   again in another episode of the same show) are left out of Ask and of
+   the digest.
+2. Next: try Ollama's tool calling against the same comparison. Nothing
+   else is unblocked.
 
 On hold: secrets in the keychain and timing transcription on Linux and
 Windows (no machine to test on); real Anthropic and OpenAI requests

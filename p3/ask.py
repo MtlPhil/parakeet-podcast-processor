@@ -49,7 +49,7 @@ from .writer import _detect_language
 logger = logging.getLogger(__name__)
 
 UNDERSTAND_PROMPT_VERSION = "understand-v5"
-ANSWER_PROMPT_VERSION = "answer-v8"
+ANSWER_PROMPT_VERSION = "answer-v9"
 
 # Research for broad questions (p3/ask_tools.py, which imports this module).
 RESEARCH_PROMPT_VERSION = "research-v1"
@@ -122,10 +122,15 @@ episode's introductions, so attribute a line to that person. "Speaker 1", \
 rather than putting the line in X's mouth. "Ad:" and "Intro:" are \
 advertising and the show's opening: never use them as anyone's view. A \
 passage without names doesn't say who is speaking: then too write "in the \
-conversation with X". Keep a host's objection apart from the guest's view.
+conversation with X". Keep a host's objection apart from the guest's view, \
+and a host's remark or question to the guest ("you mentioned...") is the \
+host's, not the guest's.
 - Keep the passage's certainty: "could", "might" and questions stay hedged. \
 Keep exact figures and who or what they apply to. Cite a passage only for \
 what it actually says.
+- Put words in quotation marks only when they are the passage's exact words; \
+otherwise paraphrase without them. A list (of customers, companies, \
+figures) holds only the items its passages name.
 - Prefer transcript passages. Use an episode summary, topic list or quote \
 only when no transcript passage says the same, and then write "according to \
 the episode summary".
